@@ -30,7 +30,7 @@ const weekdays = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
 
 const normalizedRows = computed(() =>
   rows.value.map((row) => ({
-    date: row.date,
+    date: normalizeDateKey(row.date),
     trades: Number(row.total_trades ?? 0),
     pnl: Number(row.profit_loss ?? 0),
   }))
@@ -39,9 +39,10 @@ const normalizedRows = computed(() =>
 const rowMap = computed(() => {
   const map = new Map<string, { trades: number; pnl: number }>()
   for (const row of normalizedRows.value) {
+    const previous = map.get(row.date)
     map.set(row.date, {
-      trades: row.trades,
-      pnl: row.pnl,
+      trades: (previous?.trades ?? 0) + row.trades,
+      pnl: Number(((previous?.pnl ?? 0) + row.pnl).toFixed(2)),
     })
   }
 
@@ -177,6 +178,23 @@ function toLocalDate(value: string): Date {
   const safeDay = Number.isFinite(day) ? day : 1
 
   return new Date(safeYear, safeMonth - 1, safeDay)
+}
+
+function normalizeDateKey(value: string): string {
+  const directMatch = value.match(/^(\d{4}-\d{2}-\d{2})/)
+  if (directMatch?.[1]) {
+    return directMatch[1]
+  }
+
+  const parsed = new Date(value)
+  if (!Number.isNaN(parsed.getTime())) {
+    const year = parsed.getUTCFullYear().toString().padStart(4, '0')
+    const month = `${parsed.getUTCMonth() + 1}`.padStart(2, '0')
+    const day = `${parsed.getUTCDate()}`.padStart(2, '0')
+    return `${year}-${month}-${day}`
+  }
+
+  return value
 }
 
 onMounted(async () => {

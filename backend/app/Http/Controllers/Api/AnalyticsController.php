@@ -44,10 +44,16 @@ class AnalyticsController extends Controller
     public function daily(Request $request)
     {
         $daily = $this->baseQuery($request)
-            ->selectRaw('DATE(`date`) as date, COUNT(*) as total_trades, ROUND(SUM(profit_loss), 2) as profit_loss')
+            ->selectRaw('DATE(`date`) as trade_date, COUNT(*) as total_trades, ROUND(SUM(profit_loss), 2) as profit_loss')
             ->groupByRaw('DATE(`date`)')
             ->orderByRaw('DATE(`date`)')
-            ->get();
+            ->get()
+            ->map(fn ($row) => [
+                'date' => (string) $row->trade_date,
+                'total_trades' => (int) $row->total_trades,
+                'profit_loss' => round((float) $row->profit_loss, 2),
+            ])
+            ->values();
 
         return response()->json($daily);
     }
@@ -102,7 +108,7 @@ class AnalyticsController extends Controller
     private function dailyPnlSeries(Builder $query): Collection
     {
         return (clone $query)
-            ->selectRaw('DATE(`date`) as date, SUM(profit_loss) as pnl')
+            ->selectRaw('DATE(`date`) as trade_date, SUM(profit_loss) as pnl')
             ->groupByRaw('DATE(`date`)')
             ->orderByRaw('DATE(`date`)')
             ->get();
