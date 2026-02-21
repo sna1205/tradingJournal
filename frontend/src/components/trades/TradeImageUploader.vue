@@ -27,7 +27,7 @@ const props = withDefaults(
     uploadProgress: () => ({}),
     deletingImageIds: () => [],
     error: '',
-    title: 'Trade Screenshots',
+    title: 'Execution Screenshots',
     uploadHint: 'Max 5 images - jpg, jpeg, png, webp - 5MB each',
   }
 )
@@ -148,7 +148,7 @@ function isDeleting(imageId: number) {
       >
         <img
           :src="image.thumbnail_url || image.image_url"
-          alt="Trade screenshot"
+          alt="Execution screenshot"
           loading="lazy"
           class="trade-image-thumb"
         />
@@ -177,7 +177,7 @@ function isDeleting(imageId: number) {
       >
         <img
           :src="image.preview_url"
-          alt="Pending screenshot"
+          alt="Pending execution screenshot"
           loading="lazy"
           class="trade-image-thumb"
         />

@@ -38,7 +38,12 @@ const openUpward = ref(false)
 const rootRef = ref<HTMLElement | null>(null)
 const selectedValue = computed(() => props.modelValue ?? '')
 const currentMonth = ref(startOfMonth(parseIsoDate(selectedValue.value) ?? new Date()))
-const controlClass = computed(() => ['field', props.size === 'sm' ? 'field-sm' : '', props.error ? 'field-invalid' : ''])
+const controlClass = computed(() => [
+  'field',
+  'control-modern',
+  props.size === 'sm' ? 'field-sm' : '',
+  props.error ? 'field-invalid' : '',
+])
 const monthLabel = computed(() =>
   currentMonth.value.toLocaleString('en-US', {
     month: 'long',

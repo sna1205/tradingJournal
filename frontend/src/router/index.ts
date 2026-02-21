@@ -12,6 +12,10 @@ const router = createRouter({
   routes: [
     {
       path: '/',
+      redirect: '/overview',
+    },
+    {
+      path: '/overview',
       redirect: '/dashboard',
     },
     {
@@ -56,7 +60,11 @@ const router = createRouter({
     },
     {
       path: '/milestones',
-      name: 'milestones',
+      redirect: '/progress',
+    },
+    {
+      path: '/progress',
+      name: 'progress',
       component: Milestones,
     },
   ],

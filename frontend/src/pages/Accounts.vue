@@ -270,12 +270,12 @@ onMounted(async () => {
     <GlassPanel>
       <div class="section-head">
         <div>
-          <h2 class="section-title">Account Management</h2>
-          <p class="section-note">Manage funded, personal, and demo accounts with isolated performance tracking.</p>
+          <h2 class="section-title">Account Center</h2>
+          <p class="section-note">Manage funded, personal, and demo accounts with isolated balance and performance tracking.</p>
         </div>
         <button type="button" class="btn btn-primary inline-flex items-center gap-2 px-4 py-2 text-sm" @click="openCreateModal">
           <Plus class="h-4 w-4" />
-          Add Account
+          New Account
         </button>
       </div>
     </GlassPanel>
@@ -289,7 +289,7 @@ onMounted(async () => {
       title="No accounts yet"
       description="Create your first account to start account-isolated analytics."
       :icon="WalletCards"
-      cta-text="Add Account"
+      cta-text="New Account"
       @cta="openCreateModal"
     />
 
@@ -359,7 +359,7 @@ onMounted(async () => {
       <div v-if="modalOpen" class="fixed inset-0 z-[90] flex items-center justify-center bg-black/45 px-4 backdrop-blur-sm">
         <div class="panel w-full max-w-2xl p-6">
           <div class="section-head">
-            <h3 class="section-title">{{ isEditing ? 'Edit Account' : 'Add Account' }}</h3>
+            <h3 class="section-title">{{ isEditing ? 'Edit Account' : 'New Account' }}</h3>
             <button type="button" class="btn btn-ghost p-2" @click="closeModal">
               <X class="h-4 w-4" />
             </button>

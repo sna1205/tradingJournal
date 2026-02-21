@@ -1,5 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
+import { storeToRefs } from 'pinia'
+import { useUiStore } from '@/stores/uiStore'
 
 const props = withDefaults(
   defineProps<{
@@ -17,7 +19,13 @@ function readVar(name: string, fallback: string) {
   return value || fallback
 }
 
-const option = computed(() => ({
+const uiStore = useUiStore()
+const { theme } = storeToRefs(uiStore)
+
+const option = computed(() => {
+  void theme.value
+
+  return {
   textStyle: {
     color: readVar('--text', '#18211b'),
     fontFamily: 'Manrope, sans-serif',
@@ -44,7 +52,7 @@ const option = computed(() => ({
   yAxis: {
     type: 'value',
     axisLine: { lineStyle: { color: readVar('--border', '#d4ddd5') } },
-    splitLine: { lineStyle: { color: 'rgba(100, 116, 105, 0.24)' } },
+    splitLine: { lineStyle: { color: readVar('--chart-grid', 'rgba(100, 116, 105, 0.2)') } },
     axisLabel: { color: readVar('--muted', '#647469') },
   },
   series: [
@@ -53,7 +61,7 @@ const option = computed(() => ({
       type: 'line',
       smooth: true,
       symbol: 'none',
-      lineStyle: { width: 3, color: readVar('--primary', '#179a56') },
+      lineStyle: { width: 3, color: readVar('--chart-positive', '#179a56') },
       areaStyle: {
         color: {
           type: 'linear',
@@ -62,14 +70,15 @@ const option = computed(() => ({
           x2: 0,
           y2: 1,
           colorStops: [
-            { offset: 0, color: 'rgba(34, 197, 94, 0.34)' },
-            { offset: 1, color: 'rgba(34, 197, 94, 0.04)' },
+            { offset: 0, color: readVar('--chart-positive-soft', 'rgba(23, 154, 86, 0.34)') },
+            { offset: 1, color: readVar('--chart-positive-fade', 'rgba(23, 154, 86, 0.08)') },
           ],
         },
       },
     },
   ],
-}))
+}
+})
 </script>
 
 <template>

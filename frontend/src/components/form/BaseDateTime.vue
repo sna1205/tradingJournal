@@ -36,7 +36,12 @@ const dateValue = computed(() => valueText.value.slice(0, 10))
 const timeValue = computed(() => valueText.value.slice(11, 16))
 const dateControlId = computed(() => `${controlId.value}-date`)
 const timeControlId = computed(() => `${controlId.value}-time`)
-const controlClass = computed(() => ['field', props.size === 'sm' ? 'field-sm' : '', props.error ? 'field-invalid' : ''])
+const controlClass = computed(() => [
+  'field',
+  'control-modern',
+  props.size === 'sm' ? 'field-sm' : '',
+  props.error ? 'field-invalid' : '',
+])
 const minDate = computed(() => (props.min ? props.min.slice(0, 10) : ''))
 const maxDate = computed(() => (props.max ? props.max.slice(0, 10) : ''))
 const timeText = ref('')

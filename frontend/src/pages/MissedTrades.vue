@@ -122,7 +122,7 @@ function openEditPage(item: MissedTrade) {
 
 async function remove(id: number) {
   const confirmed = await uiStore.askConfirmation({
-    title: 'Delete missed trade entry?',
+    title: 'Delete missed setup entry?',
     message: 'This action cannot be undone.',
     confirmText: 'Delete',
     danger: true,
@@ -133,13 +133,13 @@ async function remove(id: number) {
     await missedTradeStore.deleteMissedTrade(id)
     uiStore.toast({
       type: 'success',
-      title: 'Missed trade deleted',
+      title: 'Missed setup deleted',
     })
   } catch {
     uiStore.toast({
       type: 'error',
       title: 'Delete failed',
-      message: 'Could not remove this missed trade entry.',
+      message: 'Could not remove this missed setup entry.',
     })
   }
 }
@@ -200,7 +200,7 @@ onMounted(async () => {
   } catch {
     uiStore.toast({
       type: 'error',
-      title: 'Failed to load missed trades',
+      title: 'Failed to load missed setups',
       message: 'Please refresh and try again.',
     })
   }
@@ -217,7 +217,7 @@ onMounted(async () => {
         </p>
       </GlassPanel>
       <GlassPanel class="metric-card">
-        <p class="kicker-label">Most Missed Model</p>
+        <p class="kicker-label">Most Missed Strategy</p>
         <p class="metric-value positive">{{ mostMissedModel }}</p>
       </GlassPanel>
       <GlassPanel class="metric-card">
@@ -228,11 +228,11 @@ onMounted(async () => {
 
     <GlassPanel class="missed-db-shell">
       <div class="section-head">
-        <h2 class="section-title text-white">Missed Trades</h2>
+        <h2 class="section-title">Missed Setups</h2>
         <div class="flex flex-wrap items-center gap-2">
           <button class="btn btn-primary inline-flex items-center gap-2 px-4 py-2 text-sm" @click="openAddPage">
             <Plus class="h-4 w-4" />
-            Add Missed Trade
+            Log Missed Setup
           </button>
           <button class="btn btn-ghost px-4 py-2 text-sm" @click="applyFilters">Apply</button>
           <button v-if="hasFilters" class="btn btn-ghost px-4 py-2 text-sm" @click="clearFilters">Reset</button>
@@ -264,7 +264,7 @@ onMounted(async () => {
 
       <EmptyState
         v-else-if="missedTrades.length === 0"
-        title="No missed trades yet"
+        title="No missed setups yet"
         description="Capture missed setups with tags to improve execution."
         :icon="CalendarX2"
       />
@@ -297,7 +297,7 @@ onMounted(async () => {
             </div>
             <span class="pill missed-db-pill-alert">
               <CircleAlert class="h-3.5 w-3.5" />
-              Missed
+              Uncaptured
             </span>
           </div>
 
@@ -309,7 +309,10 @@ onMounted(async () => {
           </div>
 
           <div class="mt-3">
-            <p class="kicker-label inline-flex items-center gap-1 text-[color-mix(in_srgb,#93c5fd_72%,#cbd5e1_28%)]">
+            <p
+              class="kicker-label inline-flex items-center gap-1"
+              :style="{ color: 'color-mix(in srgb, var(--primary) 68%, var(--muted) 32%)' }"
+            >
               <Tags class="h-3.5 w-3.5" />
               Reason Tags
             </p>

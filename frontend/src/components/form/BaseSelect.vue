@@ -42,7 +42,12 @@ const emit = defineEmits<{
 const fallbackId = useId()
 const controlId = computed(() => `select-${fallbackId}`)
 const currentValue = computed(() => props.modelValue ?? '')
-const controlClass = computed(() => ['field', props.size === 'sm' ? 'field-sm' : '', props.error ? 'field-invalid' : ''])
+const controlClass = computed(() => [
+  'field',
+  'control-modern',
+  props.size === 'sm' ? 'field-sm' : '',
+  props.error ? 'field-invalid' : '',
+])
 const rootRef = ref<HTMLElement | null>(null)
 const searchInputRef = ref<HTMLInputElement | null>(null)
 const isOpen = ref(false)
@@ -171,7 +176,7 @@ function badgeClass(badge: string | undefined) {
               ref="searchInputRef"
               v-model="searchTerm"
               type="text"
-              class="field select-search-input"
+              class="field control-modern select-search-input"
               :placeholder="searchPlaceholder"
               @keydown="onSearchKeydown"
             />

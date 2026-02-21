@@ -75,7 +75,7 @@ const missedTradeId = computed(() => {
   return Number.isInteger(value) && value > 0 ? value : null
 })
 const isEditMode = computed(() => missedTradeId.value !== null)
-const pageTitle = computed(() => (isEditMode.value ? 'Edit Missed Trade' : 'Add Missed Trade'))
+const pageTitle = computed(() => (isEditMode.value ? 'Edit Missed Setup' : 'Log Missed Setup'))
 
 const formErrors = computed<Record<string, string>>(() => {
   const errors: Record<string, string> = {}
@@ -340,7 +340,7 @@ async function submit() {
   if (firstError) {
     uiStore.toast({
       type: 'error',
-      title: 'Invalid missed trade input',
+      title: 'Invalid missed setup input',
       message: firstError,
     })
     return
@@ -355,13 +355,13 @@ async function submit() {
       savedEntry = await missedTradeStore.updateMissedTrade(missedTradeId.value, payload)
       uiStore.toast({
         type: 'success',
-        title: 'Missed trade updated',
+        title: 'Missed setup updated',
       })
     } else {
       savedEntry = await missedTradeStore.createMissedTrade(payload)
       uiStore.toast({
         type: 'success',
-        title: 'Missed trade logged',
+        title: 'Missed setup logged',
       })
     }
 
@@ -371,7 +371,7 @@ async function submit() {
       uiStore.toast({
         type: 'success',
         title: 'Images uploaded',
-        message: 'Screenshots were attached to this missed trade.',
+        message: 'Screenshots were attached to this missed setup.',
       })
     }
 
@@ -379,7 +379,7 @@ async function submit() {
   } catch (error) {
     uiStore.toast({
       type: 'error',
-      title: 'Failed to save missed trade',
+      title: 'Failed to save missed setup',
       message: extractErrorMessage(error),
     })
   }
@@ -389,7 +389,7 @@ async function deleteEntry() {
   if (!isEditMode.value || missedTradeId.value === null) return
 
   const confirmed = await uiStore.askConfirmation({
-    title: 'Delete missed trade entry?',
+    title: 'Delete missed setup entry?',
     message: 'This action cannot be undone.',
     confirmText: 'Delete',
     danger: true,
@@ -400,7 +400,7 @@ async function deleteEntry() {
     await missedTradeStore.deleteMissedTrade(missedTradeId.value)
     uiStore.toast({
       type: 'success',
-      title: 'Missed trade deleted',
+      title: 'Missed setup deleted',
     })
     void router.push('/missed-trades')
   } catch (error) {
@@ -425,7 +425,7 @@ async function loadEntryIfNeeded() {
   } catch {
     uiStore.toast({
       type: 'error',
-      title: 'Missed trade not found',
+      title: 'Missed setup not found',
       message: 'Could not load this entry for editing.',
     })
     void router.push('/missed-trades')
@@ -507,11 +507,11 @@ async function loadImage(file: File): Promise<HTMLImageElement> {
       <div class="section-head">
         <div>
           <h2 class="section-title">{{ pageTitle }}</h2>
-          <p class="section-note">Manage one missed trade entry per page for cleaner add/edit/delete flow.</p>
+          <p class="section-note">Capture skipped opportunities with tags, notes, and screenshots for review.</p>
         </div>
         <button type="button" class="btn btn-ghost inline-flex items-center gap-2 px-3 py-2 text-sm" @click="router.push('/missed-trades')">
           <ArrowLeft class="h-4 w-4" />
-          Back to Missed Trades
+          Back to Missed Setups
         </button>
       </div>
 
@@ -535,7 +535,7 @@ async function loadImage(file: File): Promise<HTMLImageElement> {
                 v-model="customTag"
                 type="text"
                 placeholder="discipline"
-                class="field mt-0 w-full"
+                class="field control-modern mt-0 w-full"
                 @keydown.enter.prevent="addCustomTag"
               />
               <button type="button" class="btn btn-ghost px-3 text-xs" @click="addCustomTag">Add</button>
@@ -608,7 +608,7 @@ async function loadImage(file: File): Promise<HTMLImageElement> {
                 ? 'Uploading images...'
                 : missedTradeStore.saving
                   ? 'Saving...'
-                  : isEditMode ? 'Update Entry' : 'Save Entry'
+                  : isEditMode ? 'Update Setup' : 'Save Setup'
             }}
           </button>
         </div>

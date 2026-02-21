@@ -115,7 +115,7 @@ async function openDetails(trade: Trade) {
     detailsOpen.value = false
     uiStore.toast({
       type: 'error',
-      title: 'Failed to load trade details',
+      title: 'Failed to load execution details',
       message: 'Please try again.',
     })
   } finally {
@@ -202,7 +202,7 @@ function truncateModel(value: string) {
 
 async function removeTrade(id: number) {
   const confirmed = await uiStore.askConfirmation({
-    title: 'Delete trade entry?',
+    title: 'Delete execution entry?',
     message: 'This action cannot be undone.',
     confirmText: 'Delete',
     danger: true,
@@ -213,13 +213,13 @@ async function removeTrade(id: number) {
     await tradeStore.deleteTrade(id)
     uiStore.toast({
       type: 'success',
-      title: 'Trade deleted',
+      title: 'Execution deleted',
     })
   } catch {
     uiStore.toast({
       type: 'error',
       title: 'Delete failed',
-      message: 'Could not remove this trade.',
+      message: 'Could not remove this execution.',
     })
   }
 }
@@ -254,7 +254,7 @@ onMounted(async () => {
   } catch {
     uiStore.toast({
       type: 'error',
-      title: 'Failed to load trades',
+      title: 'Failed to load trade log',
       message: 'Please refresh and try again.',
     })
   }
@@ -265,11 +265,11 @@ onMounted(async () => {
   <div class="space-y-6">
     <GlassPanel>
       <div class="section-head">
-        <h2 class="section-title">Trade Filters</h2>
+        <h2 class="section-title">Trade Log Filters</h2>
         <div class="flex flex-wrap items-center gap-2">
           <button class="btn btn-primary inline-flex items-center gap-2 px-4 py-2 text-sm" @click="openAddPage">
             <Plus class="h-4 w-4" />
-            Add Trade
+            New Execution
           </button>
           <button class="btn btn-ghost px-4 py-2 text-sm" @click="applyFilters">Apply</button>
           <button v-if="hasFilters" class="btn btn-ghost px-4 py-2 text-sm" @click="clearFilters">Reset</button>
@@ -308,7 +308,7 @@ onMounted(async () => {
 
     <section class="trade-db-shell panel p-4 md:p-5">
       <div class="section-head">
-        <h2 class="section-title text-white">Trades</h2>
+        <h2 class="section-title">Trade Log</h2>
         <p class="section-note">
           <span v-if="loading">Loading...</span>
           <span v-else><AnimatedNumber :value="pagination.total" /> records</span>
@@ -321,20 +321,20 @@ onMounted(async () => {
 
       <EmptyState
         v-else-if="trades.length === 0"
-        title="No trades found"
-        description="Add your first trade or adjust filters to see results."
+        title="No executions found"
+        description="Log your first execution or adjust filters to see results."
         :icon="BarChart3"
-        cta-text="Add Trade"
+        cta-text="New Execution"
         @cta="openAddPage"
       />
 
       <div v-else class="trade-db-grid">
         <article v-for="trade in trades" :key="trade.id" class="trade-db-card">
           <button type="button" class="trade-db-media" @click="openDetails(trade)">
-            <img
+              <img
               v-if="primaryTradeImage(trade)"
               :src="primaryTradeImage(trade)?.thumbnail_url || primaryTradeImage(trade)?.image_url"
-              :alt="`${trade.pair} chart`"
+              :alt="`${trade.pair} execution chart`"
               loading="lazy"
               class="trade-db-image"
               @error="setImageFallback($event, primaryTradeImage(trade)?.image_url)"
@@ -364,14 +364,18 @@ onMounted(async () => {
                 <CalendarDays class="h-3.5 w-3.5" />
                 {{ asDate(trade.date) }}
               </span>
-              <span class="trade-dot">•</span>
+              <span class="trade-dot">&bull;</span>
               <span class="trade-db-model">{{ truncateModel(trade.model) }}</span>
-              <span class="trade-dot">•</span>
+              <span class="trade-dot">&bull;</span>
               <span class="inline-flex items-center gap-1">
                 <Images class="h-3.5 w-3.5" />
                 {{ trade.images_count ?? trade.images?.length ?? 0 }}
               </span>
-              <span v-if="trade.notes" class="inline-flex items-center gap-1 text-amber-300">
+              <span
+                v-if="trade.notes"
+                class="inline-flex items-center gap-1"
+                :style="{ color: 'var(--warning)' }"
+              >
                 <Zap class="h-3.5 w-3.5" />
                 1
               </span>
@@ -380,7 +384,7 @@ onMounted(async () => {
             <div class="trade-db-actions">
               <button type="button" class="btn btn-ghost px-3 py-1.5 text-xs" @click="openDetails(trade)">
                 <Eye class="h-3.5 w-3.5" />
-                Open
+                View
               </button>
               <button type="button" class="btn btn-ghost px-3 py-1.5 text-xs" @click="openEditPage(trade)">
                 <Pencil class="h-3.5 w-3.5" />
@@ -414,7 +418,7 @@ onMounted(async () => {
       <div v-if="detailsOpen" class="trade-details-modal-backdrop" @click.self="closeDetails">
         <div class="trade-details-modal panel p-5">
           <div class="section-head">
-            <h3 class="section-title">Trade Details</h3>
+            <h3 class="section-title">Execution Details</h3>
             <button type="button" class="btn btn-ghost p-2" @click="closeDetails">
               <X class="h-4 w-4" />
             </button>
@@ -466,7 +470,7 @@ onMounted(async () => {
               </div>
 
               <div v-if="detailsImages.length === 0" class="panel p-4 text-sm muted">
-                No screenshots attached to this trade.
+                No screenshots attached to this execution.
               </div>
 
               <div v-else class="trade-image-grid">
@@ -479,7 +483,7 @@ onMounted(async () => {
                 >
                   <img
                     :src="image.thumbnail_url || image.image_url"
-                    alt="Trade screenshot thumbnail"
+                    alt="Execution screenshot thumbnail"
                     loading="lazy"
                     class="trade-image-thumb"
                     @error="setImageFallback($event, image.image_url)"
@@ -501,7 +505,7 @@ onMounted(async () => {
         <div class="trade-lightbox-content">
           <img
             :src="activeLightboxImage.image_url"
-            alt="Trade screenshot full"
+            alt="Execution screenshot full"
             class="trade-lightbox-image"
             :style="{ transform: `scale(${lightboxZoom})` }"
           />

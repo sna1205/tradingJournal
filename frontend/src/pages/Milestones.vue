@@ -37,11 +37,11 @@ const milestones = computed<MilestoneItem[]>(() => {
   return [
     {
       id: 'trades-100',
-      title: '100 Trades Completed',
-      description: 'Build execution consistency through completed trade volume.',
+      title: '100 Executions Logged',
+      description: 'Build consistency through complete and reviewable execution volume.',
       current: totalTrades,
       target: 100,
-      formatter: (value) => `${Math.round(value)} trades`,
+      formatter: (value) => `${Math.round(value)} executions`,
       accent: '#22C55E',
     },
     {
@@ -114,8 +114,8 @@ onMounted(async () => {
     <GlassPanel>
       <div class="section-head">
         <div>
-          <h2 class="text-xl font-bold">Milestones</h2>
-          <p class="section-note">Progress toward key trading discipline and performance targets.</p>
+          <h2 class="text-xl font-bold">Progress &amp; Targets</h2>
+          <p class="section-note">Track progress against execution, discipline, and performance objectives.</p>
         </div>
         <span class="pill">
           {{ loading ? 'Refreshing...' : currentMonthLabel }}
@@ -128,8 +128,8 @@ onMounted(async () => {
 
       <EmptyState
         v-else-if="!overview"
-        title="No milestone data yet"
-        description="Add trades to start tracking milestone progress."
+        title="No progress data yet"
+        description="Log executions to start tracking target progress."
       />
 
       <div v-else class="grid grid-premium md:grid-cols-3">
@@ -173,7 +173,7 @@ onMounted(async () => {
     <GlassPanel>
       <div class="mb-4 flex items-center gap-2">
         <Award class="h-5 w-5 text-[var(--primary)]" />
-        <h3 class="text-lg font-bold">Completed Badges</h3>
+        <h3 class="text-lg font-bold">Completed Targets</h3>
       </div>
 
       <div v-if="completedMilestones.length > 0" class="flex flex-wrap gap-3">
@@ -192,7 +192,7 @@ onMounted(async () => {
         </div>
       </div>
       <p v-else class="text-sm muted">
-        No milestone completed yet. Keep executing your setup rules.
+        No targets completed yet. Keep executing with discipline.
       </p>
     </GlassPanel>
   </div>

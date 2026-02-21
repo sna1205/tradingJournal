@@ -147,6 +147,11 @@ export interface BehavioralPayload {
   }
 }
 
+export interface AnalyticsRangeFilters {
+  date_from?: string
+  date_to?: string
+}
+
 interface BreakdownPoint {
   pnl: number
   trade_count: number
@@ -280,9 +285,9 @@ export const useAnalyticsStore = defineStore('analytics', () => {
     }
   })
 
-  async function fetchAnalytics() {
+  async function fetchAnalytics(filters?: AnalyticsRangeFilters) {
     loading.value = true
-    const params = analyticsQueryParams(accountStore.selectedAccountId)
+    const params = analyticsQueryParams(accountStore.selectedAccountId, filters)
 
     try {
       const [
@@ -485,10 +490,23 @@ export const useAnalyticsStore = defineStore('analytics', () => {
   }
 })
 
-function analyticsQueryParams(selectedAccountId: number | null): Record<string, number> | undefined {
-  if (selectedAccountId === null) return undefined
+function analyticsQueryParams(
+  selectedAccountId: number | null,
+  filters?: AnalyticsRangeFilters
+): Record<string, number | string> | undefined {
+  const params: Record<string, number | string> = {}
 
-  return {
-    account_id: selectedAccountId,
+  if (selectedAccountId !== null) {
+    params.account_id = selectedAccountId
   }
+
+  if (filters?.date_from) {
+    params.date_from = filters.date_from
+  }
+
+  if (filters?.date_to) {
+    params.date_to = filters.date_to
+  }
+
+  return Object.keys(params).length > 0 ? params : undefined
 }

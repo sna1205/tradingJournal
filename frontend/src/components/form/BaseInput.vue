@@ -38,7 +38,12 @@ const emit = defineEmits<{
 const fallbackId = useId()
 const controlId = computed(() => `field-${fallbackId}`)
 const valueText = computed(() => `${props.modelValue ?? ''}`)
-const controlClass = computed(() => ['field', props.size === 'sm' ? 'field-sm' : '', props.error ? 'field-invalid' : ''])
+const controlClass = computed(() => [
+  'field',
+  'control-modern',
+  props.size === 'sm' ? 'field-sm' : '',
+  props.error ? 'field-invalid' : '',
+])
 
 function onInput(event: Event) {
   const target = event.target as HTMLInputElement | HTMLTextAreaElement

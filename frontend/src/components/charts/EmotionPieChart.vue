@@ -1,5 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
+import { storeToRefs } from 'pinia'
+import { useUiStore } from '@/stores/uiStore'
 
 interface EmotionSlice {
   emotion: string
@@ -25,7 +27,13 @@ function readVar(name: string, fallback: string) {
 
 const palette = ['#179a56', '#2f80ed', '#f0b74c', '#d94646', '#7c5cff', '#20b2aa', '#fb7185']
 
-const option = computed(() => ({
+const uiStore = useUiStore()
+const { theme } = storeToRefs(uiStore)
+
+const option = computed(() => {
+  void theme.value
+
+  return {
   textStyle: {
     color: readVar('--text', '#18211b'),
     fontFamily: 'Manrope, sans-serif',
@@ -65,10 +73,10 @@ const option = computed(() => ({
       })),
     },
   ],
-}))
+}
+})
 </script>
 
 <template>
   <VChart :option="option" autoresize :class="heightClass" />
 </template>
-

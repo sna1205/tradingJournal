@@ -88,7 +88,7 @@ const tradeId = computed(() => {
   return Number.isInteger(value) && value > 0 ? value : null
 })
 const isEditMode = computed(() => tradeId.value !== null)
-const pageTitle = computed(() => (isEditMode.value ? 'Edit Trade' : 'Add Trade'))
+const pageTitle = computed(() => (isEditMode.value ? 'Edit Execution' : 'New Execution'))
 const closeDateMax = computed(() => maxDateTime(nowLocalDateTime(), form.date || ''))
 const totalImageCount = computed(() => existingImages.value.length + pendingImages.value.length)
 const totalImageSize = computed(() => {
@@ -379,7 +379,7 @@ async function submitForm() {
   if (firstError) {
     uiStore.toast({
       type: 'error',
-      title: 'Invalid trade input',
+      title: 'Invalid execution input',
       message: firstError,
     })
     return
@@ -400,17 +400,17 @@ async function submitForm() {
 
     uiStore.toast({
       type: 'success',
-      title: isEditMode.value ? 'Trade updated' : 'Trade added',
+      title: isEditMode.value ? 'Execution updated' : 'Execution logged',
       message: hadPendingImages
         ? `${payload.symbol} saved with images.`
-        : `${payload.symbol} has been saved to your journal.`,
+        : `${payload.symbol} has been saved to your execution journal.`,
     })
 
     void router.push('/trades')
   } catch (error) {
     uiStore.toast({
       type: 'error',
-      title: 'Failed to save trade',
+      title: 'Failed to save execution',
       message: extractErrorMessage(error),
     })
   }
@@ -432,8 +432,8 @@ async function loadTradeIfNeeded() {
   } catch {
     uiStore.toast({
       type: 'error',
-      title: 'Trade not found',
-      message: 'Could not load this trade for editing.',
+      title: 'Execution not found',
+      message: 'Could not load this execution for editing.',
     })
     void router.push('/trades')
   } finally {
@@ -528,11 +528,11 @@ async function loadImage(file: File): Promise<HTMLImageElement> {
       <div class="section-head">
         <div>
           <h2 class="section-title">{{ pageTitle }}</h2>
-          <p class="section-note">Drop-downs and date controls are optimized for faster entry and cleaner flow.</p>
+          <p class="section-note">Execution ticket with server-side risk math and cleaner data entry flow.</p>
         </div>
         <button type="button" class="btn btn-ghost inline-flex items-center gap-2 px-3 py-2 text-sm" @click="router.push('/trades')">
           <ArrowLeft class="h-4 w-4" />
-          Back to Trades
+          Back to Trade Log
         </button>
       </div>
 
@@ -544,7 +544,7 @@ async function loadImage(file: File): Promise<HTMLImageElement> {
 
       <form v-else class="form-block space-y-4" @submit.prevent="submitForm">
         <p class="text-sm muted">
-          Profit/Loss, R-Multiple, Risk %, and account balance after trade are calculated server-side.
+          Profit/Loss, R-Multiple, Risk %, and account balance after execution are calculated server-side.
         </p>
 
         <section class="trade-form-section">
@@ -639,7 +639,7 @@ async function loadImage(file: File): Promise<HTMLImageElement> {
           <p class="trade-section-title">Notes</p>
           <BaseInput
             v-model="form.notes"
-            label="Trade Notes"
+            label="Execution Notes"
             multiline
             :rows="3"
             placeholder="Context, setup quality, execution notes..."
@@ -668,7 +668,7 @@ async function loadImage(file: File): Promise<HTMLImageElement> {
                 ? 'Uploading images...'
                 : tradeStore.saving
                   ? 'Saving...'
-                  : isEditMode ? 'Update Trade' : 'Save Trade'
+                  : isEditMode ? 'Update Execution' : 'Save Execution'
             }}
           </button>
         </div>

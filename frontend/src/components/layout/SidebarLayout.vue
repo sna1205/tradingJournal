@@ -1,165 +1,181 @@
 <script setup lang="ts">
-import { computed, onMounted } from 'vue'
+import { computed } from 'vue'
 import { RouterLink, RouterView, useRoute } from 'vue-router'
 import {
-  BarChart3,
-  Flag,
+  LayoutDashboard,
+  ClipboardList,
+  SearchCheck,
+  Goal,
   LineChart,
   Moon,
-  NotebookText,
+  Sparkles,
   Sun,
   WalletCards,
+  ChevronRight,
 } from 'lucide-vue-next'
 import { storeToRefs } from 'pinia'
-import BaseSelect from '@/components/form/BaseSelect.vue'
-import { useAccountStore } from '@/stores/accountStore'
 import { useUiStore } from '@/stores/uiStore'
 
 const route = useRoute()
 const uiStore = useUiStore()
-const accountStore = useAccountStore()
 const { theme } = storeToRefs(uiStore)
-const { accounts, selectedAccountId } = storeToRefs(accountStore)
 
-const navItems = [
+interface NavItem {
+  label: string
+  to: string
+  icon: unknown
+  title: string
+  subtitle: string
+  navHint: string
+}
+
+interface NavSection {
+  label: string
+  items: NavItem[]
+}
+
+const navSections: NavSection[] = [
   {
-    label: 'Analytics',
-    to: '/dashboard',
-    icon: LineChart,
-    title: 'Trade Journal + Analytics',
-    subtitle: 'Review execution quality, performance patterns, and consistency at a glance.',
+    label: 'Journal',
+    items: [
+      {
+        label: 'Overview',
+        to: '/dashboard',
+        icon: LayoutDashboard,
+        title: 'Portfolio Overview',
+        subtitle: 'Monitor equity, risk, and execution quality across your full book.',
+        navHint: 'KPI + charts',
+      },
+      {
+        label: 'Trade Log',
+        to: '/trades',
+        icon: ClipboardList,
+        title: 'Trade Log',
+        subtitle: 'Search, review, and maintain your full execution history.',
+        navHint: 'Executions',
+      },
+      {
+        label: 'Missed Setups',
+        to: '/missed-trades',
+        icon: SearchCheck,
+        title: 'Missed Setups',
+        subtitle: 'Capture skipped opportunities and convert misses into process improvements.',
+        navHint: 'Opportunity review',
+      },
+    ],
   },
   {
-    label: 'Trades DB',
-    to: '/trades',
-    icon: NotebookText,
-    title: 'Trades Database',
-    subtitle: 'Search, review, and maintain your complete trade history.',
-  },
-  {
-    label: 'Missed Trades DB',
-    to: '/missed-trades',
-    icon: BarChart3,
-    title: 'Missed Trades Database',
-    subtitle: 'Capture skipped setups and convert patterns into actionable improvements.',
-  },
-  {
-    label: 'Accounts',
-    to: '/accounts',
-    icon: WalletCards,
-    title: 'Accounts',
-    subtitle: 'Manage trading accounts and monitor account-level equity and drawdown.',
-  },
-  {
-    label: 'Milestones',
-    to: '/milestones',
-    icon: Flag,
-    title: 'Milestones',
-    subtitle: 'Track progress toward your discipline and performance targets.',
+    label: 'Management',
+    items: [
+      {
+        label: 'Accounts',
+        to: '/accounts',
+        icon: WalletCards,
+        title: 'Account Center',
+        subtitle: 'Manage accounts and track account-level equity, return, and drawdown.',
+        navHint: 'Balance control',
+      },
+      {
+        label: 'Progress',
+        to: '/progress',
+        icon: Goal,
+        title: 'Progress & Targets',
+        subtitle: 'Track execution milestones and long-term performance objectives.',
+        navHint: 'Targets',
+      },
+    ],
   },
 ]
 
+const navItems = computed(() => navSections.flatMap((section) => section.items))
 const currentItem = computed(() =>
-  navItems.find((item) => route.path === item.to || route.path.startsWith(`${item.to}/`)) ?? navItems[0]!
+  navItems.value.find((item) => route.path === item.to || route.path.startsWith(`${item.to}/`)) ?? navItems.value[0]!
 )
-
-const accountOptions = computed(() => [
-  {
-    label: 'All Accounts (Portfolio)',
-    value: '',
-    subtitle: 'Aggregate analytics',
-    badge: 'portfolio',
-  },
-  ...accounts.value.map((account) => ({
-    label: account.name,
-    value: String(account.id),
-    subtitle: `${account.broker} - ${account.currency} ${Number(account.current_balance).toLocaleString()}${account.is_active ? '' : ' - inactive'}`,
-    badge: account.account_type,
-  })),
-])
-
-const selectedAccountModel = computed({
-  get: () => (selectedAccountId.value === null ? '' : String(selectedAccountId.value)),
-  set: (value: string) => {
-    if (!value) {
-      accountStore.setSelectedAccountId(null)
-      return
-    }
-
-    accountStore.setSelectedAccountId(Number(value))
-  },
-})
-
-onMounted(async () => {
-  if (accounts.value.length > 0) return
-  try {
-    await accountStore.fetchAccounts()
-  } catch {
-    // Layout should stay functional even if accounts fail to load.
-  }
-})
+const showPageHero = computed(() => currentItem.value.to !== '/dashboard')
 </script>
 
 <template>
   <div class="app-shell">
-    <header class="topbar motion-fade-scale">
-      <div class="brand">
-        <div class="brand-mark">
-          <LineChart class="h-5 w-5" />
+    <div class="workspace-owner-badge motion-fade-scale">IZ | WAGMI</div>
+
+    <div class="workspace-shell">
+      <aside class="workspace-sidebar panel motion-fade-scale">
+        <div class="workspace-sidebar-head">
+          <div class="brand">
+            <div class="brand-mark">
+              <LineChart class="h-5 w-5" />
+            </div>
+            <div>
+              <p class="brand-label">Professional Desk</p>
+              <p class="brand-name">Execution Journal</p>
+            </div>
+          </div>
+          <p class="workspace-sidebar-note">
+            Structured for decision speed: risk first, execution second, review always.
+          </p>
         </div>
-        <div>
-          <p class="brand-label">Trading Workspace</p>
-          <p class="brand-name">Trading Journal</p>
+
+        <nav class="workspace-nav">
+          <section v-for="section in navSections" :key="section.label" class="workspace-nav-section">
+            <p class="workspace-nav-label">{{ section.label }}</p>
+            <RouterLink
+              v-for="item in section.items"
+              :key="item.to"
+              :to="item.to"
+              class="workspace-nav-link"
+              active-class="is-active"
+            >
+              <span class="workspace-nav-icon">
+                <component :is="item.icon" class="h-4 w-4" />
+              </span>
+              <span class="workspace-nav-copy">
+                <span>{{ item.label }}</span>
+                <small>{{ item.navHint }}</small>
+              </span>
+              <ChevronRight class="workspace-nav-arrow h-3.5 w-3.5" />
+            </RouterLink>
+          </section>
+        </nav>
+
+        <div class="workspace-sidebar-foot">
+          <span class="pill pill-positive">
+            <Sparkles class="h-3.5 w-3.5" />
+            Process over outcome
+          </span>
         </div>
-      </div>
+      </aside>
 
-      <div class="topbar-actions">
-        <BaseSelect
-          v-model="selectedAccountModel"
-          label="Account Scope"
-          class="topbar-account-selector"
-          searchable
-          search-placeholder="Search account..."
-          :options="accountOptions"
-          size="sm"
-        />
+      <section class="workspace-main">
+        <header class="topbar motion-fade-scale">
+          <div class="topbar-kicker">
+            <span class="kicker-label">Workspace</span>
+            <span class="topbar-active">{{ currentItem.label }}</span>
+          </div>
 
-        <button class="btn btn-ghost inline-flex items-center gap-2 px-3 py-2 text-sm" @click="uiStore.toggleTheme()">
-          <Sun v-if="theme === 'dark'" class="h-4 w-4" />
-          <Moon v-else class="h-4 w-4" />
-          {{ theme === 'dark' ? 'Light' : 'Dark' }}
-        </button>
-      </div>
-    </header>
+          <div class="topbar-actions">
+            <button class="btn btn-ghost inline-flex items-center gap-2 px-3 py-2 text-sm" @click="uiStore.toggleTheme()">
+              <Sun v-if="theme === 'dark'" class="h-4 w-4" />
+              <Moon v-else class="h-4 w-4" />
+              {{ theme === 'dark' ? 'Light' : 'Dark' }}
+            </button>
+          </div>
+        </header>
 
-    <div class="mt-8 motion-fade-scale">
-      <p class="page-kicker">Journal Suite</p>
-      <h1 class="page-title">{{ currentItem.title }}</h1>
-      <p class="page-subtitle">{{ currentItem.subtitle }}</p>
+        <div v-if="showPageHero" class="mt-8 motion-fade-scale">
+          <p class="page-kicker">Execution Suite</p>
+          <h1 class="page-title">{{ currentItem.title }}</h1>
+          <p class="page-subtitle">{{ currentItem.subtitle }}</p>
+        </div>
+
+        <main :class="showPageHero ? 'mt-6' : 'mt-2'">
+          <RouterView v-slot="{ Component }">
+            <Transition name="page" mode="out-in">
+              <component :is="Component" :key="route.fullPath" />
+            </Transition>
+          </RouterView>
+        </main>
+      </section>
     </div>
-
-    <nav class="tab-strip motion-fade-scale">
-      <div class="tab-grid">
-        <RouterLink
-          v-for="item in navItems"
-          :key="item.to"
-          :to="item.to"
-          class="tab-link"
-          active-class="is-active"
-        >
-          <component :is="item.icon" class="h-4 w-4" />
-          <span>{{ item.label }}</span>
-        </RouterLink>
-      </div>
-    </nav>
-
-    <main class="mt-6">
-      <RouterView v-slot="{ Component }">
-        <Transition name="page" mode="out-in">
-          <component :is="Component" :key="route.fullPath" />
-        </Transition>
-      </RouterView>
-    </main>
 
     <nav class="mobile-nav">
       <RouterLink

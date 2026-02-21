@@ -34,7 +34,7 @@ const cards = computed<SummaryCard[]>(() => {
 
   return [
     {
-      label: 'Total PnL',
+      label: 'Net P&L',
       value: props.summary.total_pnl,
       decimals: 2,
       prefix: '$',

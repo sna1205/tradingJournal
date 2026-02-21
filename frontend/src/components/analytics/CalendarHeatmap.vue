@@ -23,6 +23,10 @@ interface MonthGrid {
   weeks: Array<Array<DayCell | null>>
 }
 
+const props = defineProps<{
+  monthKey?: string
+}>()
+
 const loading = ref(false)
 const rows = ref<DailyAnalyticsRow[]>([])
 
@@ -58,10 +62,11 @@ const maxAbsPnl = computed(() => {
   return max
 })
 
-const currentMonth = computed<MonthGrid>(() => {
-  const now = new Date()
-  return buildMonthGrid(now.getFullYear(), now.getMonth())
-})
+const activeMonthDate = computed(() => parseMonthKey(props.monthKey) ?? new Date())
+
+const currentMonth = computed<MonthGrid>(() =>
+  buildMonthGrid(activeMonthDate.value.getFullYear(), activeMonthDate.value.getMonth())
+)
 
 async function fetchDailyAnalytics() {
   loading.value = true
@@ -161,10 +166,10 @@ function tooltipText(cell: DayCell | null): string {
   })
 
   if (cell.trades === 0) {
-    return `${dateLabel}\nNo trades`
+    return `${dateLabel}\nNo executions`
   }
 
-  return `${dateLabel}\nTrades: ${cell.trades}\nP&L: ${asSignedCurrency(cell.pnl)}`
+  return `${dateLabel}\nExecutions: ${cell.trades}\nP&L: ${asSignedCurrency(cell.pnl)}`
 }
 
 function toLocalDate(value: string): Date {
@@ -197,6 +202,20 @@ function normalizeDateKey(value: string): string {
   return value
 }
 
+function parseMonthKey(value: string | undefined): Date | null {
+  if (!value) return null
+  const matched = value.match(/^(\d{4})-(\d{2})$/)
+  if (!matched) return null
+
+  const year = Number(matched[1])
+  const month = Number(matched[2])
+  if (!Number.isInteger(year) || !Number.isInteger(month) || month < 1 || month > 12) {
+    return null
+  }
+
+  return new Date(year, month - 1, 1)
+}
+
 onMounted(async () => {
   await fetchDailyAnalytics()
 })
@@ -205,7 +224,7 @@ onMounted(async () => {
 <template>
   <div class="space-y-4">
     <div class="flex flex-wrap items-center gap-3 text-xs">
-      <span class="pill">No trade</span>
+      <span class="pill">No execution</span>
       <span class="pill pill-positive">Profit</span>
       <span class="pill pill-negative">Loss</span>
       <span v-if="loading" class="muted">Loading heatmap...</span>
@@ -233,7 +252,7 @@ onMounted(async () => {
             >
               <template v-if="cell">
                 <p class="text-[11px] font-semibold">{{ cell.day }}</p>
-                <p v-if="cell.trades > 0" class="mt-1 text-[10px]">{{ cell.trades }} trades</p>
+                <p v-if="cell.trades > 0" class="mt-1 text-[10px]">{{ cell.trades }} executions</p>
                 <p v-if="cell.trades > 0" class="text-[10px] font-semibold" :class="cell.pnl >= 0 ? 'positive' : 'negative'">
                   {{ asSignedCurrency(cell.pnl) }}
                 </p>
@@ -245,7 +264,7 @@ onMounted(async () => {
                 style="border-color: var(--border); background: var(--panel); color: var(--text)"
               >
                 <p class="font-semibold">{{ toLocalDate(cell.date).toLocaleDateString() }}</p>
-                <p class="muted">Trades: {{ cell.trades }}</p>
+                <p class="muted">Executions: {{ cell.trades }}</p>
                 <p :class="cell.pnl >= 0 ? 'positive' : 'negative'">P&amp;L: {{ asSignedCurrency(cell.pnl) }}</p>
               </div>
             </div>

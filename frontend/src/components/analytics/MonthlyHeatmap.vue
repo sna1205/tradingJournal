@@ -186,7 +186,7 @@ function cellStyle(cell: HeatmapCell) {
         class="min-h-[56px] rounded-lg border p-1.5 text-[11px]"
         :style="cellStyle(cell)"
         :title="cell.day
-          ? `${cell.day.close_date} | Trades: ${cell.day.number_of_trades} | PnL: ${cell.day.total_profit}`
+          ? `${cell.day.close_date} | Executions: ${cell.day.number_of_trades} | PnL: ${cell.day.total_profit}`
           : ''"
       >
         <template v-if="!cell.padding">
@@ -201,7 +201,7 @@ function cellStyle(cell: HeatmapCell) {
   </article>
 
   <p v-if="prepared.days.length === 0" class="text-xs muted">
-    No closed trades for this month.
+    No closed executions for this month.
   </p>
 
 </template>

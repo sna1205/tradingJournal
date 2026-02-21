@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { computed } from 'vue'
+import { storeToRefs } from 'pinia'
 import type { PerformanceProfile } from '@/stores/analyticsStore'
+import { useUiStore } from '@/stores/uiStore'
 
 const props = defineProps<{
   profile: PerformanceProfile | null
@@ -31,7 +33,13 @@ function readVar(name: string, fallback: string) {
   return value || fallback
 }
 
-const option = computed(() => ({
+const uiStore = useUiStore()
+const { theme } = storeToRefs(uiStore)
+
+const option = computed(() => {
+  void theme.value
+
+  return {
   textStyle: {
     color: readVar('--text', '#18211b'),
     fontFamily: 'Manrope, sans-serif',
@@ -50,10 +58,13 @@ const option = computed(() => ({
     splitNumber: 4,
     axisName: { color: readVar('--muted', '#647469'), fontSize: 11 },
     axisLine: { lineStyle: { color: readVar('--border', '#d4ddd5') } },
-    splitLine: { lineStyle: { color: 'rgba(100, 116, 105, 0.3)' } },
+    splitLine: { lineStyle: { color: readVar('--chart-grid', 'rgba(100, 116, 105, 0.2)') } },
     splitArea: {
       areaStyle: {
-        color: ['rgba(255, 255, 255, 0.4)', 'rgba(232, 237, 229, 0.55)'],
+        color: [
+          readVar('--chart-radar-split-a', 'rgba(255, 255, 255, 0.44)'),
+          readVar('--chart-radar-split-b', 'rgba(232, 237, 229, 0.58)'),
+        ],
       },
     },
     indicator: [
@@ -86,8 +97,8 @@ const option = computed(() => ({
               x2: 1,
               y2: 1,
               colorStops: [
-                { offset: 0, color: 'rgba(34, 197, 94, 0.42)' },
-                { offset: 1, color: 'rgba(34, 197, 94, 0.08)' },
+                { offset: 0, color: readVar('--chart-positive-soft', 'rgba(23, 154, 86, 0.34)') },
+                { offset: 1, color: readVar('--chart-positive-fade', 'rgba(23, 154, 86, 0.08)') },
               ],
             },
           },
@@ -95,7 +106,8 @@ const option = computed(() => ({
       ],
     },
   ],
-}))
+}
+})
 </script>
 
 <template>

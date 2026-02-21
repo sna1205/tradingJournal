@@ -1,5 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
+import { storeToRefs } from 'pinia'
+import { useUiStore } from '@/stores/uiStore'
 
 interface SessionRow {
   session?: string
@@ -22,7 +24,13 @@ function readVar(name: string, fallback: string) {
   return value || fallback
 }
 
-const option = computed(() => ({
+const uiStore = useUiStore()
+const { theme } = storeToRefs(uiStore)
+
+const option = computed(() => {
+  void theme.value
+
+  return {
   textStyle: {
     color: readVar('--text', '#18211b'),
     fontFamily: 'Manrope, sans-serif',
@@ -44,7 +52,7 @@ const option = computed(() => ({
     type: 'value',
     axisLabel: { color: readVar('--muted', '#647469') },
     axisLine: { lineStyle: { color: readVar('--border', '#d4ddd5') } },
-    splitLine: { lineStyle: { color: 'rgba(100, 116, 105, 0.2)' } },
+    splitLine: { lineStyle: { color: readVar('--chart-grid', 'rgba(100, 116, 105, 0.2)') } },
   },
   series: [
     {
@@ -54,14 +62,16 @@ const option = computed(() => ({
       itemStyle: {
         borderRadius: [7, 7, 0, 0],
         color: (params: { value: number }) =>
-          Number(params.value) >= 0 ? 'rgba(23, 154, 86, 0.86)' : 'rgba(217, 70, 70, 0.82)',
+          Number(params.value) >= 0
+            ? readVar('--chart-positive', '#179a56')
+            : readVar('--chart-negative', '#d94646'),
       },
     },
   ],
-}))
+}
+})
 </script>
 
 <template>
   <VChart :option="option" autoresize :class="heightClass" />
 </template>
-
