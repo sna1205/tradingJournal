@@ -34,7 +34,7 @@ const cards = computed<SummaryCard[]>(() => {
 
   return [
     {
-      label: 'Total PnL',
+      label: 'Net P&L',
       value: props.summary.total_pnl,
       decimals: 2,
       prefix: '$',
@@ -91,11 +91,10 @@ const cards = computed<SummaryCard[]>(() => {
       :highlight-color="card.highlightColor"
     >
       <p
-        class="text-2xl font-bold"
+        class="value value-display"
         :class="{
-          'text-emerald-400': card.tone === 'positive',
-          'text-rose-400': card.tone === 'negative',
-          'text-slate-100': card.tone === 'neutral',
+          positive: card.tone === 'positive',
+          negative: card.tone === 'negative',
         }"
       >
         <AnimatedNumber
@@ -106,7 +105,7 @@ const cards = computed<SummaryCard[]>(() => {
           :suffix="card.suffix"
           :sign="card.sign"
         />
-        <span v-else>-</span>
+        <span v-else class="muted">-</span>
       </p>
     </Card>
   </section>

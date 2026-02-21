@@ -1,7 +1,7 @@
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import api from '@/services/api'
-import type { MissedTrade, Paginated } from '@/types/trade'
+import type { MissedTrade, MissedTradeImage, Paginated } from '@/types/trade'
 
 interface MissedTradeFilters {
   pair: string
@@ -70,8 +70,9 @@ export const useMissedTradeStore = defineStore('missed-trades', () => {
   async function createMissedTrade(payload: MissedTradePayload) {
     saving.value = true
     try {
-      await api.post('/missed-trades', payload)
+      const { data } = await api.post<MissedTrade>('/missed-trades', payload)
       await fetchMissedTrades(1)
+      return data
     } finally {
       saving.value = false
     }
@@ -80,8 +81,9 @@ export const useMissedTradeStore = defineStore('missed-trades', () => {
   async function updateMissedTrade(id: number, payload: Partial<MissedTradePayload>) {
     saving.value = true
     try {
-      await api.put(`/missed-trades/${id}`, payload)
+      const { data } = await api.put<MissedTrade>(`/missed-trades/${id}`, payload)
       await fetchMissedTrades(pagination.value.current_page)
+      return data
     } finally {
       saving.value = false
     }
@@ -90,6 +92,43 @@ export const useMissedTradeStore = defineStore('missed-trades', () => {
   async function deleteMissedTrade(id: number) {
     await api.delete(`/missed-trades/${id}`)
     await fetchMissedTrades(pagination.value.current_page)
+  }
+
+  async function fetchMissedTrade(id: number) {
+    const { data } = await api.get<MissedTrade>(`/missed-trades/${id}`)
+    return data
+  }
+
+  async function uploadMissedTradeImage(
+    missedTradeId: number,
+    file: File,
+    sortOrder?: number,
+    onProgress?: (percent: number) => void
+  ): Promise<MissedTradeImage> {
+    const formData = new FormData()
+    formData.append('image', file)
+    if (typeof sortOrder === 'number') {
+      formData.append('sort_order', String(sortOrder))
+    }
+
+    const { data } = await api.post<MissedTradeImage>(`/missed-trades/${missedTradeId}/images`, formData, {
+      headers: {
+        'Content-Type': 'multipart/form-data',
+      },
+      onUploadProgress: (progressEvent) => {
+        if (!onProgress) return
+        const total = progressEvent.total ?? 0
+        if (total <= 0) return
+        const value = Math.round((progressEvent.loaded / total) * 100)
+        onProgress(Math.max(0, Math.min(100, value)))
+      },
+    })
+
+    return data
+  }
+
+  async function deleteMissedTradeImage(imageId: number) {
+    await api.delete(`/missed-trade-images/${imageId}`)
   }
 
   function resetFilters() {
@@ -108,6 +147,9 @@ export const useMissedTradeStore = defineStore('missed-trades', () => {
     createMissedTrade,
     updateMissedTrade,
     deleteMissedTrade,
+    fetchMissedTrade,
+    uploadMissedTradeImage,
+    deleteMissedTradeImage,
     resetFilters,
   }
 })

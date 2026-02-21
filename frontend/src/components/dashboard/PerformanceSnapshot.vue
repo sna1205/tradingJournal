@@ -11,29 +11,46 @@ defineProps<{
 <template>
   <div>
     <h2 class="text-lg font-bold">Performance Snapshot</h2>
-    <p class="mt-2 text-sm text-slate-300">
+    <p class="mt-2 text-sm muted">
       Closed trades: <span class="font-semibold">{{ summary?.closed_trades ?? 0 }}</span>
     </p>
-    <p class="mt-1 text-sm text-slate-300">
+    <p class="mt-1 text-sm muted">
       Best symbol:
       <span class="font-semibold">{{ bestSymbol?.symbol ?? '-' }}</span>
-      <span class="ml-2 text-xs text-cyan-300">{{ bestSymbol ? asSignedCurrency(bestSymbol.pnl) : '' }}</span>
+      <span
+        class="ml-2 text-xs"
+        :style="{ color: 'color-mix(in srgb, var(--chart-cyan) 82%, var(--text) 18%)' }"
+      >
+        {{ bestSymbol ? asSignedCurrency(bestSymbol.pnl) : '' }}
+      </span>
     </p>
     <div class="mt-4 grid grid-cols-2 gap-3 text-sm">
-      <div class="rounded-lg border border-emerald-300/20 bg-emerald-300/10 p-3">
-        <p class="text-slate-300">Gross Profit</p>
-        <p class="mt-1 font-semibold text-emerald-300">{{ asCurrency(summary?.gross_profit) }}</p>
+      <div
+        class="rounded-lg border p-3"
+        :style="{
+          borderColor: 'color-mix(in srgb, var(--primary) 40%, var(--border) 60%)',
+          background: 'color-mix(in srgb, var(--primary-soft) 76%, var(--panel) 24%)',
+        }"
+      >
+        <p class="muted">Gross Profit</p>
+        <p class="mt-1 font-semibold positive">{{ asCurrency(summary?.gross_profit) }}</p>
       </div>
-      <div class="rounded-lg border border-rose-300/20 bg-rose-300/10 p-3">
-        <p class="text-slate-300">Gross Loss</p>
-        <p class="mt-1 font-semibold text-rose-300">{{ asCurrency(summary?.gross_loss) }}</p>
+      <div
+        class="rounded-lg border p-3"
+        :style="{
+          borderColor: 'color-mix(in srgb, var(--danger) 40%, var(--border) 60%)',
+          background: 'color-mix(in srgb, var(--danger-soft) 78%, var(--panel) 22%)',
+        }"
+      >
+        <p class="muted">Gross Loss</p>
+        <p class="mt-1 font-semibold negative">{{ asCurrency(summary?.gross_loss) }}</p>
       </div>
-      <div class="rounded-lg border border-slate-700/80 bg-slate-900/50 p-3">
-        <p class="text-slate-300">Avg Win</p>
+      <div class="rounded-lg border p-3" :style="{ borderColor: 'var(--border)', background: 'var(--panel-soft)' }">
+        <p class="muted">Avg Win</p>
         <p class="mt-1 font-semibold">{{ asCurrency(summary?.avg_win) }}</p>
       </div>
-      <div class="rounded-lg border border-slate-700/80 bg-slate-900/50 p-3">
-        <p class="text-slate-300">Avg Loss</p>
+      <div class="rounded-lg border p-3" :style="{ borderColor: 'var(--border)', background: 'var(--panel-soft)' }">
+        <p class="muted">Avg Loss</p>
         <p class="mt-1 font-semibold">{{ asCurrency(summary?.avg_loss) }}</p>
       </div>
     </div>

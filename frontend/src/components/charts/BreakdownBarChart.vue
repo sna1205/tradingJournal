@@ -1,5 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
+import { storeToRefs } from 'pinia'
+import { useUiStore } from '@/stores/uiStore'
 
 const props = withDefaults(
   defineProps<{
@@ -10,25 +12,39 @@ const props = withDefaults(
     heightClass?: string
   }>(),
   {
-    color: '#38bdf8',
+    color: '',
     rotateX: 0,
     heightClass: 'h-[260px]',
   }
 )
 
-const option = computed(() => ({
+const uiStore = useUiStore()
+const { theme } = storeToRefs(uiStore)
+
+function readVar(name: string, fallback: string) {
+  if (typeof window === 'undefined') return fallback
+  const value = getComputedStyle(document.documentElement).getPropertyValue(name).trim()
+  return value || fallback
+}
+
+const option = computed(() => {
+  void theme.value
+
+  const barColor = props.color || readVar('--chart-cyan', '#0284c7')
+
+  return {
   tooltip: { trigger: 'axis' },
   grid: { left: 36, right: 16, top: 16, bottom: 28 },
   xAxis: {
     type: 'category',
     data: props.labels,
-    axisLabel: { color: '#94a3b8', rotate: props.rotateX },
-    axisLine: { lineStyle: { color: '#334155' } },
+    axisLabel: { color: readVar('--muted', '#647469'), rotate: props.rotateX },
+    axisLine: { lineStyle: { color: readVar('--chart-axis-line', 'rgba(100, 116, 105, 0.28)') } },
   },
   yAxis: {
     type: 'value',
-    axisLabel: { color: '#94a3b8' },
-    splitLine: { lineStyle: { color: 'rgba(148, 163, 184, 0.12)' } },
+    axisLabel: { color: readVar('--muted', '#647469') },
+    splitLine: { lineStyle: { color: readVar('--chart-grid', 'rgba(100, 116, 105, 0.2)') } },
   },
   series: [
     {
@@ -36,11 +52,12 @@ const option = computed(() => ({
       data: props.values,
       itemStyle: {
         borderRadius: [8, 8, 0, 0],
-        color: props.color,
+        color: barColor,
       },
     },
   ],
-}))
+}
+})
 </script>
 
 <template>
