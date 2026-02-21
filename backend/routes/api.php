@@ -5,6 +5,12 @@ use App\Http\Controllers\Api\MissedTradeController;
 use App\Http\Controllers\Api\TradeController;
 use Illuminate\Support\Facades\Route;
 
+Route::get('health', fn () => response()->json([
+    'status' => 'ok',
+    'service' => 'trading-journal-api',
+    'time' => now()->toIso8601String(),
+]));
+
 Route::apiResource('trades', TradeController::class);
 Route::apiResource('missed-trades', MissedTradeController::class);
 
