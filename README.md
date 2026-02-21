@@ -38,6 +38,12 @@ API base URL:
 - `http://localhost:8000/api`
 
 Main endpoints:
+- `GET /api/accounts`
+- `POST /api/accounts`
+- `GET /api/accounts/{id}`
+- `PUT /api/accounts/{id}`
+- `DELETE /api/accounts/{id}`
+- `GET /api/accounts/{id}/equity`
 - `GET /api/trades`
 - `POST /api/trades`
 - `GET /api/trades/{id}`
@@ -59,6 +65,13 @@ Main endpoints:
 - `GET /api/analytics/rankings`
 - `GET /api/analytics/monthly-heatmap`
 - `GET /api/analytics/risk-status`
+- `GET /api/analytics/accounts`
+- `GET /api/analytics/portfolio`
+- `GET /api/portfolio/analytics`
+
+Query filters:
+- `account_id` (single account scope)
+- `account_ids` (comma-separated portfolio subset)
 
 ## 3) Frontend Setup
 ```bash
@@ -76,6 +89,7 @@ Frontend URL:
 - Vite proxies `/api` using `VITE_PROXY_TARGET` (see `frontend/.env.example`, default `http://localhost:8000`).
 - Frontend API prefix is controlled by `VITE_API_BASE_URL` (default `/api`).
 - Backend analytics starting balance is configurable via `ANALYTICS_STARTING_BALANCE` (see `backend/.env.example`).
+- Trade creation now requires `account_id` and computes `account_balance_before_trade` from account `current_balance`.
 - If local PHP is missing extensions, enable at least `mbstring`, `curl`, and `pdo_mysql`.
 - If `mbstring` is not enabled in your PHP CLI/server, run backend dev server with mbstring loaded:
 ```bash

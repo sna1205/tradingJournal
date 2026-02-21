@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
+import BaseSelect from '@/components/form/BaseSelect.vue'
 
 interface HeatmapDay {
   close_date: string
@@ -54,7 +55,7 @@ const monthOptions = computed(() => {
   return [...keys]
     .sort((a, b) => b.localeCompare(a))
     .map((key) => ({
-      key,
+      value: key,
       label: monthMap.value.get(key)?.label ?? monthLabelFromKey(key),
     }))
 })
@@ -67,7 +68,7 @@ watch(
       return
     }
 
-    const hasSelected = options.some((option) => option.key === selectedMonth.value)
+    const hasSelected = options.some((option) => option.value === selectedMonth.value)
     if (!hasSelected) {
       selectedMonth.value = currentMonthKey
     }
@@ -164,14 +165,14 @@ function cellStyle(cell: HeatmapCell) {
   <article class="panel p-4">
     <div class="mb-3 flex flex-wrap items-center justify-between gap-2">
       <h4 class="text-sm font-semibold">{{ prepared.label }}</h4>
-      <select
-        v-model="selectedMonth"
-        class="rounded-lg border border-[var(--border)] bg-[var(--panel)] px-2.5 py-1.5 text-xs font-medium text-[var(--text)]"
-      >
-        <option v-for="option in monthOptions" :key="option.key" :value="option.key">
-          {{ option.label }}
-        </option>
-      </select>
+      <div class="heatmap-month-select">
+        <BaseSelect
+          v-model="selectedMonth"
+          label="Month"
+          size="sm"
+          :options="monthOptions"
+        />
+      </div>
     </div>
 
     <div class="mb-2 grid grid-cols-7 gap-1 text-center text-[10px] uppercase tracking-wide muted">

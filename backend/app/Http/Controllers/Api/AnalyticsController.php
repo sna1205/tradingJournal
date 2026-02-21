@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Models\Account;
 use App\Models\Trade;
 use App\Services\Analytics\BehavioralAnalyticsEngine;
 use App\Services\Analytics\EquityEngine;
@@ -303,9 +304,190 @@ class AnalyticsController extends Controller
         return response()->json($payload);
     }
 
+    public function accounts(Request $request)
+    {
+        $payload = $this->remember('accounts', $request, function () use ($request): array {
+            $requestedAccountIds = $this->requestedAccountIds($request);
+
+            $accountQuery = Account::query()->orderByDesc('is_active')->orderBy('name');
+            if (count($requestedAccountIds) > 0) {
+                $accountQuery->whereIn('id', $requestedAccountIds);
+            }
+            if ($request->has('is_active')) {
+                $accountQuery->where('is_active', $request->boolean('is_active'));
+            }
+
+            $accounts = $accountQuery->get();
+            $rows = $accounts->map(function (Account $account) use ($request): array {
+                $trades = $this->baseQuery($request)
+                    ->where('account_id', $account->id)
+                    ->orderBy('date')
+                    ->orderBy('id')
+                    ->get();
+
+                $equity = $this->equityEngine->build($trades, (float) $account->starting_balance);
+                $metrics = $this->metricsEngine->calculate($trades, (float) $equity['max_drawdown']);
+
+                return [
+                    'account_id' => (int) $account->id,
+                    'name' => (string) $account->name,
+                    'broker' => (string) $account->broker,
+                    'account_type' => (string) $account->account_type,
+                    'currency' => (string) $account->currency,
+                    'is_active' => (bool) $account->is_active,
+                    'starting_balance' => (float) $account->starting_balance,
+                    'current_balance' => (float) $account->current_balance,
+                    'computed_current_balance' => (float) $equity['current_equity'],
+                    'total_trades' => (int) $metrics['total_trades'],
+                    'win_rate' => (float) $metrics['win_rate'],
+                    'net_profit' => (float) $metrics['net_profit'],
+                    'profit_factor' => (float) $metrics['profit_factor'],
+                    'expectancy' => (float) $metrics['expectancy'],
+                    'max_drawdown' => (float) $equity['max_drawdown'],
+                    'max_drawdown_percent' => (float) $equity['max_drawdown_percent'],
+                ];
+            })->values()->all();
+
+            return [
+                'accounts' => $rows,
+                'portfolio_starting_balance' => $accounts->sum(fn (Account $account): float => (float) $account->starting_balance),
+                'portfolio_current_balance' => $accounts->sum(fn (Account $account): float => (float) $account->current_balance),
+            ];
+        });
+
+        return response()->json($payload);
+    }
+
+    public function portfolio(Request $request)
+    {
+        $payload = $this->remember('portfolio', $request, function () use ($request): array {
+            $trades = $this->chronologicalTrades($request);
+            $startingBalance = $this->startingBalance($request);
+            $equity = $this->equityEngine->build($trades, $startingBalance);
+            $metrics = $this->metricsEngine->calculate($trades, (float) $equity['max_drawdown']);
+
+            return [
+                'scope' => 'portfolio',
+                'starting_balance' => round($startingBalance, 2),
+                'current_equity' => (float) $equity['current_equity'],
+                'net_profit' => (float) $metrics['net_profit'],
+                'win_rate' => (float) $metrics['win_rate'],
+                'profit_factor' => (float) $metrics['profit_factor'],
+                'expectancy' => (float) $metrics['expectancy'],
+                'max_drawdown' => (float) $equity['max_drawdown'],
+                'max_drawdown_percent' => (float) $equity['max_drawdown_percent'],
+                'equity_points' => $equity['equity_points'],
+                'equity_timestamps' => $equity['equity_timestamps'],
+                'cumulative_profit' => $equity['cumulative_profit'],
+            ];
+        });
+
+        return response()->json($payload);
+    }
+
+    public function portfolioAnalytics(Request $request)
+    {
+        $payload = $this->remember('portfolio-analytics', $request, function () use ($request): array {
+            $requestedAccountIds = $this->requestedAccountIds($request);
+            $accountsQuery = Account::query()
+                ->orderByDesc('is_active')
+                ->orderBy('name');
+            if (count($requestedAccountIds) > 0) {
+                $accountsQuery->whereIn('id', $requestedAccountIds);
+            }
+
+            $accounts = $accountsQuery->get();
+            if ($accounts->isEmpty()) {
+                return [
+                    'portfolio_equity' => [
+                        'starting_balance' => 0.0,
+                        'current_equity' => 0.0,
+                        'net_profit' => 0.0,
+                        'equity_points' => [],
+                        'equity_timestamps' => [],
+                    ],
+                    'portfolio_drawdown' => [
+                        'max_drawdown' => 0.0,
+                        'max_drawdown_percent' => 0.0,
+                        'current_drawdown' => 0.0,
+                        'current_drawdown_percent' => 0.0,
+                        'peak_balance' => 0.0,
+                    ],
+                    'total_trades' => 0,
+                    'win_rate' => 0.0,
+                    'account_breakdown' => [],
+                ];
+            }
+
+            $accountIds = $accounts->pluck('id')->all();
+            $trades = $this->baseQuery($request)
+                ->whereIn('account_id', $accountIds)
+                ->orderBy('date')
+                ->orderBy('id')
+                ->get();
+
+            $startingBalance = (float) $accounts->sum(fn (Account $account): float => (float) $account->starting_balance);
+            $totalTrades = $trades->count();
+            $wins = $trades->filter(fn (Trade $trade): bool => (float) $trade->profit_loss > 0)->count();
+            $winRate = $totalTrades > 0 ? round(($wins / $totalTrades) * 100, 2) : 0.0;
+
+            $portfolioCurve = $this->buildPortfolioEquityCurve($accounts, $trades);
+            $accountBreakdown = $accounts
+                ->map(function (Account $account) use ($trades): array {
+                    $rows = $trades
+                        ->where('account_id', $account->id)
+                        ->values();
+
+                    $equity = $this->equityEngine->build($rows, (float) $account->starting_balance);
+                    $metrics = $this->metricsEngine->calculate($rows, (float) $equity['max_drawdown']);
+
+                    return [
+                        'account_id' => (int) $account->id,
+                        'name' => (string) $account->name,
+                        'broker' => (string) $account->broker,
+                        'account_type' => (string) $account->account_type,
+                        'currency' => (string) $account->currency,
+                        'starting_balance' => (float) $account->starting_balance,
+                        'current_balance' => (float) $account->current_balance,
+                        'net_profit' => (float) $metrics['net_profit'],
+                        'total_trades' => (int) $metrics['total_trades'],
+                        'win_rate' => (float) $metrics['win_rate'],
+                        'max_drawdown' => (float) $equity['max_drawdown'],
+                        'max_drawdown_percent' => (float) $equity['max_drawdown_percent'],
+                    ];
+                })
+                ->values()
+                ->all();
+
+            return [
+                'portfolio_equity' => [
+                    'starting_balance' => round($startingBalance, 2),
+                    'current_equity' => $portfolioCurve['current_equity'],
+                    'net_profit' => $portfolioCurve['net_profit'],
+                    'equity_points' => $portfolioCurve['equity_points'],
+                    'equity_timestamps' => $portfolioCurve['equity_timestamps'],
+                ],
+                'portfolio_drawdown' => [
+                    'max_drawdown' => $portfolioCurve['max_drawdown'],
+                    'max_drawdown_percent' => $portfolioCurve['max_drawdown_percent'],
+                    'current_drawdown' => $portfolioCurve['current_drawdown'],
+                    'current_drawdown_percent' => $portfolioCurve['current_drawdown_percent'],
+                    'peak_balance' => $portfolioCurve['peak_balance'],
+                ],
+                'total_trades' => $totalTrades,
+                'win_rate' => $winRate,
+                'account_breakdown' => $accountBreakdown,
+            ];
+        });
+
+        return response()->json($payload);
+    }
+
     private function baseQuery(Request $request): Builder
     {
         $filters = $request->only([
+            'account_id',
+            'account_ids',
             'pair',
             'symbol',
             'direction',
@@ -331,6 +513,13 @@ class AnalyticsController extends Controller
         }
         if (!($filters['date_to'] ?? null) && ($filters['close_date_to'] ?? null)) {
             $filters['date_to'] = $filters['close_date_to'];
+        }
+
+        if (is_string($filters['account_ids'] ?? null)) {
+            $filters['account_ids'] = array_filter(
+                array_map('trim', explode(',', $filters['account_ids'])),
+                fn (string $value): bool => $value !== ''
+            );
         }
 
         return Trade::query()->applyFilters($filters);
@@ -373,11 +562,34 @@ class AnalyticsController extends Controller
 
     private function startingBalance(Request $request): float
     {
-        $requested = (float) $request->input('starting_balance', env('ANALYTICS_STARTING_BALANCE', 10_000));
+        if ($request->filled('starting_balance')) {
+            $requested = (float) $request->input('starting_balance');
 
-        return $requested > 0
-            ? $requested
-            : 10_000.0;
+            return $requested > 0 ? $requested : 10_000.0;
+        }
+
+        $accountId = (int) $request->integer('account_id', 0);
+        if ($accountId > 0) {
+            $accountStarting = (float) (Account::query()->whereKey($accountId)->value('starting_balance') ?? 0);
+
+            return $accountStarting > 0
+                ? $accountStarting
+                : (float) env('ANALYTICS_STARTING_BALANCE', 10_000);
+        }
+
+        $requestedAccountIds = $this->requestedAccountIds($request);
+        $query = Account::query();
+        if (count($requestedAccountIds) > 0) {
+            $query->whereIn('id', $requestedAccountIds);
+        } else {
+            $query->where('is_active', true);
+        }
+
+        $portfolioStarting = (float) $query->sum('starting_balance');
+
+        return $portfolioStarting > 0
+            ? $portfolioStarting
+            : (float) env('ANALYTICS_STARTING_BALANCE', 10_000);
     }
 
     /**
@@ -442,5 +654,92 @@ class AnalyticsController extends Controller
         $cacheKey = "analytics:{$namespace}:v{$version}:{$queryHash}";
 
         return Cache::remember($cacheKey, $ttlSeconds, $callback);
+    }
+
+    /**
+     * @return array<int, int>
+     */
+    private function requestedAccountIds(Request $request): array
+    {
+        $raw = $request->input('account_ids');
+        if (is_string($raw)) {
+            $raw = explode(',', $raw);
+        }
+
+        if (!is_array($raw)) {
+            return [];
+        }
+
+        return collect($raw)
+            ->map(fn ($value): int => (int) $value)
+            ->filter(fn (int $value): bool => $value > 0)
+            ->unique()
+            ->values()
+            ->all();
+    }
+
+    /**
+     * @param Collection<int, Account> $accounts
+     * @param Collection<int, Trade> $trades
+     * @return array{
+     *   equity_points:array<int, float>,
+     *   equity_timestamps:array<int, string>,
+     *   current_equity:float,
+     *   net_profit:float,
+     *   peak_balance:float,
+     *   max_drawdown:float,
+     *   max_drawdown_percent:float,
+     *   current_drawdown:float,
+     *   current_drawdown_percent:float
+     * }
+     */
+    private function buildPortfolioEquityCurve(Collection $accounts, Collection $trades): array
+    {
+        $balances = [];
+        foreach ($accounts as $account) {
+            $balances[(int) $account->id] = (float) $account->starting_balance;
+        }
+
+        $starting = (float) array_sum($balances);
+        $running = $starting;
+        $peak = $starting;
+        $maxDrawdown = 0.0;
+        $equityPoints = [];
+        $equityTimestamps = [];
+
+        foreach ($trades as $trade) {
+            $accountId = (int) $trade->account_id;
+            $profitLoss = (float) $trade->profit_loss;
+            $balances[$accountId] = (float) ($balances[$accountId] ?? 0) + $profitLoss;
+            $running = (float) array_sum($balances);
+
+            if ($running > $peak) {
+                $peak = $running;
+            }
+
+            $drawdown = $peak - $running;
+            if ($drawdown > $maxDrawdown) {
+                $maxDrawdown = $drawdown;
+            }
+
+            $equityPoints[] = round($running, 2);
+            $equityTimestamps[] = (string) $trade->date;
+        }
+
+        $currentDrawdown = max(0, $peak - $running);
+        $maxDrawdownPercent = $peak > 0 ? ($maxDrawdown / $peak) * 100 : 0.0;
+        $currentDrawdownPercent = $peak > 0 ? ($currentDrawdown / $peak) * 100 : 0.0;
+
+        return [
+            'equity_points' => $equityPoints,
+            'equity_timestamps' => $equityTimestamps,
+            'current_equity' => round($running, 2),
+            'net_profit' => round($running - $starting, 2),
+            'peak_balance' => round($peak, 2),
+            'max_drawdown' => round($maxDrawdown, 2),
+            'max_drawdown_percent' => round($maxDrawdownPercent, 4),
+            'current_drawdown' => round($currentDrawdown, 2),
+            'current_drawdown_percent' => round($currentDrawdownPercent, 4),
+        ];
     }
 }

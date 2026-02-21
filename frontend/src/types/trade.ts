@@ -10,6 +10,7 @@ export type TradeEmotion =
 
 export interface Trade {
   id: number
+  account_id: number
   pair: string
   direction: TradeDirection
   entry_price: string
@@ -33,9 +34,32 @@ export interface Trade {
   model: string
   date: string
   notes: string | null
+  images?: TradeImage[]
+  images_count?: number
+  account?: {
+    id: number
+    name: string
+    account_type: 'funded' | 'personal' | 'demo'
+    current_balance?: string
+    currency?: string
+  } | null
   created_at: string
   updated_at: string
   deleted_at?: string | null
+}
+
+export interface TradeImage {
+  id: number
+  image_url: string
+  thumbnail_url: string
+  file_size: number
+  file_type: string
+  sort_order: number
+}
+
+export interface TradeDetailsResponse {
+  trade: Trade
+  images: TradeImage[]
 }
 
 export interface MissedTrade {
@@ -45,8 +69,19 @@ export interface MissedTrade {
   reason: string
   date: string
   notes: string | null
+  images?: MissedTradeImage[]
+  images_count?: number
   created_at: string
   updated_at: string
+}
+
+export interface MissedTradeImage {
+  id: number
+  image_url: string
+  thumbnail_url: string
+  file_size: number
+  file_type: string
+  sort_order: number
 }
 
 export interface Paginated<T> {

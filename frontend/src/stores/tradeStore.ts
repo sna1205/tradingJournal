@@ -2,7 +2,8 @@ import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import api from '@/services/api'
 import { useAnalyticsStore } from '@/stores/analyticsStore'
-import type { Paginated, Trade, TradeEmotion } from '@/types/trade'
+import { useAccountStore } from '@/stores/accountStore'
+import type { Paginated, Trade, TradeDetailsResponse, TradeEmotion, TradeImage } from '@/types/trade'
 
 interface TradeFilters {
   pair: string
@@ -13,6 +14,7 @@ interface TradeFilters {
 }
 
 export interface TradePayload {
+  account_id: number
   symbol: string
   direction: 'buy' | 'sell'
   entry_price: number
@@ -20,7 +22,6 @@ export interface TradePayload {
   take_profit: number
   actual_exit_price: number
   position_size: number
-  account_balance_before_trade: number
   followed_rules: boolean
   emotion: TradeEmotion
   session?: string
@@ -39,6 +40,7 @@ const defaultFilters: TradeFilters = {
 
 export const useTradeStore = defineStore('trades', () => {
   const analyticsStore = useAnalyticsStore()
+  const accountStore = useAccountStore()
   const trades = ref<Trade[]>([])
   const pagination = ref({
     current_page: 1,
@@ -79,7 +81,7 @@ export const useTradeStore = defineStore('trades', () => {
     }
   }
 
-  async function createTrade(payload: TradePayload) {
+  async function createTrade(payload: TradePayload): Promise<Trade> {
     saving.value = true
 
     const shouldOptimisticallyInsert = pagination.value.current_page === 1 && !hasActiveFilters.value
@@ -108,6 +110,8 @@ export const useTradeStore = defineStore('trades', () => {
       }
 
       void analyticsStore.fetchAnalytics()
+      void accountStore.fetchAccounts()
+      return data
     } catch (err) {
       if (shouldOptimisticallyInsert) {
         trades.value = previousTrades
@@ -120,10 +124,10 @@ export const useTradeStore = defineStore('trades', () => {
   }
 
   async function addTrade(payload: TradePayload) {
-    await createTrade(payload)
+    return await createTrade(payload)
   }
 
-  async function updateTrade(id: number, payload: Partial<TradePayload>) {
+  async function updateTrade(id: number, payload: Partial<TradePayload>): Promise<Trade> {
     saving.value = true
 
     const index = trades.value.findIndex((trade) => trade.id === id)
@@ -133,6 +137,7 @@ export const useTradeStore = defineStore('trades', () => {
     if (current && index >= 0) {
       trades.value[index] = {
         ...current,
+        account_id: payload.account_id ?? current.account_id,
         pair: payload.symbol ? payload.symbol.toUpperCase() : current.pair,
         direction: payload.direction ?? current.direction,
         entry_price: payload.entry_price !== undefined ? String(payload.entry_price) : current.entry_price,
@@ -142,9 +147,6 @@ export const useTradeStore = defineStore('trades', () => {
           ? String(payload.actual_exit_price)
           : current.actual_exit_price,
         lot_size: payload.position_size !== undefined ? String(payload.position_size) : current.lot_size,
-        account_balance_before_trade: payload.account_balance_before_trade !== undefined
-          ? String(payload.account_balance_before_trade)
-          : current.account_balance_before_trade,
         followed_rules: payload.followed_rules ?? current.followed_rules,
         emotion: payload.emotion ?? current.emotion,
         session: payload.session ?? current.session,
@@ -163,6 +165,8 @@ export const useTradeStore = defineStore('trades', () => {
       }
 
       void analyticsStore.fetchAnalytics()
+      void accountStore.fetchAccounts()
+      return data
     } catch (err) {
       if (index >= 0 && previous) {
         trades.value[index] = previous
@@ -190,6 +194,7 @@ export const useTradeStore = defineStore('trades', () => {
       }
 
       void analyticsStore.fetchAnalytics()
+      void accountStore.fetchAccounts()
     } catch (err) {
       if (index >= 0 && previous) {
         trades.value.splice(index, 0, previous)
@@ -197,6 +202,43 @@ export const useTradeStore = defineStore('trades', () => {
       }
       throw err
     }
+  }
+
+  async function fetchTradeDetails(id: number): Promise<TradeDetailsResponse> {
+    const { data } = await api.get<TradeDetailsResponse>(`/trades/${id}`)
+    return data
+  }
+
+  async function uploadTradeImage(
+    tradeId: number,
+    file: File,
+    sortOrder?: number,
+    onProgress?: (percent: number) => void
+  ): Promise<TradeImage> {
+    const formData = new FormData()
+    formData.append('image', file)
+    if (typeof sortOrder === 'number') {
+      formData.append('sort_order', String(sortOrder))
+    }
+
+    const { data } = await api.post<TradeImage>(`/trades/${tradeId}/images`, formData, {
+      headers: {
+        'Content-Type': 'multipart/form-data',
+      },
+      onUploadProgress: (progressEvent) => {
+        if (!onProgress) return
+        const total = progressEvent.total ?? 0
+        if (total <= 0) return
+        const value = Math.round((progressEvent.loaded / total) * 100)
+        onProgress(Math.max(0, Math.min(100, value)))
+      },
+    })
+
+    return data
+  }
+
+  async function deleteTradeImage(imageId: number) {
+    await api.delete(`/trade-images/${imageId}`)
   }
 
   function resetFilters() {
@@ -216,6 +258,9 @@ export const useTradeStore = defineStore('trades', () => {
     createTrade,
     updateTrade,
     deleteTrade,
+    fetchTradeDetails,
+    uploadTradeImage,
+    deleteTradeImage,
     resetFilters,
   }
 })
@@ -224,6 +269,7 @@ function toOptimisticTrade(payload: TradePayload, tempId: number): Trade {
   return {
     id: tempId,
     pair: payload.symbol.toUpperCase(),
+    account_id: payload.account_id,
     direction: payload.direction,
     entry_price: String(payload.entry_price),
     stop_loss: String(payload.stop_loss),
@@ -238,7 +284,7 @@ function toOptimisticTrade(payload: TradePayload, tempId: number): Trade {
     rr: '0',
     r_multiple: '0',
     risk_percent: null,
-    account_balance_before_trade: String(payload.account_balance_before_trade),
+    account_balance_before_trade: null,
     account_balance_after_trade: null,
     followed_rules: payload.followed_rules,
     emotion: payload.emotion,
@@ -246,6 +292,8 @@ function toOptimisticTrade(payload: TradePayload, tempId: number): Trade {
     model: payload.strategy_model ?? 'General',
     date: payload.close_date,
     notes: payload.notes,
+    images: [],
+    images_count: 0,
     created_at: new Date().toISOString(),
     updated_at: new Date().toISOString(),
   }

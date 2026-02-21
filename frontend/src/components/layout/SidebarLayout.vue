@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, onMounted } from 'vue'
 import { RouterLink, RouterView, useRoute } from 'vue-router'
 import {
   BarChart3,
@@ -8,13 +8,18 @@ import {
   Moon,
   NotebookText,
   Sun,
+  WalletCards,
 } from 'lucide-vue-next'
 import { storeToRefs } from 'pinia'
+import BaseSelect from '@/components/form/BaseSelect.vue'
+import { useAccountStore } from '@/stores/accountStore'
 import { useUiStore } from '@/stores/uiStore'
 
 const route = useRoute()
 const uiStore = useUiStore()
+const accountStore = useAccountStore()
 const { theme } = storeToRefs(uiStore)
+const { accounts, selectedAccountId } = storeToRefs(accountStore)
 
 const navItems = [
   {
@@ -39,6 +44,13 @@ const navItems = [
     subtitle: 'Capture skipped setups and convert patterns into actionable improvements.',
   },
   {
+    label: 'Accounts',
+    to: '/accounts',
+    icon: WalletCards,
+    title: 'Accounts',
+    subtitle: 'Manage trading accounts and monitor account-level equity and drawdown.',
+  },
+  {
     label: 'Milestones',
     to: '/milestones',
     icon: Flag,
@@ -48,8 +60,44 @@ const navItems = [
 ]
 
 const currentItem = computed(() =>
-  navItems.find((item) => item.to === route.path) ?? navItems[0]!
+  navItems.find((item) => route.path === item.to || route.path.startsWith(`${item.to}/`)) ?? navItems[0]!
 )
+
+const accountOptions = computed(() => [
+  {
+    label: 'All Accounts (Portfolio)',
+    value: '',
+    subtitle: 'Aggregate analytics',
+    badge: 'portfolio',
+  },
+  ...accounts.value.map((account) => ({
+    label: account.name,
+    value: String(account.id),
+    subtitle: `${account.broker} - ${account.currency} ${Number(account.current_balance).toLocaleString()}${account.is_active ? '' : ' - inactive'}`,
+    badge: account.account_type,
+  })),
+])
+
+const selectedAccountModel = computed({
+  get: () => (selectedAccountId.value === null ? '' : String(selectedAccountId.value)),
+  set: (value: string) => {
+    if (!value) {
+      accountStore.setSelectedAccountId(null)
+      return
+    }
+
+    accountStore.setSelectedAccountId(Number(value))
+  },
+})
+
+onMounted(async () => {
+  if (accounts.value.length > 0) return
+  try {
+    await accountStore.fetchAccounts()
+  } catch {
+    // Layout should stay functional even if accounts fail to load.
+  }
+})
 </script>
 
 <template>
@@ -65,11 +113,23 @@ const currentItem = computed(() =>
         </div>
       </div>
 
-      <button class="btn btn-ghost inline-flex items-center gap-2 px-3 py-2 text-sm" @click="uiStore.toggleTheme()">
-        <Sun v-if="theme === 'dark'" class="h-4 w-4" />
-        <Moon v-else class="h-4 w-4" />
-        {{ theme === 'dark' ? 'Light' : 'Dark' }}
-      </button>
+      <div class="topbar-actions">
+        <BaseSelect
+          v-model="selectedAccountModel"
+          label="Account Scope"
+          class="topbar-account-selector"
+          searchable
+          search-placeholder="Search account..."
+          :options="accountOptions"
+          size="sm"
+        />
+
+        <button class="btn btn-ghost inline-flex items-center gap-2 px-3 py-2 text-sm" @click="uiStore.toggleTheme()">
+          <Sun v-if="theme === 'dark'" class="h-4 w-4" />
+          <Moon v-else class="h-4 w-4" />
+          {{ theme === 'dark' ? 'Light' : 'Dark' }}
+        </button>
+      </div>
     </header>
 
     <div class="mt-8 motion-fade-scale">

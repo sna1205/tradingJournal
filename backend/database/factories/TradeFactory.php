@@ -2,6 +2,7 @@
 
 namespace Database\Factories;
 
+use App\Models\Account;
 use App\Models\Trade;
 use Illuminate\Database\Eloquent\Factories\Factory;
 use Illuminate\Support\Carbon;
@@ -58,6 +59,7 @@ class TradeFactory extends Factory
         $accountAfter = $accountBefore + $profitLoss;
 
         return [
+            'account_id' => Account::factory(),
             'pair' => $pair,
             'direction' => $direction,
             'entry_price' => $entryPrice,

@@ -5,6 +5,8 @@ namespace App\Models;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\SoftDeletes;
 
 class Trade extends Model
@@ -13,6 +15,7 @@ class Trade extends Model
     use SoftDeletes;
 
     protected $fillable = [
+        'account_id',
         'pair',
         'direction',
         'entry_price',
@@ -39,6 +42,7 @@ class Trade extends Model
     ];
 
     protected $casts = [
+        'account_id' => 'integer',
         'entry_price' => 'decimal:6',
         'stop_loss' => 'decimal:6',
         'take_profit' => 'decimal:6',
@@ -62,6 +66,22 @@ class Trade extends Model
     public function scopeApplyFilters(Builder $query, array $filters): Builder
     {
         return $query
+            ->when($filters['account_id'] ?? null, fn (Builder $builder, int|string $accountId) => $builder->where('account_id', (int) $accountId))
+            ->when($filters['account_ids'] ?? null, function (Builder $builder, array|string $accountIds): void {
+                $values = is_array($accountIds)
+                    ? $accountIds
+                    : explode(',', (string) $accountIds);
+                $ids = collect($values)
+                    ->map(fn ($value): int => (int) $value)
+                    ->filter(fn (int $value): bool => $value > 0)
+                    ->unique()
+                    ->values()
+                    ->all();
+
+                if (count($ids) > 0) {
+                    $builder->whereIn('account_id', $ids);
+                }
+            })
             ->when($filters['pair'] ?? null, fn (Builder $builder, string $pair) => $builder->where('pair', 'like', "%{$pair}%"))
             ->when($filters['direction'] ?? null, fn (Builder $builder, string $direction) => $builder->where('direction', $direction))
             ->when($filters['session'] ?? null, fn (Builder $builder, string $session) => $builder->where('session', 'like', "%{$session}%"))
@@ -73,5 +93,15 @@ class Trade extends Model
             )
             ->when($filters['date_from'] ?? null, fn (Builder $builder, string $dateFrom) => $builder->whereDate('date', '>=', $dateFrom))
             ->when($filters['date_to'] ?? null, fn (Builder $builder, string $dateTo) => $builder->whereDate('date', '<=', $dateTo));
+    }
+
+    public function account(): BelongsTo
+    {
+        return $this->belongsTo(Account::class);
+    }
+
+    public function images(): HasMany
+    {
+        return $this->hasMany(TradeImage::class);
     }
 }

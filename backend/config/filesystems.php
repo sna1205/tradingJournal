@@ -17,6 +17,18 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Trade Images Disk
+    |--------------------------------------------------------------------------
+    |
+    | Dedicated disk for trade screenshots and thumbnails. Set to "public"
+    | for local storage or "s3" for cloud storage.
+    |
+    */
+
+    'trade_images_disk' => env('TRADE_IMAGES_DISK', 'public'),
+
+    /*
+    |--------------------------------------------------------------------------
     | Filesystem Disks
     |--------------------------------------------------------------------------
     |

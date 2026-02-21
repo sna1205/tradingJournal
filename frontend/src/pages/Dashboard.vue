@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted } from 'vue'
+import { computed, onMounted, watch } from 'vue'
 import { RouterLink } from 'vue-router'
 import { storeToRefs } from 'pinia'
 import { AlertTriangle, BarChartHorizontalBig, CalendarPlus, NotebookPen, ShieldAlert } from 'lucide-vue-next'
@@ -13,9 +13,11 @@ import EmotionPieChart from '@/components/charts/EmotionPieChart.vue'
 import SessionPerformanceBarChart from '@/components/charts/SessionPerformanceBarChart.vue'
 import MonthlyHeatmap from '@/components/analytics/MonthlyHeatmap.vue'
 import { asCurrency } from '@/utils/format'
+import { useAccountStore } from '@/stores/accountStore'
 import { useAnalyticsStore } from '@/stores/analyticsStore'
 
 const analyticsStore = useAnalyticsStore()
+const accountStore = useAccountStore()
 const {
   summary,
   overview,
@@ -28,6 +30,16 @@ const {
   riskStatus,
   loading,
 } = storeToRefs(analyticsStore)
+const { accounts, selectedAccountId } = storeToRefs(accountStore)
+
+const selectedScopeLabel = computed(() => {
+  if (selectedAccountId.value === null) return 'All Accounts (Portfolio)'
+
+  const account = accounts.value.find((item) => item.id === selectedAccountId.value)
+  if (!account) return 'Selected Account'
+
+  return `${account.name} - ${account.broker}`
+})
 
 const emotionSlices = computed(() => behavioral.value?.emotion_analytics?.breakdown ?? [])
 const sessionRows = computed(() => rankings.value?.sessions ?? [])
@@ -46,16 +58,29 @@ const emotionChartRows = computed(() =>
 )
 
 onMounted(async () => {
+  await accountStore.fetchAccounts()
   await analyticsStore.fetchAnalytics()
 })
+
+watch(
+  () => selectedAccountId.value,
+  async () => {
+    await analyticsStore.fetchAnalytics()
+  }
+)
 </script>
 
 <template>
-  <div class="space-y-6">
+  <Transition name="account-switch" mode="out-in">
+    <div :key="selectedAccountId === null ? 'portfolio' : `account-${selectedAccountId}`" class="space-y-6 account-switch-surface">
     <section class="grid grid-premium xl:grid-cols-[1.1fr_2.9fr]">
       <GlassPanel>
         <div class="section-head">
           <h2 class="section-title">Quick Actions</h2>
+        </div>
+        <div class="panel mb-3 p-3">
+          <p class="kicker-label">Account Scope</p>
+          <p class="mt-1 text-sm font-semibold">{{ selectedScopeLabel }}</p>
         </div>
         <div class="space-y-2">
           <RouterLink to="/trades" class="btn btn-primary inline-flex w-full items-center gap-2 px-3 py-2 text-sm">
@@ -228,5 +253,6 @@ onMounted(async () => {
         <MonthlyHeatmap :months="monthlyHeatmap?.months ?? []" />
       </GlassPanel>
     </section>
-  </div>
+    </div>
+  </Transition>
 </template>

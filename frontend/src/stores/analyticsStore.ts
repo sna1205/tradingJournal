@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import api from '@/services/api'
+import { useAccountStore } from '@/stores/accountStore'
 import type { SummaryStats } from '@/types/trade'
 
 export interface AnalyticsOverview {
@@ -158,6 +159,7 @@ interface DayBreakdown extends BreakdownPoint {
 const weekdayLabels = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
 
 export const useAnalyticsStore = defineStore('analytics', () => {
+  const accountStore = useAccountStore()
   const overview = ref<AnalyticsOverview | null>(null)
   const dailyStats = ref<AnalyticsDailyRow[]>([])
   const performanceProfile = ref<PerformanceProfile | null>(null)
@@ -280,6 +282,7 @@ export const useAnalyticsStore = defineStore('analytics', () => {
 
   async function fetchAnalytics() {
     loading.value = true
+    const params = analyticsQueryParams(accountStore.selectedAccountId)
 
     try {
       const [
@@ -295,17 +298,17 @@ export const useAnalyticsStore = defineStore('analytics', () => {
         monthlyHeatmapRes,
         riskStatusRes,
       ] = await Promise.all([
-        api.get<AnalyticsOverview>('/analytics/overview'),
-        api.get<AnalyticsDailyRow[]>('/analytics/daily'),
-        api.get<PerformanceProfile>('/analytics/performance-profile'),
-        api.get<EquityPayload>('/analytics/equity'),
-        api.get<DrawdownPayload>('/analytics/drawdown'),
-        api.get<StreakPayload>('/analytics/streaks'),
-        api.get<MetricsPayload>('/analytics/metrics'),
-        api.get<BehavioralPayload>('/analytics/behavioral'),
-        api.get<RankingsPayload>('/analytics/rankings'),
-        api.get<MonthlyHeatmapPayload>('/analytics/monthly-heatmap'),
-        api.get<RiskStatusPayload>('/analytics/risk-status'),
+        api.get<AnalyticsOverview>('/analytics/overview', { params }),
+        api.get<AnalyticsDailyRow[]>('/analytics/daily', { params }),
+        api.get<PerformanceProfile>('/analytics/performance-profile', { params }),
+        api.get<EquityPayload>('/analytics/equity', { params }),
+        api.get<DrawdownPayload>('/analytics/drawdown', { params }),
+        api.get<StreakPayload>('/analytics/streaks', { params }),
+        api.get<MetricsPayload>('/analytics/metrics', { params }),
+        api.get<BehavioralPayload>('/analytics/behavioral', { params }),
+        api.get<RankingsPayload>('/analytics/rankings', { params }),
+        api.get<MonthlyHeatmapPayload>('/analytics/monthly-heatmap', { params }),
+        api.get<RiskStatusPayload>('/analytics/risk-status', { params }),
       ])
 
       overview.value = {
@@ -482,3 +485,10 @@ export const useAnalyticsStore = defineStore('analytics', () => {
   }
 })
 
+function analyticsQueryParams(selectedAccountId: number | null): Record<string, number> | undefined {
+  if (selectedAccountId === null) return undefined
+
+  return {
+    account_id: selectedAccountId,
+  }
+}
