@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
 import { storeToRefs } from 'pinia'
+import type { AxiosError } from 'axios'
 import { BarChart3, Pencil, Plus, Trash2, X } from 'lucide-vue-next'
 import GlassPanel from '@/components/layout/GlassPanel.vue'
 import SkeletonBlock from '@/components/layout/SkeletonBlock.vue'
@@ -9,7 +10,7 @@ import AnimatedNumber from '@/components/layout/AnimatedNumber.vue'
 import { useTradeStore, type TradePayload } from '@/stores/tradeStore'
 import { useUiStore } from '@/stores/uiStore'
 import { asDate, asSignedCurrency } from '@/utils/format'
-import type { Trade } from '@/types/trade'
+import type { Trade, TradeEmotion } from '@/types/trade'
 
 const tradeStore = useTradeStore()
 const uiStore = useUiStore()
@@ -17,9 +18,12 @@ const { trades, pagination, filters, loading, saving, hasFilters } = storeToRefs
 
 const isModalOpen = ref(false)
 const editingTradeId = ref<number | null>(null)
+const submitAttempted = ref(false)
+const closeDateMax = ref('')
+const emotionOptions: TradeEmotion[] = ['neutral', 'calm', 'confident', 'fearful', 'greedy', 'hesitant', 'revenge']
 
 const form = reactive({
-  pair: '',
+  symbol: '',
   direction: 'buy' as 'buy' | 'sell',
   date: '',
   model: '',
@@ -27,9 +31,11 @@ const form = reactive({
   entry_price: 0,
   stop_loss: 0,
   take_profit: 0,
-  lot_size: 0.01,
-  profit_loss: 0,
-  rr: 1,
+  actual_exit_price: 0,
+  position_size: 0.01,
+  account_balance_before_trade: 0,
+  followed_rules: true,
+  emotion: 'neutral' as TradeEmotion,
   notes: '',
 })
 
@@ -37,7 +43,8 @@ const modalTitle = computed(() => (editingTradeId.value ? 'Edit Trade' : 'Add Tr
 
 function resetForm() {
   editingTradeId.value = null
-  form.pair = ''
+  submitAttempted.value = false
+  form.symbol = ''
   form.direction = 'buy'
   form.date = ''
   form.model = ''
@@ -45,21 +52,24 @@ function resetForm() {
   form.entry_price = 0
   form.stop_loss = 0
   form.take_profit = 0
-  form.lot_size = 0.01
-  form.profit_loss = 0
-  form.rr = 1
+  form.actual_exit_price = 0
+  form.position_size = 0.01
+  form.account_balance_before_trade = 0
+  form.followed_rules = true
+  form.emotion = 'neutral'
   form.notes = ''
 }
 
 function openAddModal() {
   resetForm()
-  form.date = toLocalDateTime(new Date().toISOString())
+  closeDateMax.value = nowLocalDateTime()
+  form.date = closeDateMax.value
   isModalOpen.value = true
 }
 
 function openEditModal(trade: Trade) {
   editingTradeId.value = trade.id
-  form.pair = trade.pair
+  form.symbol = trade.pair
   form.direction = trade.direction
   form.date = toLocalDateTime(trade.date)
   form.model = trade.model
@@ -67,10 +77,14 @@ function openEditModal(trade: Trade) {
   form.entry_price = Number(trade.entry_price)
   form.stop_loss = Number(trade.stop_loss)
   form.take_profit = Number(trade.take_profit)
-  form.lot_size = Number(trade.lot_size)
-  form.profit_loss = Number(trade.profit_loss)
-  form.rr = Number(trade.rr)
+  form.actual_exit_price = Number(trade.actual_exit_price ?? trade.entry_price)
+  form.position_size = Number(trade.lot_size)
+  form.account_balance_before_trade = Number(trade.account_balance_before_trade ?? 0)
+  form.followed_rules = Boolean(trade.followed_rules)
+  form.emotion = (trade.emotion ?? 'neutral') as TradeEmotion
   form.notes = trade.notes || ''
+  closeDateMax.value = maxDateTime(nowLocalDateTime(), form.date)
+  submitAttempted.value = false
   isModalOpen.value = true
 }
 
@@ -84,25 +98,129 @@ function toLocalDateTime(value: string) {
   return new Date(date.getTime() - offset).toISOString().slice(0, 16)
 }
 
+function nowLocalDateTime() {
+  return toLocalDateTime(new Date().toISOString())
+}
+
+function maxDateTime(a: string, b: string) {
+  return a > b ? a : b
+}
+
+function toNumber(value: number) {
+  return Number(value)
+}
+
+function parseLocalDateTime(value: string): number | null {
+  if (!value) return null
+  const timestamp = new Date(value).getTime()
+  if (Number.isNaN(timestamp)) return null
+  return timestamp
+}
+
+const formErrors = computed<Record<string, string>>(() => {
+  const errors: Record<string, string> = {}
+  const symbol = form.symbol.trim().toUpperCase()
+  const closeDate = parseLocalDateTime(form.date)
+  const now = Date.now()
+
+  const entry = toNumber(form.entry_price)
+  const stop = toNumber(form.stop_loss)
+  const take = toNumber(form.take_profit)
+  const exit = toNumber(form.actual_exit_price)
+  const positionSize = toNumber(form.position_size)
+  const accountBefore = toNumber(form.account_balance_before_trade)
+
+  if (!symbol) {
+    errors.symbol = 'Symbol is required.'
+  } else if (symbol.length > 30) {
+    errors.symbol = 'Symbol must be 30 characters or fewer.'
+  } else if (!/^[A-Z0-9._/-]+$/.test(symbol)) {
+    errors.symbol = 'Use only letters, numbers, dot, underscore, slash, or dash.'
+  }
+
+  if (closeDate === null) {
+    errors.date = 'Close date is required.'
+  } else if (closeDate > now + 60_000) {
+    errors.date = 'Close date cannot be in the future.'
+  }
+
+  if (!(entry > 0)) errors.entry_price = 'Entry price must be greater than 0.'
+  if (!(stop > 0)) errors.stop_loss = 'Stop loss must be greater than 0.'
+  if (!(take > 0)) errors.take_profit = 'Take profit must be greater than 0.'
+  if (!(exit > 0)) errors.actual_exit_price = 'Actual exit price must be greater than 0.'
+  if (!(positionSize >= 0.0001)) errors.position_size = 'Position size must be at least 0.0001.'
+  if (!(accountBefore > 0)) errors.account_balance_before_trade = 'Account balance before trade must be greater than 0.'
+
+  if (entry > 0 && stop > 0 && entry === stop) {
+    errors.stop_loss = 'Stop loss must differ from entry price.'
+  }
+  if (entry > 0 && take > 0 && entry === take) {
+    errors.take_profit = 'Take profit must differ from entry price.'
+  }
+
+  if (entry > 0 && stop > 0 && take > 0) {
+    if (form.direction === 'buy') {
+      if (stop >= entry) errors.stop_loss = 'For buy trades, stop loss must be below entry.'
+      if (take <= entry) errors.take_profit = 'For buy trades, take profit must be above entry.'
+    } else {
+      if (stop <= entry) errors.stop_loss = 'For sell trades, stop loss must be above entry.'
+      if (take >= entry) errors.take_profit = 'For sell trades, take profit must be below entry.'
+    }
+  }
+
+  return errors
+})
+
+function fieldError(name: string) {
+  return submitAttempted.value ? formErrors.value[name] : ''
+}
+
+function extractErrorMessage(error: unknown): string {
+  const axiosError = error as AxiosError<{ message?: string; errors?: Record<string, string[]> }>
+  const responseMessage = axiosError.response?.data?.message
+  const responseErrors = axiosError.response?.data?.errors
+  const firstValidationError = responseErrors
+    ? Object.values(responseErrors).flat().find((message) => Boolean(message))
+    : null
+
+  return firstValidationError || responseMessage || 'Please review input values and try again.'
+}
+
 function buildPayload(): TradePayload {
+  const closeDate = parseLocalDateTime(form.date)
+  if (closeDate === null) {
+    throw new Error('Close date is invalid.')
+  }
+
   return {
-    pair: form.pair.toUpperCase(),
+    symbol: form.symbol.trim().toUpperCase(),
     direction: form.direction,
-    date: new Date(form.date).toISOString(),
-    model: form.model,
-    session: form.session,
+    close_date: new Date(closeDate).toISOString(),
+    session: form.session.trim() || undefined,
+    strategy_model: form.model.trim() || undefined,
     entry_price: Number(form.entry_price),
     stop_loss: Number(form.stop_loss),
     take_profit: Number(form.take_profit),
-    lot_size: Number(form.lot_size),
-    profit_loss: Number(form.profit_loss),
-    rr: Number(form.rr),
+    actual_exit_price: Number(form.actual_exit_price),
+    position_size: Number(form.position_size),
+    account_balance_before_trade: Number(form.account_balance_before_trade),
+    followed_rules: form.followed_rules,
+    emotion: form.emotion,
     notes: form.notes.trim() ? form.notes.trim() : null,
   }
 }
 
 async function submitForm() {
-  if (!form.pair || !form.model || !form.session || !form.date) return
+  submitAttempted.value = true
+  const firstError = Object.values(formErrors.value)[0]
+  if (firstError) {
+    uiStore.toast({
+      type: 'error',
+      title: 'Invalid trade input',
+      message: firstError,
+    })
+    return
+  }
 
   try {
     const payload = buildPayload()
@@ -112,24 +230,24 @@ async function submitForm() {
       uiStore.toast({
         type: 'success',
         title: 'Trade updated',
-        message: `${payload.pair} was updated successfully.`,
+        message: `${payload.symbol} was updated successfully.`,
       })
     } else {
       await tradeStore.addTrade(payload)
       uiStore.toast({
         type: 'success',
         title: 'Trade added',
-        message: `${payload.pair} has been saved to your journal.`,
+        message: `${payload.symbol} has been saved to your journal.`,
       })
     }
 
     closeModal()
     resetForm()
-  } catch {
+  } catch (error) {
     uiStore.toast({
       type: 'error',
       title: 'Failed to save trade',
-      message: 'Please review input values and try again.',
+      message: extractErrorMessage(error),
     })
   }
 }
@@ -158,6 +276,15 @@ async function removeTrade(id: number) {
 }
 
 async function applyFilters() {
+  if (filters.value.date_from && filters.value.date_to && filters.value.date_from > filters.value.date_to) {
+    uiStore.toast({
+      type: 'error',
+      title: 'Invalid date range',
+      message: 'Date From cannot be later than Date To.',
+    })
+    return
+  }
+
   await tradeStore.fetchTrades(1)
 }
 
@@ -188,90 +315,52 @@ onMounted(async () => {
 <template>
   <div class="space-y-6">
     <GlassPanel>
-      <div class="flex flex-wrap items-end justify-between gap-4">
-        <div class="grid min-w-[280px] flex-1 grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-5">
-          <label class="text-xs uppercase tracking-[0.14em] text-slate-400">
-            Pair
-            <input
-              v-model="filters.pair"
-              type="text"
-              placeholder="EURUSD"
-              class="mt-2 w-full rounded-xl border-slate-700 bg-slate-900/60 text-sm text-slate-100"
-            />
-          </label>
-          <label class="text-xs uppercase tracking-[0.14em] text-slate-400">
-            Model
-            <input
-              v-model="filters.model"
-              type="text"
-              placeholder="Breakout"
-              class="mt-2 w-full rounded-xl border-slate-700 bg-slate-900/60 text-sm text-slate-100"
-            />
-          </label>
-          <label class="text-xs uppercase tracking-[0.14em] text-slate-400">
-            Direction
-            <select
-              v-model="filters.direction"
-              class="mt-2 w-full rounded-xl border-slate-700 bg-slate-900/60 text-sm text-slate-100"
-            >
-              <option value="">All</option>
-              <option value="buy">Buy</option>
-              <option value="sell">Sell</option>
-            </select>
-          </label>
-          <label class="text-xs uppercase tracking-[0.14em] text-slate-400">
-            Date From
-            <input
-              v-model="filters.date_from"
-              type="date"
-              class="mt-2 w-full rounded-xl border-slate-700 bg-slate-900/60 text-sm text-slate-100"
-            />
-          </label>
-          <label class="text-xs uppercase tracking-[0.14em] text-slate-400">
-            Date To
-            <input
-              v-model="filters.date_to"
-              type="date"
-              class="mt-2 w-full rounded-xl border-slate-700 bg-slate-900/60 text-sm text-slate-100"
-            />
-          </label>
+      <div class="section-head">
+        <h2 class="section-title">Trade Filters</h2>
+        <div class="flex flex-wrap items-center gap-2">
+          <button class="btn btn-primary inline-flex items-center gap-2 px-4 py-2 text-sm" @click="openAddModal">
+            <Plus class="h-4 w-4" />
+            Add Trade
+          </button>
+          <button class="btn btn-ghost px-4 py-2 text-sm" @click="applyFilters">Apply</button>
+          <button v-if="hasFilters" class="btn btn-ghost px-4 py-2 text-sm" @click="clearFilters">Reset</button>
         </div>
+      </div>
 
-        <div class="flex items-center gap-2">
-          <button
-            class="rounded-2xl border border-emerald-400/70 bg-emerald-500/20 px-4 py-2 text-sm font-semibold text-emerald-100 transition-all duration-200 ease-in-out hover:bg-emerald-500/35"
-            @click="openAddModal"
-          >
-            <span class="inline-flex items-center gap-2">
-              <Plus class="h-4 w-4" />
-              Add Trade
-            </span>
-          </button>
-          <button
-            class="rounded-2xl border border-slate-600 px-4 py-2 text-sm font-semibold transition-all duration-200 ease-in-out hover:bg-slate-700/40"
-            @click="applyFilters"
-          >
-            Apply
-          </button>
-          <button
-            v-if="hasFilters"
-            class="rounded-2xl border border-slate-600 px-4 py-2 text-sm font-semibold transition-all duration-200 ease-in-out hover:bg-slate-700/40"
-            @click="clearFilters"
-          >
-            Reset
-          </button>
-        </div>
+      <div class="form-block grid grid-premium md:grid-cols-2 xl:grid-cols-5">
+        <label>
+          Symbol
+          <input v-model="filters.pair" type="text" placeholder="EURUSD" class="field field-sm" />
+        </label>
+        <label>
+          Strategy Model
+          <input v-model="filters.model" type="text" placeholder="Breakout" class="field field-sm" />
+        </label>
+        <label>
+          Direction
+          <select v-model="filters.direction" class="field field-sm">
+            <option value="">All</option>
+            <option value="buy">Buy</option>
+            <option value="sell">Sell</option>
+          </select>
+        </label>
+        <label>
+          Date From
+          <input v-model="filters.date_from" :max="filters.date_to || undefined" type="date" class="field field-sm" />
+        </label>
+        <label>
+          Date To
+          <input v-model="filters.date_to" :min="filters.date_from || undefined" type="date" class="field field-sm" />
+        </label>
       </div>
     </GlassPanel>
 
     <GlassPanel>
-      <div class="mb-4 flex items-center justify-between">
-        <h2 class="text-lg font-bold">Trades</h2>
-        <p class="text-sm text-slate-400">
+      <div class="section-head">
+        <h2 class="section-title">Trades</h2>
+        <p class="section-note">
           <span v-if="loading">Loading...</span>
-          <span v-else>
-            <AnimatedNumber :value="pagination.total" /> records
-          </span>
+          <span v-else><AnimatedNumber :value="pagination.total" /> records</span>
         </p>
       </div>
 
@@ -288,57 +377,47 @@ onMounted(async () => {
         @cta="openAddModal"
       />
 
-      <div v-else class="overflow-x-auto">
-        <table class="min-w-full text-left text-sm">
+      <div v-else class="table-wrap">
+        <table class="table">
           <thead>
-            <tr class="border-b border-slate-700/80 text-xs uppercase tracking-[0.12em] text-slate-400">
-              <th class="px-3 py-3">Pair</th>
-              <th class="px-3 py-3">Direction</th>
-              <th class="px-3 py-3">Date</th>
-              <th class="px-3 py-3">Model</th>
-              <th class="px-3 py-3">Profit/Loss</th>
-              <th class="px-3 py-3">R:R</th>
-              <th class="px-3 py-3">Session</th>
-              <th class="px-3 py-3 text-right">Actions</th>
+            <tr>
+              <th>Symbol</th>
+              <th>Direction</th>
+              <th>Date</th>
+              <th>Profit/Loss</th>
+              <th>R-Multiple</th>
+              <th>Risk %</th>
+              <th>Emotion</th>
+              <th>Rules</th>
+              <th class="text-right">Actions</th>
             </tr>
           </thead>
           <tbody>
-            <tr
-              v-for="trade in trades"
-              :key="trade.id"
-              class="border-b border-slate-800/70 transition-all duration-200 ease-in-out hover:bg-slate-900/70"
-            >
-              <td class="px-3 py-3 font-semibold text-slate-100">{{ trade.pair }}</td>
-              <td class="px-3 py-3">
-                <span
-                  class="rounded-xl px-2.5 py-1 text-xs font-semibold uppercase"
-                  :class="trade.direction === 'buy' ? 'bg-emerald-500/20 text-emerald-300' : 'bg-rose-500/20 text-rose-300'"
-                >
+            <tr v-for="trade in trades" :key="trade.id">
+              <td class="font-semibold">{{ trade.pair }}</td>
+              <td>
+                <span :class="trade.direction === 'buy' ? 'pill pill-positive' : 'pill pill-negative'">
                   {{ trade.direction }}
                 </span>
               </td>
-              <td class="px-3 py-3 text-slate-300">{{ asDate(trade.date) }}</td>
-              <td class="px-3 py-3 text-slate-300">{{ trade.model }}</td>
-              <td
-                class="px-3 py-3 font-semibold"
-                :class="Number(trade.profit_loss) >= 0 ? 'text-emerald-400' : 'text-rose-400'"
-              >
+              <td class="muted">{{ asDate(trade.date) }}</td>
+              <td class="font-semibold" :class="Number(trade.profit_loss) >= 0 ? 'positive' : 'negative'">
                 {{ asSignedCurrency(trade.profit_loss) }}
               </td>
-              <td class="px-3 py-3 text-slate-200">{{ Number(trade.rr).toFixed(2) }}</td>
-              <td class="px-3 py-3 text-slate-300">{{ trade.session }}</td>
-              <td class="px-3 py-3">
+              <td class="value-display">{{ Number(trade.r_multiple ?? trade.rr).toFixed(2) }}</td>
+              <td class="value-display">{{ Number(trade.risk_percent ?? 0).toFixed(2) }}%</td>
+              <td class="muted">{{ trade.emotion || 'neutral' }}</td>
+              <td>
+                <span :class="trade.followed_rules ? 'pill pill-positive' : 'pill pill-negative'">
+                  {{ trade.followed_rules ? 'Followed' : 'Broke' }}
+                </span>
+              </td>
+              <td>
                 <div class="flex items-center justify-end gap-2">
-                  <button
-                    class="rounded-xl border border-slate-600 p-2 text-slate-200 transition-all duration-200 ease-in-out hover:border-emerald-400/70 hover:bg-emerald-500/20"
-                    @click="openEditModal(trade)"
-                  >
+                  <button class="btn btn-ghost p-2" @click="openEditModal(trade)">
                     <Pencil class="h-4 w-4" />
                   </button>
-                  <button
-                    class="rounded-xl border border-rose-400/40 p-2 text-rose-300 transition-all duration-200 ease-in-out hover:bg-rose-500/20"
-                    @click="removeTrade(trade.id)"
-                  >
+                  <button class="btn btn-danger p-2" @click="removeTrade(trade.id)">
                     <Trash2 class="h-4 w-4" />
                   </button>
                 </div>
@@ -349,16 +428,12 @@ onMounted(async () => {
       </div>
 
       <div class="mt-4 flex items-center justify-between text-sm">
-        <button
-          class="rounded-xl border border-slate-600 px-3 py-1.5 transition-all duration-200 ease-in-out hover:bg-slate-700/40 disabled:opacity-50"
-          :disabled="pagination.current_page === 1"
-          @click="changePage(-1)"
-        >
+        <button class="btn btn-ghost px-3 py-1.5" :disabled="pagination.current_page === 1" @click="changePage(-1)">
           Previous
         </button>
-        <span class="text-slate-300">Page {{ pagination.current_page }} of {{ pagination.last_page }}</span>
+        <span class="muted">Page {{ pagination.current_page }} of {{ pagination.last_page }}</span>
         <button
-          class="rounded-xl border border-slate-600 px-3 py-1.5 transition-all duration-200 ease-in-out hover:bg-slate-700/40 disabled:opacity-50"
+          class="btn btn-ghost px-3 py-1.5"
           :disabled="pagination.current_page === pagination.last_page"
           @click="changePage(1)"
         >
@@ -375,10 +450,7 @@ onMounted(async () => {
       leave-from-class="opacity-100"
       leave-to-class="opacity-0"
     >
-      <div
-        v-if="isModalOpen"
-        class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm"
-      >
+      <div v-if="isModalOpen" class="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4 backdrop-blur-sm">
         <Transition
           enter-active-class="transition duration-200 ease-out"
           enter-from-class="translate-y-2 scale-[0.98] opacity-0"
@@ -387,154 +459,162 @@ onMounted(async () => {
           leave-from-class="translate-y-0 scale-100 opacity-100"
           leave-to-class="translate-y-2 scale-[0.98] opacity-0"
         >
-          <div class="glass-card w-full max-w-3xl rounded-2xl border border-slate-700 p-6">
+          <div class="panel w-full max-w-4xl p-6">
             <div class="mb-5 flex items-center justify-between">
               <h3 class="text-xl font-bold">{{ modalTitle }}</h3>
-              <button
-                class="rounded-xl border border-slate-600 p-2 text-slate-300 transition-all duration-200 ease-in-out hover:bg-slate-700/40"
-                @click="closeModal"
-              >
+              <button class="btn btn-ghost p-2" @click="closeModal">
                 <X class="h-4 w-4" />
               </button>
             </div>
 
-            <form class="space-y-4" @submit.prevent="submitForm">
-              <div class="grid gap-4 md:grid-cols-2">
-                <label class="text-xs uppercase tracking-[0.14em] text-slate-400">
-                  Pair
+            <form class="form-block space-y-4" @submit.prevent="submitForm">
+              <p class="text-sm muted">
+                Profit/Loss, R-Multiple, Risk %, and account balance after trade are calculated server-side.
+              </p>
+
+              <div class="grid grid-premium md:grid-cols-2">
+                <label>
+                  Symbol
                   <input
-                    v-model="form.pair"
+                    v-model="form.symbol"
                     required
                     type="text"
                     placeholder="EURUSD"
-                    class="mt-2 w-full rounded-xl border-slate-700 bg-slate-900/60 text-sm text-slate-100"
+                    class="field"
+                    :class="{ 'field-invalid': fieldError('symbol') }"
                   />
+                  <p v-if="fieldError('symbol')" class="field-error-text">{{ fieldError('symbol') }}</p>
                 </label>
-                <label class="text-xs uppercase tracking-[0.14em] text-slate-400">
+                <label>
                   Direction
-                  <select
-                    v-model="form.direction"
-                    class="mt-2 w-full rounded-xl border-slate-700 bg-slate-900/60 text-sm text-slate-100"
-                  >
+                  <select v-model="form.direction" class="field">
                     <option value="buy">Buy</option>
                     <option value="sell">Sell</option>
                   </select>
                 </label>
-                <label class="text-xs uppercase tracking-[0.14em] text-slate-400">
-                  Date
+                <label>
+                  Close Date
                   <input
                     v-model="form.date"
                     required
                     type="datetime-local"
-                    class="mt-2 w-full rounded-xl border-slate-700 bg-slate-900/60 text-sm text-slate-100"
+                    :max="closeDateMax"
+                    class="field"
+                    :class="{ 'field-invalid': fieldError('date') }"
                   />
+                  <p v-if="fieldError('date')" class="field-error-text">{{ fieldError('date') }}</p>
                 </label>
-                <label class="text-xs uppercase tracking-[0.14em] text-slate-400">
-                  Session
-                  <input
-                    v-model="form.session"
-                    required
-                    type="text"
-                    placeholder="London"
-                    class="mt-2 w-full rounded-xl border-slate-700 bg-slate-900/60 text-sm text-slate-100"
-                  />
+                <label>
+                  Emotion
+                  <select v-model="form.emotion" class="field">
+                    <option v-for="emotion in emotionOptions" :key="emotion" :value="emotion">
+                      {{ emotion }}
+                    </option>
+                  </select>
                 </label>
-                <label class="text-xs uppercase tracking-[0.14em] text-slate-400">
-                  Model
-                  <input
-                    v-model="form.model"
-                    required
-                    type="text"
-                    placeholder="Liquidity Sweep"
-                    class="mt-2 w-full rounded-xl border-slate-700 bg-slate-900/60 text-sm text-slate-100"
-                  />
-                </label>
-                <label class="text-xs uppercase tracking-[0.14em] text-slate-400">
-                  Lot Size
-                  <input
-                    v-model.number="form.lot_size"
-                    required
-                    type="number"
-                    step="0.0001"
-                    min="0.0001"
-                    class="mt-2 w-full rounded-xl border-slate-700 bg-slate-900/60 text-sm text-slate-100"
-                  />
-                </label>
-                <label class="text-xs uppercase tracking-[0.14em] text-slate-400">
+                <label>
                   Entry Price
                   <input
                     v-model.number="form.entry_price"
                     required
                     type="number"
+                    min="0.000001"
                     step="0.000001"
-                    class="mt-2 w-full rounded-xl border-slate-700 bg-slate-900/60 text-sm text-slate-100"
+                    class="field"
+                    :class="{ 'field-invalid': fieldError('entry_price') }"
                   />
+                  <p v-if="fieldError('entry_price')" class="field-error-text">{{ fieldError('entry_price') }}</p>
                 </label>
-                <label class="text-xs uppercase tracking-[0.14em] text-slate-400">
+                <label>
                   Stop Loss
                   <input
                     v-model.number="form.stop_loss"
                     required
                     type="number"
+                    min="0.000001"
                     step="0.000001"
-                    class="mt-2 w-full rounded-xl border-slate-700 bg-slate-900/60 text-sm text-slate-100"
+                    class="field"
+                    :class="{ 'field-invalid': fieldError('stop_loss') }"
                   />
+                  <p v-if="fieldError('stop_loss')" class="field-error-text">{{ fieldError('stop_loss') }}</p>
                 </label>
-                <label class="text-xs uppercase tracking-[0.14em] text-slate-400">
+                <label>
                   Take Profit
                   <input
                     v-model.number="form.take_profit"
                     required
                     type="number"
+                    min="0.000001"
                     step="0.000001"
-                    class="mt-2 w-full rounded-xl border-slate-700 bg-slate-900/60 text-sm text-slate-100"
+                    class="field"
+                    :class="{ 'field-invalid': fieldError('take_profit') }"
                   />
+                  <p v-if="fieldError('take_profit')" class="field-error-text">{{ fieldError('take_profit') }}</p>
                 </label>
-                <label class="text-xs uppercase tracking-[0.14em] text-slate-400">
-                  Profit/Loss
+                <label>
+                  Actual Exit Price
                   <input
-                    v-model.number="form.profit_loss"
+                    v-model.number="form.actual_exit_price"
+                    required
+                    type="number"
+                    min="0.000001"
+                    step="0.000001"
+                    class="field"
+                    :class="{ 'field-invalid': fieldError('actual_exit_price') }"
+                  />
+                  <p v-if="fieldError('actual_exit_price')" class="field-error-text">{{ fieldError('actual_exit_price') }}</p>
+                </label>
+                <label>
+                  Position Size
+                  <input
+                    v-model.number="form.position_size"
+                    required
+                    type="number"
+                    step="0.0001"
+                    min="0.0001"
+                    class="field"
+                    :class="{ 'field-invalid': fieldError('position_size') }"
+                  />
+                  <p v-if="fieldError('position_size')" class="field-error-text">{{ fieldError('position_size') }}</p>
+                </label>
+                <label>
+                  Account Balance Before
+                  <input
+                    v-model.number="form.account_balance_before_trade"
                     required
                     type="number"
                     step="0.01"
-                    class="mt-2 w-full rounded-xl border-slate-700 bg-slate-900/60 text-sm text-slate-100"
+                    min="0.01"
+                    class="field"
+                    :class="{ 'field-invalid': fieldError('account_balance_before_trade') }"
                   />
+                  <p v-if="fieldError('account_balance_before_trade')" class="field-error-text">
+                    {{ fieldError('account_balance_before_trade') }}
+                  </p>
                 </label>
-                <label class="text-xs uppercase tracking-[0.14em] text-slate-400">
-                  R:R
-                  <input
-                    v-model.number="form.rr"
-                    required
-                    type="number"
-                    step="0.01"
-                    min="0"
-                    class="mt-2 w-full rounded-xl border-slate-700 bg-slate-900/60 text-sm text-slate-100"
-                  />
+                <label>
+                  Session (Optional)
+                  <input v-model="form.session" type="text" placeholder="London" class="field" />
+                </label>
+                <label>
+                  Strategy Model (Optional)
+                  <input v-model="form.model" type="text" placeholder="Liquidity Sweep" class="field" />
                 </label>
               </div>
 
-              <label class="block text-xs uppercase tracking-[0.14em] text-slate-400">
+              <label class="inline-flex items-center gap-2 text-sm font-semibold">
+                <input v-model="form.followed_rules" type="checkbox" class="h-4 w-4" />
+                Followed Rules
+              </label>
+
+              <label>
                 Notes
-                <textarea
-                  v-model="form.notes"
-                  rows="3"
-                  class="mt-2 w-full rounded-xl border-slate-700 bg-slate-900/60 text-sm text-slate-100"
-                />
+                <textarea v-model="form.notes" rows="3" class="field" />
               </label>
 
               <div class="flex items-center justify-end gap-2 pt-2">
-                <button
-                  type="button"
-                  class="rounded-2xl border border-slate-600 px-4 py-2 text-sm font-semibold transition-all duration-200 ease-in-out hover:bg-slate-700/40"
-                  @click="closeModal"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  class="rounded-2xl border border-emerald-400/70 bg-emerald-500/20 px-4 py-2 text-sm font-semibold text-emerald-100 transition-all duration-200 ease-in-out hover:bg-emerald-500/35"
-                  :disabled="saving"
-                >
+                <button type="button" class="btn btn-ghost px-4 py-2 text-sm" @click="closeModal">Cancel</button>
+                <button type="submit" class="btn btn-primary px-4 py-2 text-sm" :disabled="saving">
                   {{ saving ? 'Saving...' : editingTradeId ? 'Update Trade' : 'Save Trade' }}
                 </button>
               </div>

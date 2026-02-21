@@ -25,25 +25,35 @@ const normalized = computed(() => {
   ]
 })
 
+function readVar(name: string, fallback: string) {
+  if (typeof window === 'undefined') return fallback
+  const value = getComputedStyle(document.documentElement).getPropertyValue(name).trim()
+  return value || fallback
+}
+
 const option = computed(() => ({
+  textStyle: {
+    color: readVar('--text', '#18211b'),
+    fontFamily: 'Manrope, sans-serif',
+  },
   backgroundColor: 'transparent',
   animationDuration: 820,
   animationDurationUpdate: 520,
   animationEasing: 'cubicOut',
   tooltip: {
-    backgroundColor: '#11161D',
-    borderColor: '#1F2937',
-    textStyle: { color: '#E5E7EB' },
+    backgroundColor: readVar('--panel', '#ffffff'),
+    borderColor: readVar('--border', '#d4ddd5'),
+    textStyle: { color: readVar('--text', '#18211b') },
   },
   radar: {
     radius: '66%',
     splitNumber: 4,
-    axisName: { color: '#9CA3AF', fontSize: 11 },
-    axisLine: { lineStyle: { color: '#1F2937' } },
-    splitLine: { lineStyle: { color: 'rgba(31, 41, 55, 0.65)' } },
+    axisName: { color: readVar('--muted', '#647469'), fontSize: 11 },
+    axisLine: { lineStyle: { color: readVar('--border', '#d4ddd5') } },
+    splitLine: { lineStyle: { color: 'rgba(100, 116, 105, 0.3)' } },
     splitArea: {
       areaStyle: {
-        color: ['rgba(17, 22, 29, 0.55)', 'rgba(17, 22, 29, 0.78)'],
+        color: ['rgba(255, 255, 255, 0.4)', 'rgba(232, 237, 229, 0.55)'],
       },
     },
     indicator: [
@@ -64,10 +74,10 @@ const option = computed(() => ({
           symbol: 'circle',
           symbolSize: 5,
           lineStyle: {
-            color: '#22C55E',
+            color: readVar('--primary', '#179a56'),
             width: 2.5,
           },
-          itemStyle: { color: '#22C55E' },
+          itemStyle: { color: readVar('--primary', '#179a56') },
           areaStyle: {
             color: {
               type: 'linear',

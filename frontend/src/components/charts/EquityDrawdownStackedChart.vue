@@ -3,11 +3,13 @@ import { computed } from 'vue'
 
 const props = withDefaults(
   defineProps<{
-    points: Array<{ date: string; equity: number }>
+    timestamps: string[]
+    equity: number[]
+    drawdown: number[]
     heightClass?: string
   }>(),
   {
-    heightClass: 'h-[320px]',
+    heightClass: 'h-[360px]',
   }
 )
 
@@ -23,37 +25,48 @@ const option = computed(() => ({
     fontFamily: 'Manrope, sans-serif',
   },
   backgroundColor: 'transparent',
-  animationDuration: 750,
-  animationDurationUpdate: 500,
-  animationEasing: 'cubicOut',
   tooltip: {
     trigger: 'axis',
     backgroundColor: readVar('--panel', '#ffffff'),
     borderColor: readVar('--border', '#d4ddd5'),
-    textStyle: {
-      color: readVar('--text', '#18211b'),
-    },
+    textStyle: { color: readVar('--text', '#18211b') },
   },
-  grid: { left: 42, right: 18, top: 20, bottom: 32 },
+  legend: {
+    top: 2,
+    textStyle: { color: readVar('--muted', '#647469') },
+  },
+  grid: { left: 48, right: 24, top: 38, bottom: 34 },
   xAxis: {
     type: 'category',
-    data: props.points.map((point) => point.date),
-    axisLine: { lineStyle: { color: readVar('--border', '#d4ddd5') } },
+    data: props.timestamps,
     axisLabel: { color: readVar('--muted', '#647469') },
-  },
-  yAxis: {
-    type: 'value',
     axisLine: { lineStyle: { color: readVar('--border', '#d4ddd5') } },
-    splitLine: { lineStyle: { color: 'rgba(100, 116, 105, 0.24)' } },
-    axisLabel: { color: readVar('--muted', '#647469') },
   },
+  yAxis: [
+    {
+      type: 'value',
+      name: 'Equity',
+      axisLabel: { color: readVar('--muted', '#647469') },
+      axisLine: { lineStyle: { color: readVar('--border', '#d4ddd5') } },
+      splitLine: { lineStyle: { color: 'rgba(100, 116, 105, 0.2)' } },
+    },
+    {
+      type: 'value',
+      name: 'Drawdown',
+      axisLabel: { color: readVar('--muted', '#647469') },
+      axisLine: { lineStyle: { color: readVar('--border', '#d4ddd5') } },
+      splitLine: { show: false },
+    },
+  ],
   series: [
     {
-      data: props.points.map((point) => point.equity),
+      name: 'Equity',
       type: 'line',
+      yAxisIndex: 0,
       smooth: true,
       symbol: 'none',
-      lineStyle: { width: 3, color: readVar('--primary', '#179a56') },
+      data: props.equity,
+      lineStyle: { width: 2.6, color: readVar('--primary', '#179a56') },
       areaStyle: {
         color: {
           type: 'linear',
@@ -68,6 +81,17 @@ const option = computed(() => ({
         },
       },
     },
+    {
+      name: 'Drawdown',
+      type: 'bar',
+      yAxisIndex: 1,
+      barWidth: 12,
+      data: props.drawdown,
+      itemStyle: {
+        borderRadius: [4, 4, 0, 0],
+        color: 'rgba(217, 70, 70, 0.68)',
+      },
+    },
   ],
 }))
 </script>
@@ -75,3 +99,4 @@ const option = computed(() => ({
 <template>
   <VChart :option="option" autoresize :class="heightClass" />
 </template>
+

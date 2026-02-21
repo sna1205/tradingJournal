@@ -236,140 +236,92 @@ onMounted(async () => {
 <template>
   <div class="space-y-6">
     <section class="grid grid-premium md:grid-cols-3">
-      <GlassPanel>
-        <p class="text-xs uppercase tracking-[0.14em] text-slate-400">Total Missed</p>
-        <p class="mt-2 text-2xl font-bold text-slate-100">
+      <GlassPanel class="metric-card">
+        <p class="kicker-label">Total Missed</p>
+        <p class="metric-value value-display">
           <AnimatedNumber :value="pagination.total" />
         </p>
       </GlassPanel>
-      <GlassPanel>
-        <p class="text-xs uppercase tracking-[0.14em] text-slate-400">Most Missed Model</p>
-        <p class="mt-2 text-2xl font-bold text-emerald-300">{{ mostMissedModel }}</p>
+      <GlassPanel class="metric-card">
+        <p class="kicker-label">Most Missed Model</p>
+        <p class="metric-value positive">{{ mostMissedModel }}</p>
       </GlassPanel>
-      <GlassPanel>
-        <p class="text-xs uppercase tracking-[0.14em] text-slate-400">Most Missed Session</p>
-        <p class="mt-2 text-2xl font-bold text-amber-300">{{ mostMissedSession }}</p>
+      <GlassPanel class="metric-card">
+        <p class="kicker-label">Most Missed Session</p>
+        <p class="metric-value">{{ mostMissedSession }}</p>
       </GlassPanel>
     </section>
 
     <GlassPanel>
-      <div class="mb-4 flex items-center justify-between">
-        <h2 class="text-lg font-bold">{{ isEditing ? 'Edit Missed Trade' : 'Add Missed Trade' }}</h2>
-        <button
-          class="rounded-2xl border border-slate-600 px-3 py-2 text-sm font-semibold transition-all duration-200 ease-in-out hover:bg-slate-700/40"
-          @click="startAdd"
-        >
-          <span class="inline-flex items-center gap-2">
-            <Plus class="h-4 w-4" />
-            New Entry
-          </span>
+      <div class="section-head">
+        <h2 class="section-title">{{ isEditing ? 'Edit Missed Trade' : 'Add Missed Trade' }}</h2>
+        <button class="btn btn-primary inline-flex items-center gap-2 px-3 py-2 text-sm" @click="startAdd">
+          <Plus class="h-4 w-4" />
+          New Entry
         </button>
       </div>
 
-      <form class="space-y-4" @submit.prevent="submit">
-        <div class="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-          <label class="text-xs uppercase tracking-[0.14em] text-slate-400">
+      <form class="form-block space-y-4" @submit.prevent="submit">
+        <div class="grid grid-premium md:grid-cols-2 xl:grid-cols-4">
+          <label>
             Pair
-            <input
-              v-model="form.pair"
-              required
-              type="text"
-              placeholder="EURUSD"
-              class="mt-2 w-full rounded-xl border-slate-700 bg-slate-900/60 text-sm text-slate-100"
-            />
+            <input v-model="form.pair" required type="text" placeholder="EURUSD" class="field" />
           </label>
-          <label class="text-xs uppercase tracking-[0.14em] text-slate-400">
+          <label>
             Model
-            <input
-              v-model="form.model"
-              required
-              type="text"
-              placeholder="Liquidity Sweep"
-              class="mt-2 w-full rounded-xl border-slate-700 bg-slate-900/60 text-sm text-slate-100"
-            />
+            <input v-model="form.model" required type="text" placeholder="Liquidity Sweep" class="field" />
           </label>
-          <label class="text-xs uppercase tracking-[0.14em] text-slate-400">
+          <label>
             Date
-            <input
-              v-model="form.date"
-              required
-              type="datetime-local"
-              class="mt-2 w-full rounded-xl border-slate-700 bg-slate-900/60 text-sm text-slate-100"
-            />
+            <input v-model="form.date" required type="datetime-local" class="field" />
           </label>
-          <label class="text-xs uppercase tracking-[0.14em] text-slate-400">
+          <label>
             Custom Tag
             <div class="mt-2 flex gap-2">
               <input
                 v-model="customTag"
                 type="text"
                 placeholder="discipline"
-                class="w-full rounded-xl border-slate-700 bg-slate-900/60 text-sm text-slate-100"
+                class="field mt-0 w-full"
                 @keydown.enter.prevent="addCustomTag"
               />
-              <button
-                type="button"
-                class="rounded-xl border border-emerald-400/60 px-3 text-xs font-semibold text-emerald-200 transition-all duration-200 ease-in-out hover:bg-emerald-500/20"
-                @click="addCustomTag"
-              >
-                Add
-              </button>
+              <button type="button" class="btn btn-ghost px-3 text-xs" @click="addCustomTag">Add</button>
             </div>
           </label>
         </div>
 
         <div>
-          <p class="mb-2 text-xs uppercase tracking-[0.14em] text-slate-400">Reason Tags</p>
-          <div class="flex flex-wrap gap-2">
+          <p class="kicker-label mb-2">Reason Tags</p>
+          <div class="chip-row">
             <button
               v-for="tag in reasonTagOptions"
               :key="tag"
               type="button"
-              class="rounded-full border px-3 py-1 text-xs font-semibold transition-all duration-200 ease-in-out"
-              :class="form.tags.includes(tag)
-                ? 'border-emerald-400/80 bg-emerald-500/20 text-emerald-200'
-                : 'border-slate-700 bg-slate-900/50 text-slate-300 hover:bg-slate-800'"
+              class="chip-btn"
+              :class="{ active: form.tags.includes(tag) }"
               @click="toggleTag(tag)"
             >
               {{ tag }}
             </button>
           </div>
-          <div v-if="form.tags.length > 0" class="mt-3 flex flex-wrap gap-2">
-            <span
-              v-for="tag in form.tags"
-              :key="`selected-${tag}`"
-              class="inline-flex items-center gap-1 rounded-full border border-slate-600 bg-slate-800/80 px-3 py-1 text-xs text-slate-200"
-            >
+          <div v-if="form.tags.length > 0" class="chip-row mt-3">
+            <span v-for="tag in form.tags" :key="`selected-${tag}`" class="pill">
               {{ tag }}
-              <button type="button" class="text-slate-400 hover:text-slate-200" @click="removeTag(tag)">
+              <button type="button" class="inline-flex items-center text-[var(--muted)]" @click="removeTag(tag)">
                 <X class="h-3 w-3" />
               </button>
             </span>
           </div>
         </div>
 
-        <label class="block text-xs uppercase tracking-[0.14em] text-slate-400">
+        <label>
           Notes
-          <textarea
-            v-model="form.notes"
-            rows="3"
-            class="mt-2 w-full rounded-xl border-slate-700 bg-slate-900/60 text-sm text-slate-100"
-          />
+          <textarea v-model="form.notes" rows="3" class="field" />
         </label>
 
         <div class="flex justify-end gap-2">
-          <button
-            type="button"
-            class="rounded-2xl border border-slate-600 px-4 py-2 text-sm font-semibold transition-all duration-200 ease-in-out hover:bg-slate-700/40"
-            @click="resetForm"
-          >
-            Clear
-          </button>
-          <button
-            type="submit"
-            class="rounded-2xl border border-emerald-400/70 bg-emerald-500/20 px-4 py-2 text-sm font-semibold text-emerald-100 transition-all duration-200 ease-in-out hover:bg-emerald-500/35"
-            :disabled="saving"
-          >
+          <button type="button" class="btn btn-ghost px-4 py-2 text-sm" @click="resetForm">Clear</button>
+          <button type="submit" class="btn btn-primary px-4 py-2 text-sm" :disabled="saving">
             {{ saving ? 'Saving...' : isEditing ? 'Update Entry' : 'Save Entry' }}
           </button>
         </div>
@@ -377,63 +329,35 @@ onMounted(async () => {
     </GlassPanel>
 
     <GlassPanel>
-      <div class="mb-4 flex flex-wrap items-end gap-3">
-        <label class="text-xs uppercase tracking-[0.14em] text-slate-400">
+      <div class="section-head">
+        <h2 class="section-title">Missed Trades</h2>
+        <div class="flex flex-wrap items-center gap-2">
+          <button class="btn btn-ghost px-4 py-2 text-sm" @click="applyFilters">Apply</button>
+          <button v-if="hasFilters" class="btn btn-ghost px-4 py-2 text-sm" @click="clearFilters">Reset</button>
+        </div>
+      </div>
+
+      <div class="form-block mb-4 grid grid-premium md:grid-cols-2 xl:grid-cols-5">
+        <label>
           Pair
-          <input
-            v-model="filters.pair"
-            type="text"
-            class="mt-2 w-full rounded-xl border-slate-700 bg-slate-900/60 text-sm text-slate-100"
-            placeholder="EURUSD"
-          />
+          <input v-model="filters.pair" type="text" class="field field-sm" placeholder="EURUSD" />
         </label>
-        <label class="text-xs uppercase tracking-[0.14em] text-slate-400">
+        <label>
           Model
-          <input
-            v-model="filters.model"
-            type="text"
-            class="mt-2 w-full rounded-xl border-slate-700 bg-slate-900/60 text-sm text-slate-100"
-            placeholder="Breakout"
-          />
+          <input v-model="filters.model" type="text" class="field field-sm" placeholder="Breakout" />
         </label>
-        <label class="text-xs uppercase tracking-[0.14em] text-slate-400">
+        <label>
           Reason Tag
-          <input
-            v-model="filters.reason"
-            type="text"
-            class="mt-2 w-full rounded-xl border-slate-700 bg-slate-900/60 text-sm text-slate-100"
-            placeholder="session:london"
-          />
+          <input v-model="filters.reason" type="text" class="field field-sm" placeholder="session:london" />
         </label>
-        <label class="text-xs uppercase tracking-[0.14em] text-slate-400">
+        <label>
           Date From
-          <input
-            v-model="filters.date_from"
-            type="date"
-            class="mt-2 w-full rounded-xl border-slate-700 bg-slate-900/60 text-sm text-slate-100"
-          />
+          <input v-model="filters.date_from" type="date" class="field field-sm" />
         </label>
-        <label class="text-xs uppercase tracking-[0.14em] text-slate-400">
+        <label>
           Date To
-          <input
-            v-model="filters.date_to"
-            type="date"
-            class="mt-2 w-full rounded-xl border-slate-700 bg-slate-900/60 text-sm text-slate-100"
-          />
+          <input v-model="filters.date_to" type="date" class="field field-sm" />
         </label>
-        <button
-          class="rounded-2xl border border-slate-600 px-4 py-2 text-sm font-semibold transition-all duration-200 ease-in-out hover:bg-slate-700/40"
-          @click="applyFilters"
-        >
-          Apply
-        </button>
-        <button
-          v-if="hasFilters"
-          class="rounded-2xl border border-slate-600 px-4 py-2 text-sm font-semibold transition-all duration-200 ease-in-out hover:bg-slate-700/40"
-          @click="clearFilters"
-        >
-          Reset
-        </button>
       </div>
 
       <div v-if="loading" class="space-y-3">
@@ -447,51 +371,35 @@ onMounted(async () => {
         :icon="CalendarX2"
       />
 
-      <div v-else class="overflow-x-auto">
-        <table class="min-w-full text-left text-sm">
+      <div v-else class="table-wrap">
+        <table class="table">
           <thead>
-            <tr class="border-b border-slate-700/80 text-xs uppercase tracking-[0.12em] text-slate-400">
-              <th class="px-3 py-3">Pair</th>
-              <th class="px-3 py-3">Model</th>
-              <th class="px-3 py-3">Date</th>
-              <th class="px-3 py-3">Reason Tags</th>
-              <th class="px-3 py-3">Notes</th>
-              <th class="px-3 py-3 text-right">Actions</th>
+            <tr>
+              <th>Pair</th>
+              <th>Model</th>
+              <th>Date</th>
+              <th>Reason Tags</th>
+              <th>Notes</th>
+              <th class="text-right">Actions</th>
             </tr>
           </thead>
           <tbody>
-            <tr
-              v-for="item in missedTrades"
-              :key="item.id"
-              class="border-b border-slate-800/70 transition-all duration-200 ease-in-out hover:bg-slate-900/70"
-            >
-              <td class="px-3 py-3 font-semibold">{{ item.pair }}</td>
-              <td class="px-3 py-3 text-slate-300">{{ item.model }}</td>
-              <td class="px-3 py-3 text-slate-300">{{ asDate(item.date) }}</td>
-              <td class="px-3 py-3">
-                <div class="flex max-w-md flex-wrap gap-1.5">
-                  <span
-                    v-for="tag in parseTags(item.reason)"
-                    :key="`${item.id}-${tag}`"
-                    class="rounded-full border border-slate-600 bg-slate-900/70 px-2 py-0.5 text-[11px] text-slate-200"
-                  >
-                    {{ tag }}
-                  </span>
+            <tr v-for="item in missedTrades" :key="item.id">
+              <td class="font-semibold">{{ item.pair }}</td>
+              <td class="muted">{{ item.model }}</td>
+              <td class="muted">{{ asDate(item.date) }}</td>
+              <td>
+                <div class="chip-row">
+                  <span v-for="tag in parseTags(item.reason)" :key="`${item.id}-${tag}`" class="pill">{{ tag }}</span>
                 </div>
               </td>
-              <td class="px-3 py-3 text-slate-300">{{ item.notes || '-' }}</td>
-              <td class="px-3 py-3">
+              <td class="muted">{{ item.notes || '-' }}</td>
+              <td>
                 <div class="flex items-center justify-end gap-2">
-                  <button
-                    class="rounded-xl border border-slate-600 p-2 text-slate-200 transition-all duration-200 ease-in-out hover:border-emerald-400/70 hover:bg-emerald-500/20"
-                    @click="startEdit(item)"
-                  >
+                  <button class="btn btn-ghost p-2" @click="startEdit(item)">
                     <Pencil class="h-4 w-4" />
                   </button>
-                  <button
-                    class="rounded-xl border border-rose-400/40 p-2 text-rose-300 transition-all duration-200 ease-in-out hover:bg-rose-500/20"
-                    @click="remove(item.id)"
-                  >
+                  <button class="btn btn-danger p-2" @click="remove(item.id)">
                     <Trash2 class="h-4 w-4" />
                   </button>
                 </div>
@@ -502,16 +410,12 @@ onMounted(async () => {
       </div>
 
       <div class="mt-4 flex items-center justify-between text-sm">
-        <button
-          class="rounded-xl border border-slate-600 px-3 py-1.5 transition-all duration-200 ease-in-out hover:bg-slate-700/40 disabled:opacity-50"
-          :disabled="pagination.current_page === 1"
-          @click="changePage(-1)"
-        >
+        <button class="btn btn-ghost px-3 py-1.5" :disabled="pagination.current_page === 1" @click="changePage(-1)">
           Previous
         </button>
-        <span class="text-slate-300">Page {{ pagination.current_page }} of {{ pagination.last_page }}</span>
+        <span class="muted">Page {{ pagination.current_page }} of {{ pagination.last_page }}</span>
         <button
-          class="rounded-xl border border-slate-600 px-3 py-1.5 transition-all duration-200 ease-in-out hover:bg-slate-700/40 disabled:opacity-50"
+          class="btn btn-ghost px-3 py-1.5"
           :disabled="pagination.current_page === pagination.last_page"
           @click="changePage(1)"
         >

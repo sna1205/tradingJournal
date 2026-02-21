@@ -17,16 +17,26 @@ const props = withDefaults(
   }
 )
 
+function readVar(name: string, fallback: string) {
+  if (typeof window === 'undefined') return fallback
+  const value = getComputedStyle(document.documentElement).getPropertyValue(name).trim()
+  return value || fallback
+}
+
 const option = computed(() => ({
+  textStyle: {
+    color: readVar('--text', '#18211b'),
+    fontFamily: 'Manrope, sans-serif',
+  },
   backgroundColor: 'transparent',
   animationDuration: 700,
   animationDurationUpdate: 450,
   animationEasing: 'cubicOut',
   tooltip: {
     trigger: 'axis',
-    backgroundColor: '#11161D',
-    borderColor: '#1F2937',
-    textStyle: { color: '#E5E7EB' },
+    backgroundColor: readVar('--panel', '#ffffff'),
+    borderColor: readVar('--border', '#d4ddd5'),
+    textStyle: { color: readVar('--text', '#18211b') },
     formatter: (params: any[]) => {
       const first = params?.[0]
       const index = first?.dataIndex ?? 0
@@ -46,17 +56,17 @@ const option = computed(() => ({
   xAxis: {
     type: 'category',
     data: props.rows.map((row) => row.date),
-    axisLabel: { color: '#9CA3AF', rotate: 35 },
-    axisLine: { lineStyle: { color: '#1F2937' } },
+    axisLabel: { color: readVar('--muted', '#647469'), rotate: 35 },
+    axisLine: { lineStyle: { color: readVar('--border', '#d4ddd5') } },
   },
   yAxis: {
     type: 'value',
     axisLabel: {
-      color: '#9CA3AF',
+      color: readVar('--muted', '#647469'),
       formatter: (val: number) => `${val}`,
     },
-    axisLine: { lineStyle: { color: '#1F2937' } },
-    splitLine: { lineStyle: { color: 'rgba(31, 41, 55, 0.55)' } },
+    axisLine: { lineStyle: { color: readVar('--border', '#d4ddd5') } },
+    splitLine: { lineStyle: { color: 'rgba(100, 116, 105, 0.24)' } },
   },
   series: [
     {

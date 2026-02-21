@@ -122,8 +122,8 @@ function buildMonthGrid(year: number, month: number): MonthGrid {
 function cellStyle(cell: DayCell | null) {
   if (!cell || cell.trades === 0) {
     return {
-      backgroundColor: '#0F131A',
-      borderColor: '#1F2937',
+      backgroundColor: 'var(--panel)',
+      borderColor: 'var(--border)',
     }
   }
 
@@ -132,21 +132,21 @@ function cellStyle(cell: DayCell | null) {
 
   if (cell.pnl > 0) {
     return {
-      backgroundColor: `rgba(34, 197, 94, ${alpha})`,
-      borderColor: 'rgba(34, 197, 94, 0.7)',
+      backgroundColor: `rgba(34, 197, 94, ${alpha * 0.78})`,
+      borderColor: 'rgba(34, 197, 94, 0.48)',
     }
   }
 
   if (cell.pnl < 0) {
     return {
-      backgroundColor: `rgba(239, 68, 68, ${alpha})`,
-      borderColor: 'rgba(239, 68, 68, 0.7)',
+      backgroundColor: `rgba(239, 68, 68, ${alpha * 0.72})`,
+      borderColor: 'rgba(239, 68, 68, 0.42)',
     }
   }
 
   return {
-    backgroundColor: 'rgba(156, 163, 175, 0.2)',
-    borderColor: '#4B5563',
+    backgroundColor: 'var(--panel-soft)',
+    borderColor: 'var(--border)',
   }
 }
 
@@ -204,17 +204,17 @@ onMounted(async () => {
 
 <template>
   <div class="space-y-4">
-    <div class="flex flex-wrap items-center gap-3 text-xs text-slate-400">
-      <span class="rounded-full border border-slate-700 px-2 py-1">No trade</span>
-      <span class="rounded-full border border-emerald-500/70 bg-emerald-500/20 px-2 py-1">Profit</span>
-      <span class="rounded-full border border-rose-500/70 bg-rose-500/20 px-2 py-1">Loss</span>
-      <span v-if="loading" class="text-slate-500">Loading heatmap...</span>
+    <div class="flex flex-wrap items-center gap-3 text-xs">
+      <span class="pill">No trade</span>
+      <span class="pill pill-positive">Profit</span>
+      <span class="pill pill-negative">Loss</span>
+      <span v-if="loading" class="muted">Loading heatmap...</span>
     </div>
 
     <div class="grid grid-premium">
-      <article class="rounded-2xl border border-slate-800 bg-slate-950/40 p-4">
-        <h4 class="mb-3 text-sm font-semibold tracking-wide text-slate-200">{{ currentMonth.label }}</h4>
-        <div class="mb-2 grid grid-cols-7 gap-1 text-center text-[10px] uppercase tracking-wide text-slate-500">
+      <article class="panel p-4">
+        <h4 class="mb-3 text-sm font-semibold tracking-wide">{{ currentMonth.label }}</h4>
+        <div class="mb-2 grid grid-cols-7 gap-1 text-center text-[10px] uppercase tracking-wide muted">
           <span v-for="day in weekdays" :key="`${currentMonth.key}-${day}`">{{ day }}</span>
         </div>
 
@@ -232,24 +232,21 @@ onMounted(async () => {
               :title="tooltipText(cell)"
             >
               <template v-if="cell">
-                <p class="text-[11px] font-semibold text-slate-100">{{ cell.day }}</p>
-                <p v-if="cell.trades > 0" class="mt-1 text-[10px] text-slate-100/90">{{ cell.trades }} trades</p>
-                <p
-                  v-if="cell.trades > 0"
-                  class="text-[10px] font-semibold"
-                  :class="cell.pnl >= 0 ? 'text-emerald-100' : 'text-rose-100'"
-                >
+                <p class="text-[11px] font-semibold">{{ cell.day }}</p>
+                <p v-if="cell.trades > 0" class="mt-1 text-[10px]">{{ cell.trades }} trades</p>
+                <p v-if="cell.trades > 0" class="text-[10px] font-semibold" :class="cell.pnl >= 0 ? 'positive' : 'negative'">
                   {{ asSignedCurrency(cell.pnl) }}
                 </p>
               </template>
 
               <div
                 v-if="cell"
-                class="pointer-events-none absolute left-1/2 top-0 z-20 hidden w-44 -translate-x-1/2 -translate-y-[105%] rounded-lg border border-slate-700 bg-slate-900 px-2.5 py-2 text-[11px] text-slate-200 shadow-lg group-hover:block"
+                class="pointer-events-none absolute left-1/2 top-0 z-20 hidden w-44 -translate-x-1/2 -translate-y-[105%] rounded-lg border px-2.5 py-2 text-[11px] shadow-lg group-hover:block"
+                style="border-color: var(--border); background: var(--panel); color: var(--text)"
               >
                 <p class="font-semibold">{{ toLocalDate(cell.date).toLocaleDateString() }}</p>
-                <p class="text-slate-300">Trades: {{ cell.trades }}</p>
-                <p :class="cell.pnl >= 0 ? 'text-emerald-300' : 'text-rose-300'">P&L: {{ asSignedCurrency(cell.pnl) }}</p>
+                <p class="muted">Trades: {{ cell.trades }}</p>
+                <p :class="cell.pnl >= 0 ? 'positive' : 'negative'">P&amp;L: {{ asSignedCurrency(cell.pnl) }}</p>
               </div>
             </div>
           </div>

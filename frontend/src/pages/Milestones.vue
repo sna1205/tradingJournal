@@ -112,12 +112,12 @@ onMounted(async () => {
 <template>
   <div class="space-y-6">
     <GlassPanel>
-      <div class="mb-4 flex items-center justify-between">
+      <div class="section-head">
         <div>
-          <h2 class="text-xl font-bold text-slate-100">Milestones</h2>
-          <p class="text-sm text-slate-400">Progress toward key trading discipline and performance targets.</p>
+          <h2 class="text-xl font-bold">Milestones</h2>
+          <p class="section-note">Progress toward key trading discipline and performance targets.</p>
         </div>
-        <span class="rounded-full border border-slate-700 bg-slate-900/60 px-3 py-1 text-xs text-slate-300">
+        <span class="pill">
           {{ loading ? 'Refreshing...' : currentMonthLabel }}
         </span>
       </div>
@@ -136,24 +136,24 @@ onMounted(async () => {
         <article
           v-for="item in milestones"
           :key="item.id"
-          class="rounded-2xl border border-slate-800 bg-slate-950/45 p-4"
+          class="panel p-4"
         >
           <div class="mb-3 flex items-start justify-between gap-3">
             <div>
-              <h3 class="text-sm font-semibold text-slate-100">{{ item.title }}</h3>
-              <p class="mt-1 text-xs text-slate-400">{{ item.description }}</p>
+              <h3 class="text-sm font-semibold">{{ item.title }}</h3>
+              <p class="mt-1 text-xs muted">{{ item.description }}</p>
             </div>
-            <Flag class="mt-0.5 h-4 w-4 text-slate-500" />
+            <Flag class="mt-0.5 h-4 w-4 muted" />
           </div>
 
-          <div class="mb-2 flex items-center justify-between text-xs text-slate-400">
+          <div class="mb-2 flex items-center justify-between text-xs muted">
             <span>
               <AnimatedNumber :value="item.current" :formatter="(value) => item.formatter(value)" />
             </span>
             <span>Target: {{ item.formatter(item.target) }}</span>
           </div>
 
-          <div class="h-2.5 overflow-hidden rounded-full bg-slate-800">
+          <div class="h-2.5 overflow-hidden rounded-full bg-[var(--panel-soft)]">
             <div
               class="h-full rounded-full transition-all duration-300 ease-out"
               :style="{
@@ -163,7 +163,7 @@ onMounted(async () => {
             />
           </div>
 
-          <p class="mt-2 text-right text-xs font-semibold text-slate-300">
+          <p class="mt-2 text-right text-xs font-semibold muted">
             <AnimatedNumber :value="progressPercent(item)" :decimals="1" suffix="%" />
           </p>
         </article>
@@ -172,21 +172,26 @@ onMounted(async () => {
 
     <GlassPanel>
       <div class="mb-4 flex items-center gap-2">
-        <Award class="h-5 w-5 text-emerald-300" />
-        <h3 class="text-lg font-bold text-slate-100">Completed Badges</h3>
+        <Award class="h-5 w-5 text-[var(--primary)]" />
+        <h3 class="text-lg font-bold">Completed Badges</h3>
       </div>
 
       <div v-if="completedMilestones.length > 0" class="flex flex-wrap gap-3">
         <div
           v-for="item in completedMilestones"
           :key="`badge-${item.id}`"
-          class="inline-flex items-center gap-2 rounded-2xl border border-emerald-400/60 bg-emerald-500/20 px-4 py-2 text-sm font-semibold text-emerald-100 shadow-[0_0_24px_rgba(34,197,94,0.35)]"
+          class="inline-flex items-center gap-2 rounded-2xl border px-4 py-2 text-sm font-semibold"
+          :style="{
+            borderColor: 'color-mix(in srgb, var(--primary) 48%, var(--border) 52%)',
+            color: 'color-mix(in srgb, var(--primary) 80%, var(--text) 20%)',
+            background: 'color-mix(in srgb, var(--primary-soft) 72%, var(--panel) 28%)',
+          }"
         >
           <CheckCircle2 class="h-4 w-4" />
           {{ item.title }}
         </div>
       </div>
-      <p v-else class="text-sm text-slate-400">
+      <p v-else class="text-sm muted">
         No milestone completed yet. Keep executing your setup rules.
       </p>
     </GlassPanel>

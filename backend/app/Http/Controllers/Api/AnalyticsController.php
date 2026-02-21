@@ -4,110 +4,355 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Models\Trade;
+use App\Services\Analytics\BehavioralAnalyticsEngine;
+use App\Services\Analytics\EquityEngine;
+use App\Services\Analytics\StreakEngine;
+use App\Services\Analytics\TradeMetricsEngine;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\Request;
 use Illuminate\Support\Collection;
+use Illuminate\Support\Facades\Cache;
 
 class AnalyticsController extends Controller
 {
+    public function __construct(
+        private readonly EquityEngine $equityEngine,
+        private readonly StreakEngine $streakEngine,
+        private readonly TradeMetricsEngine $metricsEngine,
+        private readonly BehavioralAnalyticsEngine $behavioralAnalyticsEngine
+    ) {
+    }
+
     public function overview(Request $request)
     {
-        $query = $this->baseQuery($request);
+        $payload = $this->remember('overview', $request, function () use ($request): array {
+            $query = $this->baseQuery($request);
+            $trades = $this->chronologicalTrades($request);
+            $startingBalance = $this->startingBalance($request);
 
-        $totalTrades = (clone $query)->count();
-        $winningTrades = (clone $query)->where('profit_loss', '>', 0)->count();
-        $totalProfit = (float) ((clone $query)->where('profit_loss', '>', 0)->sum('profit_loss') ?? 0);
-        $totalLoss = abs((float) ((clone $query)->where('profit_loss', '<', 0)->sum('profit_loss') ?? 0));
-        $netProfit = (float) ((clone $query)->sum('profit_loss') ?? 0);
-        $notional = (float) ((clone $query)->selectRaw('SUM(entry_price * lot_size) as total_notional')->value('total_notional') ?? 0);
+            $equity = $this->equityEngine->build($trades, $startingBalance);
+            $metrics = $this->metricsEngine->calculate($trades, (float) $equity['max_drawdown']);
+            $notional = (float) ((clone $query)
+                ->selectRaw('SUM(entry_price * lot_size) as total_notional')
+                ->value('total_notional') ?? 0);
 
-        $winRate = $totalTrades > 0
-            ? round(($winningTrades / $totalTrades) * 100, 2)
-            : 0.0;
-        $profitFactor = $totalLoss > 0
-            ? round($totalProfit / $totalLoss, 2)
-            : null;
-        $returnsPercent = $notional > 0
-            ? round(($netProfit / $notional) * 100, 2)
-            : 0.0;
+            $returnsPercent = $notional > 0
+                ? ((float) $metrics['net_profit'] / $notional) * 100
+                : 0.0;
 
-        return response()->json([
-            'total_trades' => $totalTrades,
-            'win_rate' => $winRate,
-            'total_profit' => round($totalProfit, 2),
-            'total_loss' => round($totalLoss, 2),
-            'profit_factor' => $profitFactor,
-            'returns_percent' => $returnsPercent,
-        ]);
+            return [
+                'total_trades' => $metrics['total_trades'],
+                'win_rate' => $metrics['win_rate'],
+                'total_profit' => $metrics['total_winning_amount'],
+                'total_loss' => round(abs((float) $metrics['total_losing_amount']), 2),
+                'profit_factor' => $metrics['profit_factor'],
+                'returns_percent' => round($returnsPercent, 2),
+                'expectancy' => $metrics['expectancy'],
+                'average_r' => $metrics['average_r'],
+                'recovery_factor' => $metrics['recovery_factor'],
+            ];
+        });
+
+        return response()->json($payload);
     }
 
     public function daily(Request $request)
     {
-        $daily = $this->baseQuery($request)
-            ->selectRaw('DATE(`date`) as trade_date, COUNT(*) as total_trades, ROUND(SUM(profit_loss), 2) as profit_loss')
-            ->groupByRaw('DATE(`date`)')
-            ->orderByRaw('DATE(`date`)')
-            ->get()
-            ->map(fn ($row) => [
-                'date' => (string) $row->trade_date,
-                'total_trades' => (int) $row->total_trades,
-                'profit_loss' => round((float) $row->profit_loss, 2),
-            ])
-            ->values();
+        $payload = $this->remember('daily', $request, function () use ($request): array {
+            return $this->baseQuery($request)
+                ->selectRaw('DATE(`date`) as close_date, COUNT(*) as total_trades, ROUND(SUM(profit_loss), 2) as profit_loss, ROUND(AVG(COALESCE(r_multiple, rr)), 4) as average_r, SUM(CASE WHEN profit_loss > 0 THEN 1 ELSE 0 END) as wins')
+                ->groupByRaw('DATE(`date`)')
+                ->orderByRaw('DATE(`date`)')
+                ->get()
+                ->map(fn ($row) => [
+                    'date' => (string) $row->close_date,
+                    'close_date' => (string) $row->close_date,
+                    'total_trades' => (int) $row->total_trades,
+                    'profit_loss' => round((float) $row->profit_loss, 2),
+                    'average_r' => round((float) ($row->average_r ?? 0), 4),
+                    'win_rate' => (int) $row->total_trades > 0
+                        ? round(((int) $row->wins / (int) $row->total_trades) * 100, 2)
+                        : 0.0,
+                ])
+                ->values()
+                ->all();
+        });
 
-        return response()->json($daily);
+        return response()->json($payload);
     }
 
     public function performanceProfile(Request $request)
     {
-        $query = $this->baseQuery($request);
+        $payload = $this->remember('performance-profile', $request, function () use ($request): array {
+            $trades = $this->chronologicalTrades($request);
+            $startingBalance = $this->startingBalance($request);
 
-        $totalTrades = (clone $query)->count();
-        $winningTrades = (clone $query)->where('profit_loss', '>', 0)->count();
-        $totalProfit = (float) ((clone $query)->where('profit_loss', '>', 0)->sum('profit_loss') ?? 0);
-        $totalLoss = abs((float) ((clone $query)->where('profit_loss', '<', 0)->sum('profit_loss') ?? 0));
-        $netProfit = (float) ((clone $query)->sum('profit_loss') ?? 0);
-        $avgRr = (float) ((clone $query)->avg('rr') ?? 0);
+            $equity = $this->equityEngine->build($trades, $startingBalance);
+            $metrics = $this->metricsEngine->calculate($trades, (float) $equity['max_drawdown']);
 
-        $winRate = $totalTrades > 0
-            ? round(($winningTrades / $totalTrades) * 100, 2)
-            : 0.0;
-        $profitFactor = $totalLoss > 0
-            ? round($totalProfit / $totalLoss, 2)
-            : null;
+            $dailySeries = $this->dailyPnlSeries($request);
+            $consistencyScore = $this->calculateConsistencyScore($dailySeries);
 
-        $dailySeries = $this->dailyPnlSeries($query);
-        $consistencyScore = $this->calculateConsistencyScore($dailySeries);
-        $maxDrawdown = $this->calculateMaxDrawdown($dailySeries);
-        $recoveryFactor = $maxDrawdown > 0
-            ? round($netProfit / $maxDrawdown, 2)
-            : null;
+            return [
+                'win_rate' => $metrics['win_rate'],
+                'avg_rr' => $metrics['average_r'],
+                'profit_factor' => $metrics['profit_factor'],
+                'consistency_score' => $consistencyScore,
+                'recovery_factor' => $metrics['recovery_factor'],
+                'sharpe_ratio' => $metrics['sharpe_ratio'],
+            ];
+        });
 
-        return response()->json([
-            'win_rate' => $winRate,
-            'avg_rr' => round($avgRr, 2),
-            'profit_factor' => $profitFactor,
-            'consistency_score' => $consistencyScore,
-            'recovery_factor' => $recoveryFactor,
-        ]);
+        return response()->json($payload);
+    }
+
+    public function equity(Request $request)
+    {
+        $payload = $this->remember('equity', $request, function () use ($request): array {
+            $trades = $this->chronologicalTrades($request);
+            $startingBalance = $this->startingBalance($request);
+            $equity = $this->equityEngine->build($trades, $startingBalance);
+
+            return [
+                'equity_points' => $equity['equity_points'],
+                'cumulative_profit' => $equity['cumulative_profit'],
+                'equity_timestamps' => $equity['equity_timestamps'],
+            ];
+        });
+
+        return response()->json($payload);
+    }
+
+    public function drawdown(Request $request)
+    {
+        $payload = $this->remember('drawdown', $request, function () use ($request): array {
+            $trades = $this->chronologicalTrades($request);
+            $startingBalance = $this->startingBalance($request);
+            $equity = $this->equityEngine->build($trades, $startingBalance);
+
+            return [
+                'max_drawdown' => $equity['max_drawdown'],
+                'max_drawdown_percent' => $equity['max_drawdown_percent'],
+                'current_drawdown' => $equity['current_drawdown'],
+                'current_drawdown_percent' => $equity['current_drawdown_percent'],
+                'peak_balance' => $equity['peak_balance'],
+                'current_equity' => $equity['current_equity'],
+            ];
+        });
+
+        return response()->json($payload);
+    }
+
+    public function streaks(Request $request)
+    {
+        $payload = $this->remember('streaks', $request, function () use ($request): array {
+            $trades = $this->chronologicalTrades($request);
+
+            return $this->streakEngine->calculate($trades);
+        });
+
+        return response()->json($payload);
+    }
+
+    public function metrics(Request $request)
+    {
+        $payload = $this->remember('metrics', $request, function () use ($request): array {
+            $trades = $this->chronologicalTrades($request);
+            $startingBalance = $this->startingBalance($request);
+            $equity = $this->equityEngine->build($trades, $startingBalance);
+
+            return $this->metricsEngine->calculate($trades, (float) $equity['max_drawdown']);
+        });
+
+        return response()->json($payload);
+    }
+
+    public function behavioral(Request $request)
+    {
+        $payload = $this->remember('behavioral', $request, function () use ($request): array {
+            $trades = $this->chronologicalTrades($request);
+            $startingBalance = $this->startingBalance($request);
+
+            return $this->behavioralAnalyticsEngine->calculate($trades, $startingBalance);
+        });
+
+        return response()->json($payload);
+    }
+
+    public function rankings(Request $request)
+    {
+        $payload = $this->remember('rankings', $request, function () use ($request): array {
+            $trades = $this->chronologicalTrades($request);
+
+            return [
+                'sessions' => $this->groupMetricsBy($trades, 'session', 'session'),
+                'strategy_models' => $this->groupMetricsBy($trades, 'model', 'strategy_model'),
+                'symbols' => $this->groupMetricsBy($trades, 'pair', 'symbol'),
+            ];
+        });
+
+        return response()->json($payload);
+    }
+
+    public function monthlyHeatmap(Request $request)
+    {
+        $payload = $this->remember('monthly-heatmap', $request, function () use ($request): array {
+            $rows = $this->baseQuery($request)
+                ->selectRaw('DATE(`date`) as close_date, COUNT(*) as number_of_trades, ROUND(SUM(profit_loss), 2) as total_profit, ROUND(AVG(COALESCE(r_multiple, rr)), 4) as average_r, SUM(CASE WHEN profit_loss > 0 THEN 1 ELSE 0 END) as wins')
+                ->groupByRaw('DATE(`date`)')
+                ->orderByRaw('DATE(`date`)')
+                ->get()
+                ->map(function ($row): array {
+                    $trades = (int) $row->number_of_trades;
+                    $wins = (int) $row->wins;
+                    $winRate = $trades > 0
+                        ? ($wins / $trades) * 100
+                        : 0.0;
+
+                    return [
+                        'close_date' => (string) $row->close_date,
+                        'number_of_trades' => $trades,
+                        'total_profit' => round((float) $row->total_profit, 2),
+                        'average_r' => round((float) ($row->average_r ?? 0), 4),
+                        'win_rate' => round($winRate, 2),
+                    ];
+                })
+                ->values();
+
+            $maxAbsDailyPnl = (float) $rows
+                ->map(fn (array $row): float => abs((float) $row['total_profit']))
+                ->max();
+
+            $rows = $rows->map(function (array $row) use ($maxAbsDailyPnl): array {
+                $intensity = $maxAbsDailyPnl > 0
+                    ? abs((float) $row['total_profit']) / $maxAbsDailyPnl
+                    : 0.0;
+                $row['intensity'] = round($intensity, 4);
+                return $row;
+            });
+
+            $months = $rows
+                ->groupBy(fn (array $row): string => substr($row['close_date'], 0, 7))
+                ->map(function (Collection $days, string $month): array {
+                    [$year, $monthNumber] = explode('-', $month);
+                    $label = now()->setDate((int) $year, (int) $monthNumber, 1)->format('F Y');
+
+                    return [
+                        'month' => $month,
+                        'label' => $label,
+                        'days' => $days->values()->all(),
+                    ];
+                })
+                ->values()
+                ->all();
+
+            return [
+                'months' => $months,
+                'max_abs_daily_pnl' => round($maxAbsDailyPnl, 2),
+            ];
+        });
+
+        return response()->json($payload);
+    }
+
+    public function riskStatus(Request $request)
+    {
+        $payload = $this->remember('risk-status', $request, function () use ($request): array {
+            $trades = $this->chronologicalTrades($request);
+            $startingBalance = $this->startingBalance($request);
+
+            $equity = $this->equityEngine->build($trades, $startingBalance);
+            $streaks = $this->streakEngine->calculate($trades);
+
+            $latestTrade = $trades->last();
+            $latestRiskPercent = (float) (data_get($latestTrade, 'risk_percent') ?? 0);
+            $maxRiskPercent = (float) $trades
+                ->map(fn ($trade): float => (float) (data_get($trade, 'risk_percent') ?? 0))
+                ->max();
+
+            $revengeAfterLoss = $this->findRevengeAfterLossFlags($trades);
+
+            $warnings = [];
+            if ($latestRiskPercent > 3 || $maxRiskPercent > 3) {
+                $warnings[] = 'Risk percent exceeded 3%';
+            }
+            if ((int) $streaks['current_loss_streak'] >= 3) {
+                $warnings[] = 'Three consecutive losses detected';
+            }
+            if ((float) $equity['current_drawdown_percent'] > 10) {
+                $warnings[] = 'Current drawdown above 10%';
+            }
+            if (count($revengeAfterLoss) > 0) {
+                $warnings[] = 'Revenge emotion detected after a losing trade';
+            }
+
+            return [
+                'risk_percent_warning' => $latestRiskPercent > 3 || $maxRiskPercent > 3,
+                'loss_streak_caution' => (int) $streaks['current_loss_streak'] >= 3,
+                'drawdown_banner' => (float) $equity['current_drawdown_percent'] > 10,
+                'revenge_behavior_flag' => count($revengeAfterLoss) > 0,
+                'latest_risk_percent' => round($latestRiskPercent, 4),
+                'max_risk_percent' => round($maxRiskPercent, 4),
+                'current_loss_streak' => (int) $streaks['current_loss_streak'],
+                'current_drawdown_percent' => round((float) $equity['current_drawdown_percent'], 4),
+                'revenge_after_loss_events' => $revengeAfterLoss,
+                'warnings' => $warnings,
+            ];
+        });
+
+        return response()->json($payload);
     }
 
     private function baseQuery(Request $request): Builder
     {
-        return Trade::query()
-            ->applyFilters($request->only([
-                'pair',
-                'direction',
-                'session',
-                'model',
-                'date_from',
-                'date_to',
-            ]));
+        $filters = $request->only([
+            'pair',
+            'symbol',
+            'direction',
+            'session',
+            'model',
+            'strategy_model',
+            'emotion',
+            'followed_rules',
+            'date_from',
+            'date_to',
+            'close_date_from',
+            'close_date_to',
+        ]);
+
+        if (!($filters['pair'] ?? null) && ($filters['symbol'] ?? null)) {
+            $filters['pair'] = $filters['symbol'];
+        }
+        if (!($filters['model'] ?? null) && ($filters['strategy_model'] ?? null)) {
+            $filters['model'] = $filters['strategy_model'];
+        }
+        if (!($filters['date_from'] ?? null) && ($filters['close_date_from'] ?? null)) {
+            $filters['date_from'] = $filters['close_date_from'];
+        }
+        if (!($filters['date_to'] ?? null) && ($filters['close_date_to'] ?? null)) {
+            $filters['date_to'] = $filters['close_date_to'];
+        }
+
+        return Trade::query()->applyFilters($filters);
     }
 
-    private function dailyPnlSeries(Builder $query): Collection
+    /**
+     * @return Collection<int, Trade>
+     */
+    private function chronologicalTrades(Request $request): Collection
     {
-        return (clone $query)
+        return $this->baseQuery($request)
+            ->orderBy('date')
+            ->orderBy('id')
+            ->get();
+    }
+
+    /**
+     * @return Collection<int, object>
+     */
+    private function dailyPnlSeries(Request $request): Collection
+    {
+        return $this->baseQuery($request)
             ->selectRaw('DATE(`date`) as trade_date, SUM(profit_loss) as pnl')
             ->groupByRaw('DATE(`date`)')
             ->orderByRaw('DATE(`date`)')
@@ -126,23 +371,76 @@ class AnalyticsController extends Controller
         return round(($positiveDays / $totalDays) * 100, 2);
     }
 
-    private function calculateMaxDrawdown(Collection $dailySeries): float
+    private function startingBalance(Request $request): float
     {
-        if ($dailySeries->isEmpty()) {
-            return 0.0;
+        $requested = (float) $request->input('starting_balance', env('ANALYTICS_STARTING_BALANCE', 10_000));
+
+        return $requested > 0
+            ? $requested
+            : 10_000.0;
+    }
+
+    /**
+     * @return array<int, array<string, mixed>>
+     */
+    private function groupMetricsBy(Collection $trades, string $key, string $labelKey): array
+    {
+        return $trades
+            ->groupBy(fn ($trade): string => (string) (data_get($trade, $key) ?: 'Unknown'))
+            ->map(function (Collection $rows, string $value) use ($labelKey): array {
+                $metrics = $this->metricsEngine->calculate($rows->values());
+
+                return [
+                    $labelKey => $value,
+                    'total_trades' => (int) $metrics['total_trades'],
+                    'win_rate' => (float) $metrics['win_rate'],
+                    'profit_factor' => $metrics['profit_factor'],
+                    'expectancy' => (float) $metrics['expectancy'],
+                    'total_pnl' => (float) $metrics['net_profit'],
+                    'avg_r' => (float) $metrics['avg_r'],
+                ];
+            })
+            ->sortByDesc('expectancy')
+            ->values()
+            ->all();
+    }
+
+    /**
+     * @return array<int, array<string, mixed>>
+     */
+    private function findRevengeAfterLossFlags(Collection $trades): array
+    {
+        $flags = [];
+        $values = $trades->values();
+        for ($i = 1; $i < $values->count(); $i++) {
+            $current = $values[$i];
+            $previous = $values[$i - 1];
+
+            $currentEmotion = (string) (data_get($current, 'emotion') ?? '');
+            $previousPnl = (float) (data_get($previous, 'profit_loss') ?? 0);
+            if ($previousPnl < 0 && strtolower($currentEmotion) === 'revenge') {
+                $flags[] = [
+                    'trade_id' => data_get($current, 'id'),
+                    'date' => data_get($current, 'date'),
+                    'previous_trade_id' => data_get($previous, 'id'),
+                ];
+            }
         }
 
-        $equity = 0.0;
-        $peak = 0.0;
-        $maxDrawdown = 0.0;
+        return $flags;
+    }
 
-        foreach ($dailySeries as $day) {
-            $equity += (float) $day->pnl;
-            $peak = max($peak, $equity);
-            $drawdown = $peak - $equity;
-            $maxDrawdown = max($maxDrawdown, $drawdown);
-        }
+    /**
+     * @template T
+     * @param  callable():T  $callback
+     * @return T
+     */
+    private function remember(string $namespace, Request $request, callable $callback, int $ttlSeconds = 90)
+    {
+        $version = (int) Cache::get('analytics:version', 1);
+        $queryHash = md5((string) json_encode($request->query()));
+        $cacheKey = "analytics:{$namespace}:v{$version}:{$queryHash}";
 
-        return round($maxDrawdown, 2);
+        return Cache::remember($cacheKey, $ttlSeconds, $callback);
     }
 }

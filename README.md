@@ -5,7 +5,7 @@ Full-stack trading journal and analytics dashboard.
 ## Stack
 - Frontend: Vue 3 + TypeScript + Pinia + TailwindCSS + ECharts
 - Backend: Laravel 11 REST API
-- Database: MySQL 8
+- Database: MySQL 8 (Docker) / SQLite (local option)
 
 ## Project Structure
 - `backend/` Laravel API
@@ -19,15 +19,10 @@ docker compose up -d
 
 MySQL:
 - Host: `127.0.0.1`
-- Port: `3306`
+- Port: `3307`
 - Database: `trading_journal`
 - Username: `trading`
-- Password: `trading123`
-
-phpMyAdmin:
-- URL: `http://localhost:8080`
-- User: `root`
-- Password: `root123`
+- Password: `veasna123`
 
 ## 2) Backend Setup
 ```bash
@@ -45,13 +40,25 @@ API base URL:
 Main endpoints:
 - `GET /api/trades`
 - `POST /api/trades`
+- `GET /api/trades/{id}`
 - `PUT /api/trades/{id}`
 - `DELETE /api/trades/{id}`
-- `GET /api/analytics/summary`
-- `GET /api/analytics/equity-curve`
-- `GET /api/analytics/performance-by-symbol`
-- `GET /api/analytics/performance-by-setup`
-- `GET /api/analytics/pnl-by-weekday`
+- `GET /api/missed-trades`
+- `POST /api/missed-trades`
+- `GET /api/missed-trades/{id}`
+- `PUT /api/missed-trades/{id}`
+- `DELETE /api/missed-trades/{id}`
+- `GET /api/analytics/overview`
+- `GET /api/analytics/daily`
+- `GET /api/analytics/performance-profile`
+- `GET /api/analytics/equity`
+- `GET /api/analytics/drawdown`
+- `GET /api/analytics/streaks`
+- `GET /api/analytics/metrics`
+- `GET /api/analytics/behavioral`
+- `GET /api/analytics/rankings`
+- `GET /api/analytics/monthly-heatmap`
+- `GET /api/analytics/risk-status`
 
 ## 3) Frontend Setup
 ```bash
@@ -66,5 +73,12 @@ Frontend URL:
 
 ## Notes
 - No authentication is included by design.
-- Vite dev server proxies `/api` to `http://localhost:8000`.
+- Vite proxies `/api` using `VITE_PROXY_TARGET` (see `frontend/.env.example`, default `http://localhost:8000`).
+- Frontend API prefix is controlled by `VITE_API_BASE_URL` (default `/api`).
+- Backend analytics starting balance is configurable via `ANALYTICS_STARTING_BALANCE` (see `backend/.env.example`).
 - If local PHP is missing extensions, enable at least `mbstring`, `curl`, and `pdo_mysql`.
+- If `mbstring` is not enabled in your PHP CLI/server, run backend dev server with mbstring loaded:
+```bash
+cd backend/public
+php -d extension=mbstring -S 127.0.0.1:8000 ../vendor/laravel/framework/src/Illuminate/Foundation/resources/server.php
+```

@@ -28,23 +28,34 @@ class TradeFactory extends Factory
         $config = $pairConfig[$pair];
         $direction = fake()->randomElement(['buy', 'sell']);
         $entryPrice = fake()->randomFloat(6, $config['min'], $config['max']);
-        $riskPips = fake()->randomFloat(6, $config['risk_min'], $config['risk_max']);
-        $rewardMultiplier = fake()->randomFloat(2, 1, 4);
-        $outcome = fake()->randomElement(['win', 'win', 'win', 'loss', 'loss', 'breakeven']);
-        $riskAmount = fake()->randomFloat(2, 40, 420);
-        $rr = fake()->randomFloat(2, 0.8, 4.2);
+        $riskPerUnit = fake()->randomFloat(6, $config['risk_min'], $config['risk_max']);
+        $rewardMultiplier = fake()->randomFloat(3, 1.0, 4.5);
+        $rewardPerUnit = $riskPerUnit * $rewardMultiplier;
+        $positionSize = fake()->randomFloat(4, 0.02, 5);
+        $accountBefore = fake()->randomFloat(2, 1_500, 120_000);
+        $outcome = fake()->randomElement(['win', 'win', 'loss', 'loss', 'breakeven']);
 
         $stopLoss = $direction === 'buy'
-            ? max(0.0001, $entryPrice - $riskPips)
-            : $entryPrice + $riskPips;
+            ? max(0.0001, $entryPrice - $riskPerUnit)
+            : $entryPrice + $riskPerUnit;
         $takeProfit = $direction === 'buy'
-            ? $entryPrice + ($riskPips * $rewardMultiplier)
-            : max(0.0001, $entryPrice - ($riskPips * $rewardMultiplier));
-        $profitLoss = match ($outcome) {
-            'win' => round($riskAmount * $rr, 2),
-            'loss' => round($riskAmount * -1, 2),
-            default => 0.0,
+            ? $entryPrice + $rewardPerUnit
+            : max(0.0001, $entryPrice - $rewardPerUnit);
+        $actualExitPrice = match ($outcome) {
+            'win' => $takeProfit,
+            'loss' => $stopLoss,
+            default => $entryPrice,
         };
+
+        $monetaryRisk = $riskPerUnit * $positionSize;
+        $monetaryReward = $rewardPerUnit * $positionSize;
+        $profitPerUnit = $direction === 'sell'
+            ? ($entryPrice - $actualExitPrice)
+            : ($actualExitPrice - $entryPrice);
+        $profitLoss = $profitPerUnit * $positionSize;
+        $rMultiple = $monetaryRisk > 0 ? ($profitLoss / $monetaryRisk) : 0.0;
+        $riskPercent = $accountBefore > 0 ? (($monetaryRisk / $accountBefore) * 100) : 0.0;
+        $accountAfter = $accountBefore + $profitLoss;
 
         return [
             'pair' => $pair,
@@ -52,9 +63,20 @@ class TradeFactory extends Factory
             'entry_price' => $entryPrice,
             'stop_loss' => $stopLoss,
             'take_profit' => $takeProfit,
-            'lot_size' => fake()->randomFloat(4, 0.02, 5),
-            'profit_loss' => $profitLoss,
-            'rr' => $rr,
+            'actual_exit_price' => $actualExitPrice,
+            'lot_size' => $positionSize,
+            'risk_per_unit' => round($riskPerUnit, 6),
+            'reward_per_unit' => round($rewardPerUnit, 6),
+            'monetary_risk' => round($monetaryRisk, 6),
+            'monetary_reward' => round($monetaryReward, 6),
+            'profit_loss' => round($profitLoss, 2),
+            'rr' => round($rMultiple, 2),
+            'r_multiple' => round($rMultiple, 4),
+            'risk_percent' => round($riskPercent, 4),
+            'account_balance_before_trade' => round($accountBefore, 2),
+            'account_balance_after_trade' => round($accountAfter, 2),
+            'followed_rules' => fake()->boolean(70),
+            'emotion' => fake()->randomElement(['neutral', 'calm', 'confident', 'fearful', 'greedy', 'hesitant', 'revenge']),
             'session' => fake()->randomElement(['Asia', 'London', 'New York']),
             'model' => fake()->randomElement(['Breakout', 'Pullback', 'Liquidity Sweep', 'Reversal']),
             'date' => Carbon::now()
