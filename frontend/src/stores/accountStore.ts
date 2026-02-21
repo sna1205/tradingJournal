@@ -39,10 +39,10 @@ export const useAccountStore = defineStore('accounts', () => {
   async function fetchAccounts(params?: { is_active?: boolean }) {
     loading.value = true
     try {
-      const { data } = await api.get<Account[]>('/accounts', {
+      const { data } = await api.get<unknown>('/accounts', {
         params,
       })
-      accounts.value = data
+      accounts.value = Array.isArray(data) ? (data as Account[]) : []
 
       if (selectedAccountId.value !== null) {
         const exists = accounts.value.some((account) => account.id === selectedAccountId.value)
@@ -50,6 +50,8 @@ export const useAccountStore = defineStore('accounts', () => {
           setSelectedAccountId(null)
         }
       }
+    } catch {
+      accounts.value = []
     } finally {
       loading.value = false
     }

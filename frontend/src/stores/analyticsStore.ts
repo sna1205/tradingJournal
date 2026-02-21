@@ -329,7 +329,8 @@ export const useAnalyticsStore = defineStore('analytics', () => {
         recovery_factor: overviewRes.data.recovery_factor === null ? null : Number(overviewRes.data.recovery_factor),
       }
 
-      dailyStats.value = dailyRes.data.map((row) => ({
+      const dailyRows = Array.isArray(dailyRes.data) ? dailyRes.data : []
+      dailyStats.value = dailyRows.map((row) => ({
         date: row.date || row.close_date || '',
         close_date: row.close_date || row.date || '',
         total_trades: Number(row.total_trades || 0),

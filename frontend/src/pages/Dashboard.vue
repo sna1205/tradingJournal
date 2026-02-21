@@ -231,7 +231,7 @@ watch(
 
 async function refreshDashboardData() {
   const filters = activeRangeFilters.value
-  await Promise.all([
+  await Promise.allSettled([
     analyticsStore.fetchAnalytics(filters),
     fetchRecentTrades(filters),
   ])
