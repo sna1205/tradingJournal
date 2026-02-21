@@ -5,6 +5,7 @@ namespace App\Models;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\HasMany;
 
 class MissedTrade extends Model
 {
@@ -30,5 +31,10 @@ class MissedTrade extends Model
             ->when($filters['reason'] ?? null, fn (Builder $builder, string $reason) => $builder->where('reason', 'like', "%{$reason}%"))
             ->when($filters['date_from'] ?? null, fn (Builder $builder, string $dateFrom) => $builder->whereDate('date', '>=', $dateFrom))
             ->when($filters['date_to'] ?? null, fn (Builder $builder, string $dateTo) => $builder->whereDate('date', '<=', $dateTo));
+    }
+
+    public function images(): HasMany
+    {
+        return $this->hasMany(MissedTradeImage::class);
     }
 }

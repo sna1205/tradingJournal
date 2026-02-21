@@ -1,5 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
+import { storeToRefs } from 'pinia'
+import { useUiStore } from '@/stores/uiStore'
 
 const props = withDefaults(
   defineProps<{
@@ -11,29 +13,47 @@ const props = withDefaults(
   }
 )
 
-const option = computed(() => ({
+function readVar(name: string, fallback: string) {
+  if (typeof window === 'undefined') return fallback
+  const value = getComputedStyle(document.documentElement).getPropertyValue(name).trim()
+  return value || fallback
+}
+
+const uiStore = useUiStore()
+const { theme } = storeToRefs(uiStore)
+
+const option = computed(() => {
+  void theme.value
+
+  return {
+  textStyle: {
+    color: readVar('--text', '#18211b'),
+    fontFamily: 'Manrope, sans-serif',
+  },
   backgroundColor: 'transparent',
   animationDuration: 750,
   animationDurationUpdate: 500,
   animationEasing: 'cubicOut',
   tooltip: {
     trigger: 'axis',
-    backgroundColor: '#11161D',
-    borderColor: '#1F2937',
-    textStyle: { color: '#E5E7EB' },
+    backgroundColor: readVar('--panel', '#ffffff'),
+    borderColor: readVar('--border', '#d4ddd5'),
+    textStyle: {
+      color: readVar('--text', '#18211b'),
+    },
   },
   grid: { left: 42, right: 18, top: 20, bottom: 32 },
   xAxis: {
     type: 'category',
     data: props.points.map((point) => point.date),
-    axisLine: { lineStyle: { color: '#1F2937' } },
-    axisLabel: { color: '#9CA3AF' },
+    axisLine: { lineStyle: { color: readVar('--border', '#d4ddd5') } },
+    axisLabel: { color: readVar('--muted', '#647469') },
   },
   yAxis: {
     type: 'value',
-    axisLine: { lineStyle: { color: '#1F2937' } },
-    splitLine: { lineStyle: { color: 'rgba(31, 41, 55, 0.55)' } },
-    axisLabel: { color: '#9CA3AF' },
+    axisLine: { lineStyle: { color: readVar('--border', '#d4ddd5') } },
+    splitLine: { lineStyle: { color: readVar('--chart-grid', 'rgba(100, 116, 105, 0.2)') } },
+    axisLabel: { color: readVar('--muted', '#647469') },
   },
   series: [
     {
@@ -41,7 +61,7 @@ const option = computed(() => ({
       type: 'line',
       smooth: true,
       symbol: 'none',
-      lineStyle: { width: 3, color: '#22C55E' },
+      lineStyle: { width: 3, color: readVar('--chart-positive', '#179a56') },
       areaStyle: {
         color: {
           type: 'linear',
@@ -50,14 +70,15 @@ const option = computed(() => ({
           x2: 0,
           y2: 1,
           colorStops: [
-            { offset: 0, color: 'rgba(34, 197, 94, 0.45)' },
-            { offset: 1, color: 'rgba(34, 197, 94, 0.03)' },
+            { offset: 0, color: readVar('--chart-positive-soft', 'rgba(23, 154, 86, 0.34)') },
+            { offset: 1, color: readVar('--chart-positive-fade', 'rgba(23, 154, 86, 0.08)') },
           ],
         },
       },
     },
   ],
-}))
+}
+})
 </script>
 
 <template>

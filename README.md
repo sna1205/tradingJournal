@@ -3,7 +3,7 @@
 Full-stack trading journal built with:
 - Frontend: Vue 3 + TypeScript + Pinia + Tailwind + ECharts
 - Backend: Laravel 11 REST API
-- Database: MySQL 8
+- Database: MySQL 8 (Docker) / SQLite (local option)
 
 ## Project Structure
 - `frontend/` Vue app
@@ -25,7 +25,7 @@ MySQL (dev):
 - Username: `trading`
 - Password: `veasna123`
 
-### 2) Backend
+### 2) Backend setup
 ```bash
 cd backend
 copy .env.example .env
@@ -42,6 +42,47 @@ API URL:
 Health checks:
 - `GET /up`
 - `GET /api/health`
+
+Main endpoints:
+- `GET /api/accounts`
+- `POST /api/accounts`
+- `GET /api/accounts/{id}`
+- `PUT /api/accounts/{id}`
+- `DELETE /api/accounts/{id}`
+- `GET /api/accounts/{id}/equity`
+- `GET /api/accounts/{id}/analytics`
+- `GET /api/trades`
+- `POST /api/trades`
+- `GET /api/trades/{id}`
+- `PUT /api/trades/{id}`
+- `DELETE /api/trades/{id}`
+- `POST /api/trades/{id}/images`
+- `DELETE /api/trade-images/{id}`
+- `GET /api/missed-trades`
+- `POST /api/missed-trades`
+- `GET /api/missed-trades/{id}`
+- `PUT /api/missed-trades/{id}`
+- `DELETE /api/missed-trades/{id}`
+- `POST /api/missed-trades/{id}/images`
+- `DELETE /api/missed-trade-images/{id}`
+- `GET /api/analytics/overview`
+- `GET /api/analytics/daily`
+- `GET /api/analytics/performance-profile`
+- `GET /api/analytics/equity`
+- `GET /api/analytics/drawdown`
+- `GET /api/analytics/streaks`
+- `GET /api/analytics/metrics`
+- `GET /api/analytics/behavioral`
+- `GET /api/analytics/rankings`
+- `GET /api/analytics/monthly-heatmap`
+- `GET /api/analytics/risk-status`
+- `GET /api/analytics/accounts`
+- `GET /api/analytics/portfolio`
+- `GET /api/portfolio/analytics`
+
+Query filters:
+- `account_id` (single account scope)
+- `account_ids` (comma-separated portfolio subset)
 
 If your local PHP misses `mbstring` (Windows common), run:
 ```bash
@@ -84,7 +125,7 @@ Optional host env vars:
 
 ### 2) Build and run
 ```bash
-docker compose -f docker-compose.prod.yml up -d --build
+docker compose --env-file .env -f docker-compose.prod.yml up -d --build
 ```
 
 Services:
@@ -101,12 +142,10 @@ curl http://localhost/api/health
 ### 4) Update deployment
 ```bash
 git pull
-docker compose -f docker-compose.prod.yml up -d --build
+docker compose --env-file .env -f docker-compose.prod.yml up -d --build
 ```
 
----
-
 ## Notes
-- No auth is implemented by design.
-- Frontend expects API on `/api` in production.
-- Production stack is optimized for single-host deployment.
+- No authentication is included by design.
+- Vite proxies `/api` using `VITE_PROXY_TARGET` in dev.
+- Frontend API prefix is controlled by `VITE_API_BASE_URL` (default `/api`).

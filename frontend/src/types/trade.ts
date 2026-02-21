@@ -1,21 +1,65 @@
 export type TradeDirection = 'buy' | 'sell'
+export type TradeEmotion =
+  | 'neutral'
+  | 'calm'
+  | 'confident'
+  | 'fearful'
+  | 'greedy'
+  | 'hesitant'
+  | 'revenge'
 
 export interface Trade {
   id: number
+  account_id: number
   pair: string
   direction: TradeDirection
   entry_price: string
   stop_loss: string
   take_profit: string
+  actual_exit_price: string | null
   lot_size: string
+  risk_per_unit: string | null
+  reward_per_unit: string | null
+  monetary_risk: string | null
+  monetary_reward: string | null
   profit_loss: string
   rr: string
+  r_multiple: string | null
+  risk_percent: string | null
+  account_balance_before_trade: string | null
+  account_balance_after_trade: string | null
+  followed_rules: boolean
+  emotion: TradeEmotion
   session: string
   model: string
   date: string
   notes: string | null
+  images?: TradeImage[]
+  images_count?: number
+  account?: {
+    id: number
+    name: string
+    account_type: 'funded' | 'personal' | 'demo'
+    current_balance?: string
+    currency?: string
+  } | null
   created_at: string
   updated_at: string
+  deleted_at?: string | null
+}
+
+export interface TradeImage {
+  id: number
+  image_url: string
+  thumbnail_url: string
+  file_size: number
+  file_type: string
+  sort_order: number
+}
+
+export interface TradeDetailsResponse {
+  trade: Trade
+  images: TradeImage[]
 }
 
 export interface MissedTrade {
@@ -25,8 +69,19 @@ export interface MissedTrade {
   reason: string
   date: string
   notes: string | null
+  images?: MissedTradeImage[]
+  images_count?: number
   created_at: string
   updated_at: string
+}
+
+export interface MissedTradeImage {
+  id: number
+  image_url: string
+  thumbnail_url: string
+  file_size: number
+  file_type: string
+  sort_order: number
 }
 
 export interface Paginated<T> {

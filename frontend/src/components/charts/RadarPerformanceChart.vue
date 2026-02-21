@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { computed } from 'vue'
+import { storeToRefs } from 'pinia'
 import type { PerformanceProfile } from '@/stores/analyticsStore'
+import { useUiStore } from '@/stores/uiStore'
 
 const props = defineProps<{
   profile: PerformanceProfile | null
@@ -25,25 +27,44 @@ const normalized = computed(() => {
   ]
 })
 
-const option = computed(() => ({
+function readVar(name: string, fallback: string) {
+  if (typeof window === 'undefined') return fallback
+  const value = getComputedStyle(document.documentElement).getPropertyValue(name).trim()
+  return value || fallback
+}
+
+const uiStore = useUiStore()
+const { theme } = storeToRefs(uiStore)
+
+const option = computed(() => {
+  void theme.value
+
+  return {
+  textStyle: {
+    color: readVar('--text', '#18211b'),
+    fontFamily: 'Manrope, sans-serif',
+  },
   backgroundColor: 'transparent',
   animationDuration: 820,
   animationDurationUpdate: 520,
   animationEasing: 'cubicOut',
   tooltip: {
-    backgroundColor: '#11161D',
-    borderColor: '#1F2937',
-    textStyle: { color: '#E5E7EB' },
+    backgroundColor: readVar('--panel', '#ffffff'),
+    borderColor: readVar('--border', '#d4ddd5'),
+    textStyle: { color: readVar('--text', '#18211b') },
   },
   radar: {
     radius: '66%',
     splitNumber: 4,
-    axisName: { color: '#9CA3AF', fontSize: 11 },
-    axisLine: { lineStyle: { color: '#1F2937' } },
-    splitLine: { lineStyle: { color: 'rgba(31, 41, 55, 0.65)' } },
+    axisName: { color: readVar('--muted', '#647469'), fontSize: 11 },
+    axisLine: { lineStyle: { color: readVar('--border', '#d4ddd5') } },
+    splitLine: { lineStyle: { color: readVar('--chart-grid', 'rgba(100, 116, 105, 0.2)') } },
     splitArea: {
       areaStyle: {
-        color: ['rgba(17, 22, 29, 0.55)', 'rgba(17, 22, 29, 0.78)'],
+        color: [
+          readVar('--chart-radar-split-a', 'rgba(255, 255, 255, 0.44)'),
+          readVar('--chart-radar-split-b', 'rgba(232, 237, 229, 0.58)'),
+        ],
       },
     },
     indicator: [
@@ -64,10 +85,10 @@ const option = computed(() => ({
           symbol: 'circle',
           symbolSize: 5,
           lineStyle: {
-            color: '#22C55E',
+            color: readVar('--primary', '#179a56'),
             width: 2.5,
           },
-          itemStyle: { color: '#22C55E' },
+          itemStyle: { color: readVar('--primary', '#179a56') },
           areaStyle: {
             color: {
               type: 'linear',
@@ -76,8 +97,8 @@ const option = computed(() => ({
               x2: 1,
               y2: 1,
               colorStops: [
-                { offset: 0, color: 'rgba(34, 197, 94, 0.42)' },
-                { offset: 1, color: 'rgba(34, 197, 94, 0.08)' },
+                { offset: 0, color: readVar('--chart-positive-soft', 'rgba(23, 154, 86, 0.34)') },
+                { offset: 1, color: readVar('--chart-positive-fade', 'rgba(23, 154, 86, 0.08)') },
               ],
             },
           },
@@ -85,7 +106,8 @@ const option = computed(() => ({
       ],
     },
   ],
-}))
+}
+})
 </script>
 
 <template>

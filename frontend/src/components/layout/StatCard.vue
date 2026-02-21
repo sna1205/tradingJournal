@@ -9,13 +9,16 @@ defineProps<{
 <template>
   <div
     class="glass-card glass-card-hover rounded-2xl border p-6"
-    :class="{
-      'border-slate-700/80': !tone || tone === 'neutral',
-      'border-emerald-500/35': tone === 'positive',
-      'border-rose-300/30': tone === 'negative',
+    :style="{
+      borderColor:
+        tone === 'positive'
+          ? 'color-mix(in srgb, var(--primary) 44%, var(--border) 56%)'
+          : tone === 'negative'
+            ? 'color-mix(in srgb, var(--danger) 44%, var(--border) 56%)'
+            : 'var(--border)',
     }"
   >
-    <p class="text-xs uppercase tracking-[0.2em] text-slate-400">{{ label }}</p>
+    <p class="text-xs uppercase tracking-[0.2em] muted">{{ label }}</p>
     <p class="number-display mt-3 text-xl font-semibold md:text-2xl">{{ value }}</p>
   </div>
 </template>

@@ -19,19 +19,16 @@ const highlightStyle = props.highlightColor
 </script>
 
 <template>
-  <section
-    class="glass-card glass-card-hover group relative overflow-hidden rounded-2xl p-6"
-    :style="highlightStyle"
-  >
-    <div class="mb-4 flex items-center gap-3">
+  <section class="panel panel-hover summary-card group" :style="highlightStyle">
+    <div class="mb-4 flex items-center justify-between gap-3">
+      <h3>{{ title }}</h3>
       <div
         v-if="icon"
-        class="flex h-10 w-10 items-center justify-center rounded-xl border border-slate-700/80 bg-slate-900/55 text-slate-200 transition-transform duration-200 ease-out group-hover:scale-105"
+        class="grid h-9 w-9 place-items-center rounded-xl border border-[var(--border)] bg-[var(--panel-soft)] text-[var(--muted)] transition-transform duration-200 ease-out group-hover:scale-105"
         :style="highlightColor ? { color: highlightColor } : {}"
       >
         <component :is="icon" class="h-4 w-4" />
       </div>
-      <h3 class="text-xs font-semibold uppercase tracking-[0.16em] text-slate-400">{{ title }}</h3>
     </div>
     <slot />
   </section>

@@ -5,20 +5,36 @@ namespace App\Models;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\Eloquent\SoftDeletes;
 
 class Trade extends Model
 {
     use HasFactory;
+    use SoftDeletes;
 
     protected $fillable = [
+        'account_id',
         'pair',
         'direction',
         'entry_price',
         'stop_loss',
         'take_profit',
+        'actual_exit_price',
         'lot_size',
+        'risk_per_unit',
+        'reward_per_unit',
+        'monetary_risk',
+        'monetary_reward',
         'profit_loss',
         'rr',
+        'r_multiple',
+        'risk_percent',
+        'account_balance_before_trade',
+        'account_balance_after_trade',
+        'followed_rules',
+        'emotion',
         'session',
         'model',
         'date',
@@ -26,23 +42,66 @@ class Trade extends Model
     ];
 
     protected $casts = [
+        'account_id' => 'integer',
         'entry_price' => 'decimal:6',
         'stop_loss' => 'decimal:6',
         'take_profit' => 'decimal:6',
+        'actual_exit_price' => 'decimal:6',
         'lot_size' => 'decimal:4',
+        'risk_per_unit' => 'decimal:6',
+        'reward_per_unit' => 'decimal:6',
+        'monetary_risk' => 'decimal:6',
+        'monetary_reward' => 'decimal:6',
         'profit_loss' => 'decimal:2',
         'rr' => 'decimal:2',
+        'r_multiple' => 'decimal:4',
+        'risk_percent' => 'decimal:4',
+        'account_balance_before_trade' => 'decimal:2',
+        'account_balance_after_trade' => 'decimal:2',
+        'followed_rules' => 'boolean',
         'date' => 'datetime',
+        'deleted_at' => 'datetime',
     ];
 
     public function scopeApplyFilters(Builder $query, array $filters): Builder
     {
         return $query
+            ->when($filters['account_id'] ?? null, fn (Builder $builder, int|string $accountId) => $builder->where('account_id', (int) $accountId))
+            ->when($filters['account_ids'] ?? null, function (Builder $builder, array|string $accountIds): void {
+                $values = is_array($accountIds)
+                    ? $accountIds
+                    : explode(',', (string) $accountIds);
+                $ids = collect($values)
+                    ->map(fn ($value): int => (int) $value)
+                    ->filter(fn (int $value): bool => $value > 0)
+                    ->unique()
+                    ->values()
+                    ->all();
+
+                if (count($ids) > 0) {
+                    $builder->whereIn('account_id', $ids);
+                }
+            })
             ->when($filters['pair'] ?? null, fn (Builder $builder, string $pair) => $builder->where('pair', 'like', "%{$pair}%"))
             ->when($filters['direction'] ?? null, fn (Builder $builder, string $direction) => $builder->where('direction', $direction))
             ->when($filters['session'] ?? null, fn (Builder $builder, string $session) => $builder->where('session', 'like', "%{$session}%"))
             ->when($filters['model'] ?? null, fn (Builder $builder, string $model) => $builder->where('model', 'like', "%{$model}%"))
+            ->when($filters['emotion'] ?? null, fn (Builder $builder, string $emotion) => $builder->where('emotion', $emotion))
+            ->when(
+                array_key_exists('followed_rules', $filters) && $filters['followed_rules'] !== null && $filters['followed_rules'] !== '',
+                fn (Builder $builder) => $builder->where('followed_rules', filter_var($filters['followed_rules'], FILTER_VALIDATE_BOOL, FILTER_NULL_ON_FAILURE) ?? false)
+            )
             ->when($filters['date_from'] ?? null, fn (Builder $builder, string $dateFrom) => $builder->whereDate('date', '>=', $dateFrom))
             ->when($filters['date_to'] ?? null, fn (Builder $builder, string $dateTo) => $builder->whereDate('date', '<=', $dateTo));
+    }
+
+    public function account(): BelongsTo
+    {
+        return $this->belongsTo(Account::class);
+    }
+
+    public function images(): HasMany
+    {
+        return $this->hasMany(TradeImage::class);
     }
 }

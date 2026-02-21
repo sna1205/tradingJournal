@@ -25,7 +25,7 @@ interface ConfirmState {
 let toastId = 1
 
 export const useUiStore = defineStore('ui', () => {
-  const theme = ref<ThemeMode>('dark')
+  const theme = ref<ThemeMode>('light')
   const toasts = ref<ToastItem[]>([])
   const confirm = ref<ConfirmState>({
     open: false,
@@ -44,7 +44,7 @@ export const useUiStore = defineStore('ui', () => {
 
   function initTheme() {
     const saved = localStorage.getItem('theme_mode')
-    const initial: ThemeMode = saved === 'light' ? 'light' : 'dark'
+    const initial: ThemeMode = saved === 'dark' ? 'dark' : 'light'
     applyTheme(initial)
   }
 

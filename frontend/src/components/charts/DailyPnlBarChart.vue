@@ -1,5 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
+import { storeToRefs } from 'pinia'
+import { useUiStore } from '@/stores/uiStore'
 
 interface DailyPoint {
   date: string
@@ -17,16 +19,32 @@ const props = withDefaults(
   }
 )
 
-const option = computed(() => ({
+function readVar(name: string, fallback: string) {
+  if (typeof window === 'undefined') return fallback
+  const value = getComputedStyle(document.documentElement).getPropertyValue(name).trim()
+  return value || fallback
+}
+
+const uiStore = useUiStore()
+const { theme } = storeToRefs(uiStore)
+
+const option = computed(() => {
+  void theme.value
+
+  return {
+  textStyle: {
+    color: readVar('--text', '#18211b'),
+    fontFamily: 'Manrope, sans-serif',
+  },
   backgroundColor: 'transparent',
   animationDuration: 700,
   animationDurationUpdate: 450,
   animationEasing: 'cubicOut',
   tooltip: {
     trigger: 'axis',
-    backgroundColor: '#11161D',
-    borderColor: '#1F2937',
-    textStyle: { color: '#E5E7EB' },
+    backgroundColor: readVar('--panel', '#ffffff'),
+    borderColor: readVar('--border', '#d4ddd5'),
+    textStyle: { color: readVar('--text', '#18211b') },
     formatter: (params: any[]) => {
       const first = params?.[0]
       const index = first?.dataIndex ?? 0
@@ -39,24 +57,24 @@ const option = computed(() => ({
         currency: 'USD',
       }).format(pnl)}`
 
-      return `${row.date}<br/>Trades: ${row.total_trades}<br/>P&L: ${signed}`
+      return `${row.date}<br/>Executions: ${row.total_trades}<br/>P&L: ${signed}`
     },
   },
   grid: { left: 42, right: 18, top: 16, bottom: 42 },
   xAxis: {
     type: 'category',
     data: props.rows.map((row) => row.date),
-    axisLabel: { color: '#9CA3AF', rotate: 35 },
-    axisLine: { lineStyle: { color: '#1F2937' } },
+    axisLabel: { color: readVar('--muted', '#647469'), rotate: 35 },
+    axisLine: { lineStyle: { color: readVar('--border', '#d4ddd5') } },
   },
   yAxis: {
     type: 'value',
     axisLabel: {
-      color: '#9CA3AF',
+      color: readVar('--muted', '#647469'),
       formatter: (val: number) => `${val}`,
     },
-    axisLine: { lineStyle: { color: '#1F2937' } },
-    splitLine: { lineStyle: { color: 'rgba(31, 41, 55, 0.55)' } },
+    axisLine: { lineStyle: { color: readVar('--border', '#d4ddd5') } },
+    splitLine: { lineStyle: { color: readVar('--chart-grid', 'rgba(100, 116, 105, 0.2)') } },
   },
   series: [
     {
@@ -75,8 +93,8 @@ const option = computed(() => ({
               x2: 0,
               y2: 1,
               colorStops: [
-                { offset: 0, color: 'rgba(34, 197, 94, 0.95)' },
-                { offset: 1, color: 'rgba(21, 128, 61, 0.75)' },
+                { offset: 0, color: readVar('--chart-positive', '#179a56') },
+                { offset: 1, color: readVar('--chart-positive-soft', 'rgba(23, 154, 86, 0.34)') },
               ],
             }
           }
@@ -88,15 +106,16 @@ const option = computed(() => ({
             x2: 0,
             y2: 1,
             colorStops: [
-              { offset: 0, color: 'rgba(239, 68, 68, 0.95)' },
-              { offset: 1, color: 'rgba(153, 27, 27, 0.78)' },
+              { offset: 0, color: readVar('--chart-negative', '#d94646') },
+              { offset: 1, color: readVar('--chart-negative-soft', 'rgba(217, 70, 70, 0.28)') },
             ],
           }
         },
       },
     },
   ],
-}))
+}
+})
 </script>
 
 <template>
