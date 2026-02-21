@@ -1,6 +1,16 @@
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import api from '@/services/api'
+import {
+  createLocalMissedTrade,
+  deleteLocalMissedTrade,
+  deleteLocalMissedTradeImage,
+  fetchLocalMissedTrade,
+  queryLocalMissedTrades,
+  shouldUseLocalFallback,
+  updateLocalMissedTrade,
+  uploadLocalMissedTradeImage,
+} from '@/services/localFallback'
 import type { MissedTrade, MissedTradeImage, Paginated } from '@/types/trade'
 
 interface MissedTradeFilters {
@@ -60,8 +70,26 @@ export const useMissedTradeStore = defineStore('missed-trades', () => {
       pagination.value.per_page = data.per_page
       pagination.value.total = data.total
     } catch (err) {
-      error.value = 'Failed to load missed trades.'
-      throw err
+      if (!shouldUseLocalFallback(err)) {
+        error.value = 'Failed to load missed trades.'
+        throw err
+      }
+
+      const local = queryLocalMissedTrades({
+        page,
+        per_page: pagination.value.per_page,
+        pair: filters.value.pair,
+        model: filters.value.model,
+        reason: filters.value.reason,
+        date_from: filters.value.date_from,
+        date_to: filters.value.date_to,
+      })
+
+      missedTrades.value = local.data
+      pagination.value.current_page = local.current_page
+      pagination.value.last_page = local.last_page
+      pagination.value.per_page = local.per_page
+      pagination.value.total = local.total
     } finally {
       loading.value = false
     }
@@ -71,6 +99,14 @@ export const useMissedTradeStore = defineStore('missed-trades', () => {
     saving.value = true
     try {
       const { data } = await api.post<MissedTrade>('/missed-trades', payload)
+      await fetchMissedTrades(1)
+      return data
+    } catch (error) {
+      if (!shouldUseLocalFallback(error)) {
+        throw error
+      }
+
+      const data = createLocalMissedTrade(payload)
       await fetchMissedTrades(1)
       return data
     } finally {
@@ -84,19 +120,41 @@ export const useMissedTradeStore = defineStore('missed-trades', () => {
       const { data } = await api.put<MissedTrade>(`/missed-trades/${id}`, payload)
       await fetchMissedTrades(pagination.value.current_page)
       return data
+    } catch (error) {
+      if (!shouldUseLocalFallback(error)) {
+        throw error
+      }
+
+      const data = updateLocalMissedTrade(id, payload)
+      await fetchMissedTrades(pagination.value.current_page)
+      return data
     } finally {
       saving.value = false
     }
   }
 
   async function deleteMissedTrade(id: number) {
-    await api.delete(`/missed-trades/${id}`)
+    try {
+      await api.delete(`/missed-trades/${id}`)
+    } catch (error) {
+      if (!shouldUseLocalFallback(error)) {
+        throw error
+      }
+      deleteLocalMissedTrade(id)
+    }
     await fetchMissedTrades(pagination.value.current_page)
   }
 
   async function fetchMissedTrade(id: number) {
-    const { data } = await api.get<MissedTrade>(`/missed-trades/${id}`)
-    return data
+    try {
+      const { data } = await api.get<MissedTrade>(`/missed-trades/${id}`)
+      return data
+    } catch (error) {
+      if (!shouldUseLocalFallback(error)) {
+        throw error
+      }
+      return fetchLocalMissedTrade(id)
+    }
   }
 
   async function uploadMissedTradeImage(
@@ -111,24 +169,39 @@ export const useMissedTradeStore = defineStore('missed-trades', () => {
       formData.append('sort_order', String(sortOrder))
     }
 
-    const { data } = await api.post<MissedTradeImage>(`/missed-trades/${missedTradeId}/images`, formData, {
-      headers: {
-        'Content-Type': 'multipart/form-data',
-      },
-      onUploadProgress: (progressEvent) => {
-        if (!onProgress) return
-        const total = progressEvent.total ?? 0
-        if (total <= 0) return
-        const value = Math.round((progressEvent.loaded / total) * 100)
-        onProgress(Math.max(0, Math.min(100, value)))
-      },
-    })
+    try {
+      const { data } = await api.post<MissedTradeImage>(`/missed-trades/${missedTradeId}/images`, formData, {
+        headers: {
+          'Content-Type': 'multipart/form-data',
+        },
+        onUploadProgress: (progressEvent) => {
+          if (!onProgress) return
+          const total = progressEvent.total ?? 0
+          if (total <= 0) return
+          const value = Math.round((progressEvent.loaded / total) * 100)
+          onProgress(Math.max(0, Math.min(100, value)))
+        },
+      })
 
-    return data
+      return data
+    } catch (error) {
+      if (!shouldUseLocalFallback(error)) {
+        throw error
+      }
+      onProgress?.(100)
+      return await uploadLocalMissedTradeImage(missedTradeId, file, sortOrder)
+    }
   }
 
   async function deleteMissedTradeImage(imageId: number) {
-    await api.delete(`/missed-trade-images/${imageId}`)
+    try {
+      await api.delete(`/missed-trade-images/${imageId}`)
+    } catch (error) {
+      if (!shouldUseLocalFallback(error)) {
+        throw error
+      }
+      deleteLocalMissedTradeImage(imageId)
+    }
   }
 
   function resetFilters() {

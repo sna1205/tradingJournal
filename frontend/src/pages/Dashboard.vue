@@ -24,6 +24,7 @@ import CalendarHeatmap from '@/components/analytics/CalendarHeatmap.vue'
 import DatePopoverField from '@/components/form/DatePopoverField.vue'
 import BaseSelect from '@/components/form/BaseSelect.vue'
 import api from '@/services/api'
+import { queryLocalTrades, shouldUseLocalFallback } from '@/services/localFallback'
 import { asCurrency, asSignedCurrency } from '@/utils/format'
 import { useAccountStore } from '@/stores/accountStore'
 import { useAnalyticsStore } from '@/stores/analyticsStore'
@@ -271,6 +272,19 @@ async function fetchRecentTrades(filters: { date_from?: string; date_to?: string
     })
 
     recentTrades.value = rows
+  } catch (error) {
+    if (!shouldUseLocalFallback(error)) {
+      throw error
+    }
+
+    const local = queryLocalTrades({
+      page: 1,
+      per_page: 40,
+      account_id: selectedAccountId.value ?? undefined,
+      date_from: filters.date_from,
+      date_to: filters.date_to,
+    })
+    recentTrades.value = local.data
   } finally {
     recentTradesLoading.value = false
   }

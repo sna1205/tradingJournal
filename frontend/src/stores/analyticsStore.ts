@@ -1,8 +1,9 @@
 import { defineStore } from 'pinia'
-import { computed, ref } from 'vue'
+import { computed, ref, type Ref } from 'vue'
 import api from '@/services/api'
+import { fetchLocalAccounts, queryLocalTrades, shouldUseLocalFallback } from '@/services/localFallback'
 import { useAccountStore } from '@/stores/accountStore'
-import type { SummaryStats } from '@/types/trade'
+import type { SummaryStats, Trade } from '@/types/trade'
 
 export interface AnalyticsOverview {
   total_trades: number
@@ -457,6 +458,35 @@ export const useAnalyticsStore = defineStore('analytics', () => {
         revenge_after_loss_events: riskStatusRes.data.revenge_after_loss_events || [],
         warnings: riskStatusRes.data.warnings || [],
       }
+    } catch (error) {
+      if (!shouldUseLocalFallback(error)) {
+        throw error
+      }
+
+      const localTrades = queryLocalTrades({
+        page: 1,
+        per_page: 100000,
+        account_id: accountStore.selectedAccountId ?? undefined,
+        date_from: filters?.date_from,
+        date_to: filters?.date_to,
+      }).data
+      const localAccounts = fetchLocalAccounts()
+      applyLocalAnalyticsFallback({
+        trades: localTrades,
+        accounts: localAccounts,
+        selectedAccountId: accountStore.selectedAccountId,
+        overview,
+        dailyStats,
+        performanceProfile,
+        equity,
+        drawdown,
+        streaks,
+        metrics,
+        rankings,
+        monthlyHeatmap,
+        riskStatus,
+        behavioral,
+      })
     } finally {
       loading.value = false
     }
@@ -510,4 +540,280 @@ function analyticsQueryParams(
   }
 
   return Object.keys(params).length > 0 ? params : undefined
+}
+
+function applyLocalAnalyticsFallback(args: {
+  trades: Trade[]
+  accounts: Array<{ id: number; starting_balance: string }>
+  selectedAccountId: number | null
+  overview: Ref<AnalyticsOverview | null>
+  dailyStats: Ref<AnalyticsDailyRow[]>
+  performanceProfile: Ref<PerformanceProfile | null>
+  equity: Ref<EquityPayload | null>
+  drawdown: Ref<DrawdownPayload | null>
+  streaks: Ref<StreakPayload | null>
+  metrics: Ref<MetricsPayload | null>
+  rankings: Ref<RankingsPayload | null>
+  monthlyHeatmap: Ref<MonthlyHeatmapPayload | null>
+  riskStatus: Ref<RiskStatusPayload | null>
+  behavioral: Ref<BehavioralPayload | null>
+}) {
+  const sorted = args.trades
+    .slice()
+    .sort((left, right) => left.date.localeCompare(right.date) || left.id - right.id)
+
+  const totalTrades = sorted.length
+  let wins = 0
+  let losses = 0
+  let totalProfit = 0
+  let totalLossAbs = 0
+  let totalR = 0
+
+  const dayMap = new Map<string, { total_trades: number; profit_loss: number; wins: number; rTotal: number }>()
+  const sessionMap = new Map<string, Trade[]>()
+  const modelMap = new Map<string, Trade[]>()
+  const symbolMap = new Map<string, Trade[]>()
+  const emotionMap = new Map<string, { total_trades: number; total_profit: number }>()
+
+  for (const trade of sorted) {
+    const pnl = Number(trade.profit_loss || 0)
+    const r = Number(trade.r_multiple ?? 0)
+    totalR += r
+
+    if (pnl > 0) {
+      wins += 1
+      totalProfit += pnl
+    } else if (pnl < 0) {
+      losses += 1
+      totalLossAbs += Math.abs(pnl)
+    }
+
+    const day = toIsoDateKey(trade.date)
+    const bucket = dayMap.get(day) ?? { total_trades: 0, profit_loss: 0, wins: 0, rTotal: 0 }
+    bucket.total_trades += 1
+    bucket.profit_loss += pnl
+    bucket.rTotal += r
+    if (pnl > 0) bucket.wins += 1
+    dayMap.set(day, bucket)
+
+    const session = trade.session || 'N/A'
+    const model = trade.model || 'General'
+    const symbol = trade.pair || 'Unknown'
+    sessionMap.set(session, [...(sessionMap.get(session) ?? []), trade])
+    modelMap.set(model, [...(modelMap.get(model) ?? []), trade])
+    symbolMap.set(symbol, [...(symbolMap.get(symbol) ?? []), trade])
+
+    const emotion = trade.emotion || 'neutral'
+    const emotionBucket = emotionMap.get(emotion) ?? { total_trades: 0, total_profit: 0 }
+    emotionBucket.total_trades += 1
+    emotionBucket.total_profit += pnl
+    emotionMap.set(emotion, emotionBucket)
+  }
+
+  const netProfit = Number((totalProfit - totalLossAbs).toFixed(2))
+  const winRate = totalTrades > 0 ? Number(((wins / totalTrades) * 100).toFixed(2)) : 0
+  const avgR = totalTrades > 0 ? Number((totalR / totalTrades).toFixed(3)) : 0
+  const expectancy = totalTrades > 0 ? Number((netProfit / totalTrades).toFixed(2)) : 0
+  const profitFactor = totalLossAbs > 0 ? Number((totalProfit / totalLossAbs).toFixed(2)) : null
+
+  const startingBalance = args.selectedAccountId === null
+    ? args.accounts.reduce((sum, account) => sum + Number(account.starting_balance || 0), 0)
+    : Number(args.accounts.find((account) => account.id === args.selectedAccountId)?.starting_balance || 0)
+
+  const dailyRows = [...dayMap.entries()]
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([date, value]) => ({
+      date,
+      close_date: date,
+      total_trades: value.total_trades,
+      profit_loss: Number(value.profit_loss.toFixed(2)),
+      average_r: value.total_trades > 0 ? Number((value.rTotal / value.total_trades).toFixed(3)) : 0,
+      win_rate: value.total_trades > 0 ? Number(((value.wins / value.total_trades) * 100).toFixed(2)) : 0,
+    }))
+
+  const cumulativeProfit: number[] = []
+  const equityPoints: number[] = []
+  const equityTimestamps: string[] = []
+  let runningProfit = 0
+  for (const day of dailyRows) {
+    runningProfit = Number((runningProfit + day.profit_loss).toFixed(2))
+    cumulativeProfit.push(runningProfit)
+    equityPoints.push(Number((startingBalance + runningProfit).toFixed(2)))
+    equityTimestamps.push(day.date)
+  }
+
+  let peakBalance = startingBalance
+  let maxDrawdown = 0
+  for (const point of equityPoints) {
+    peakBalance = Math.max(peakBalance, point)
+    maxDrawdown = Math.max(maxDrawdown, peakBalance - point)
+  }
+  const currentEquity = equityPoints.length > 0 ? equityPoints[equityPoints.length - 1]! : startingBalance
+  const currentDrawdown = Math.max(0, peakBalance - currentEquity)
+  const maxDrawdownPercent = peakBalance > 0 ? Number(((maxDrawdown / peakBalance) * 100).toFixed(2)) : 0
+  const currentDrawdownPercent = peakBalance > 0 ? Number(((currentDrawdown / peakBalance) * 100).toFixed(2)) : 0
+
+  args.overview.value = {
+    total_trades: totalTrades,
+    win_rate: winRate,
+    total_profit: Number(totalProfit.toFixed(2)),
+    total_loss: Number(totalLossAbs.toFixed(2)),
+    profit_factor: profitFactor,
+    returns_percent: startingBalance > 0 ? Number(((netProfit / startingBalance) * 100).toFixed(2)) : 0,
+    expectancy,
+    average_r: avgR,
+    recovery_factor: maxDrawdown > 0 ? Number((netProfit / maxDrawdown).toFixed(2)) : null,
+  }
+  args.dailyStats.value = dailyRows
+  args.performanceProfile.value = {
+    win_rate: winRate,
+    avg_rr: avgR,
+    profit_factor: profitFactor,
+    consistency_score: totalTrades > 0 ? Number(((winRate / 100) * 10).toFixed(2)) : 0,
+    recovery_factor: maxDrawdown > 0 ? Number((netProfit / maxDrawdown).toFixed(2)) : null,
+    sharpe_ratio: null,
+  }
+  args.equity.value = {
+    equity_points: equityPoints,
+    cumulative_profit: cumulativeProfit,
+    equity_timestamps: equityTimestamps,
+  }
+  args.drawdown.value = {
+    max_drawdown: Number(maxDrawdown.toFixed(2)),
+    max_drawdown_percent: maxDrawdownPercent,
+    current_drawdown: Number(currentDrawdown.toFixed(2)),
+    current_drawdown_percent: currentDrawdownPercent,
+    peak_balance: Number(peakBalance.toFixed(2)),
+    current_equity: Number(currentEquity.toFixed(2)),
+  }
+  args.streaks.value = buildStreakPayload(sorted)
+  args.metrics.value = {
+    total_trades: totalTrades,
+    wins,
+    losses,
+    breakeven: Math.max(0, totalTrades - wins - losses),
+    win_rate: winRate,
+    loss_rate: totalTrades > 0 ? Number(((losses / totalTrades) * 100).toFixed(2)) : 0,
+    average_win: wins > 0 ? Number((totalProfit / wins).toFixed(2)) : 0,
+    average_loss: losses > 0 ? Number((totalLossAbs / losses).toFixed(2)) : 0,
+    total_winning_amount: Number(totalProfit.toFixed(2)),
+    total_losing_amount: Number(totalLossAbs.toFixed(2)),
+    net_profit: netProfit,
+    profit_factor: profitFactor,
+    expectancy,
+    recovery_factor: maxDrawdown > 0 ? Number((netProfit / maxDrawdown).toFixed(2)) : null,
+    average_r: avgR,
+    avg_r: avgR,
+    sharpe_ratio: null,
+  }
+  args.rankings.value = {
+    sessions: buildRankingRows(sessionMap, 'session'),
+    strategy_models: buildRankingRows(modelMap, 'strategy_model'),
+    symbols: buildRankingRows(symbolMap, 'symbol'),
+  }
+  args.monthlyHeatmap.value = {
+    months: [],
+    max_abs_daily_pnl: dailyRows.reduce((max, row) => Math.max(max, Math.abs(row.profit_loss)), 0),
+  }
+  const emotionBreakdown = [...emotionMap.entries()].map(([emotion, value]) => ({
+    emotion,
+    total_trades: value.total_trades,
+    total_profit: Number(value.total_profit.toFixed(2)),
+  }))
+  args.behavioral.value = {
+    discipline_comparison: {
+      followed_rules: {},
+      broke_rules: {},
+      insight: {
+        when_follow_rules: 'Local mode fallback enabled.',
+        when_break_rules: 'Connect backend for full behavioral analysis.',
+      },
+    },
+    emotion_analytics: {
+      breakdown: emotionBreakdown,
+      most_costly_emotion: emotionBreakdown.slice().sort((a, b) => Number(a.total_profit) - Number(b.total_profit))[0]?.emotion ?? null,
+      most_profitable_mindset: emotionBreakdown.slice().sort((a, b) => Number(b.total_profit) - Number(a.total_profit))[0]?.emotion ?? null,
+    },
+  }
+  args.riskStatus.value = {
+    risk_percent_warning: false,
+    loss_streak_caution: (args.streaks.value?.current_loss_streak ?? 0) >= 3,
+    drawdown_banner: currentDrawdownPercent > 10,
+    revenge_behavior_flag: sorted.some((trade) => trade.emotion === 'revenge'),
+    latest_risk_percent: Number(sorted[sorted.length - 1]?.risk_percent ?? 0),
+    max_risk_percent: sorted.reduce((max, trade) => Math.max(max, Number(trade.risk_percent ?? 0)), 0),
+    current_loss_streak: args.streaks.value?.current_loss_streak ?? 0,
+    current_drawdown_percent: currentDrawdownPercent,
+    revenge_after_loss_events: [],
+    warnings: [],
+  }
+}
+
+function buildRankingRows(map: Map<string, Trade[]>, kind: 'session' | 'strategy_model' | 'symbol'): RankingRow[] {
+  return [...map.entries()]
+    .map(([name, rows]) => {
+      const totalTrades = rows.length
+      const wins = rows.filter((row) => Number(row.profit_loss) > 0).length
+      const totalPnl = rows.reduce((sum, row) => sum + Number(row.profit_loss || 0), 0)
+      const totalProfit = rows
+        .filter((row) => Number(row.profit_loss || 0) > 0)
+        .reduce((sum, row) => sum + Number(row.profit_loss || 0), 0)
+      const totalLossAbs = Math.abs(rows
+        .filter((row) => Number(row.profit_loss || 0) < 0)
+        .reduce((sum, row) => sum + Number(row.profit_loss || 0), 0))
+      const result: RankingRow = {
+        total_trades: totalTrades,
+        win_rate: totalTrades > 0 ? Number(((wins / totalTrades) * 100).toFixed(2)) : 0,
+        profit_factor: totalLossAbs > 0 ? Number((totalProfit / totalLossAbs).toFixed(2)) : null,
+        expectancy: totalTrades > 0 ? Number((totalPnl / totalTrades).toFixed(2)) : 0,
+        total_pnl: Number(totalPnl.toFixed(2)),
+        avg_r: totalTrades > 0 ? Number((rows.reduce((sum, row) => sum + Number(row.r_multiple ?? 0), 0) / totalTrades).toFixed(3)) : 0,
+      }
+      if (kind === 'session') result.session = name
+      if (kind === 'strategy_model') result.strategy_model = name
+      if (kind === 'symbol') result.symbol = name
+      return result
+    })
+    .sort((left, right) => right.expectancy - left.expectancy)
+}
+
+function buildStreakPayload(rows: Trade[]): StreakPayload {
+  let longestWin = 0
+  let longestLoss = 0
+  let currentWin = 0
+  let currentLoss = 0
+
+  for (const row of rows) {
+    const pnl = Number(row.profit_loss || 0)
+    if (pnl > 0) {
+      currentWin += 1
+      currentLoss = 0
+      longestWin = Math.max(longestWin, currentWin)
+    } else if (pnl < 0) {
+      currentLoss += 1
+      currentWin = 0
+      longestLoss = Math.max(longestLoss, currentLoss)
+    } else {
+      currentWin = 0
+      currentLoss = 0
+    }
+  }
+
+  const type: 'win' | 'loss' | 'flat' = currentWin > 0 ? 'win' : currentLoss > 0 ? 'loss' : 'flat'
+  return {
+    longest_win_streak: longestWin,
+    longest_loss_streak: longestLoss,
+    current_win_streak: currentWin,
+    current_loss_streak: currentLoss,
+    current_streak: {
+      type,
+      length: Math.max(currentWin, currentLoss),
+    },
+  }
+}
+
+function toIsoDateKey(value: string): string {
+  const parsed = new Date(value)
+  if (Number.isNaN(parsed.getTime())) return new Date().toISOString().slice(0, 10)
+  return parsed.toISOString().slice(0, 10)
 }

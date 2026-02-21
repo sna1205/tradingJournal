@@ -1,6 +1,15 @@
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import api from '@/services/api'
+import {
+  createLocalAccount,
+  deleteLocalAccount,
+  fetchLocalAccountAnalytics,
+  fetchLocalAccountEquity,
+  fetchLocalAccounts,
+  shouldUseLocalFallback,
+  updateLocalAccount,
+} from '@/services/localFallback'
 import type { Account, AccountAnalyticsPayload, AccountEquityPayload, AccountType } from '@/types/account'
 
 export interface AccountPayload {
@@ -50,8 +59,18 @@ export const useAccountStore = defineStore('accounts', () => {
           setSelectedAccountId(null)
         }
       }
-    } catch {
-      accounts.value = []
+    } catch (error) {
+      if (!shouldUseLocalFallback(error)) {
+        throw error
+      }
+
+      accounts.value = fetchLocalAccounts(params)
+      if (selectedAccountId.value !== null) {
+        const exists = accounts.value.some((account) => account.id === selectedAccountId.value)
+        if (!exists) {
+          setSelectedAccountId(null)
+        }
+      }
     } finally {
       loading.value = false
     }
@@ -62,6 +81,14 @@ export const useAccountStore = defineStore('accounts', () => {
     try {
       const { data } = await api.post<Account>('/accounts', payload)
       accounts.value = [data, ...accounts.value]
+      return data
+    } catch (error) {
+      if (!shouldUseLocalFallback(error)) {
+        throw error
+      }
+
+      const data = createLocalAccount(payload)
+      accounts.value = fetchLocalAccounts()
       return data
     } finally {
       saving.value = false
@@ -79,6 +106,14 @@ export const useAccountStore = defineStore('accounts', () => {
         accounts.value.push(data)
       }
       return data
+    } catch (error) {
+      if (!shouldUseLocalFallback(error)) {
+        throw error
+      }
+
+      const data = updateLocalAccount(id, payload)
+      accounts.value = fetchLocalAccounts()
+      return data
     } finally {
       saving.value = false
     }
@@ -92,19 +127,43 @@ export const useAccountStore = defineStore('accounts', () => {
       if (selectedAccountId.value === id) {
         setSelectedAccountId(null)
       }
+    } catch (error) {
+      if (!shouldUseLocalFallback(error)) {
+        throw error
+      }
+
+      deleteLocalAccount(id)
+      accounts.value = fetchLocalAccounts()
+      if (selectedAccountId.value === id) {
+        setSelectedAccountId(null)
+      }
     } finally {
       saving.value = false
     }
   }
 
   async function fetchAccountEquity(id: number) {
-    const { data } = await api.get<AccountEquityPayload>(`/accounts/${id}/equity`)
-    return data
+    try {
+      const { data } = await api.get<AccountEquityPayload>(`/accounts/${id}/equity`)
+      return data
+    } catch (error) {
+      if (!shouldUseLocalFallback(error)) {
+        throw error
+      }
+      return fetchLocalAccountEquity(id)
+    }
   }
 
   async function fetchAccountAnalytics(id: number) {
-    const { data } = await api.get<AccountAnalyticsPayload>(`/accounts/${id}/analytics`)
-    return data
+    try {
+      const { data } = await api.get<AccountAnalyticsPayload>(`/accounts/${id}/analytics`)
+      return data
+    } catch (error) {
+      if (!shouldUseLocalFallback(error)) {
+        throw error
+      }
+      return fetchLocalAccountAnalytics(id)
+    }
   }
 
   return {

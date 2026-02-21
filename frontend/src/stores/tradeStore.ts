@@ -1,6 +1,16 @@
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import api from '@/services/api'
+import {
+  createLocalTrade,
+  deleteLocalTrade,
+  deleteLocalTradeImage,
+  fetchLocalTradeDetails,
+  queryLocalTrades,
+  shouldUseLocalFallback,
+  updateLocalTrade,
+  uploadLocalTradeImage,
+} from '@/services/localFallback'
 import { useAnalyticsStore } from '@/stores/analyticsStore'
 import { useAccountStore } from '@/stores/accountStore'
 import type { Paginated, Trade, TradeDetailsResponse, TradeEmotion, TradeImage } from '@/types/trade'
@@ -74,8 +84,25 @@ export const useTradeStore = defineStore('trades', () => {
       pagination.value.per_page = data.per_page
       pagination.value.total = data.total
     } catch (err) {
-      error.value = 'Failed to load trades.'
-      throw err
+      if (!shouldUseLocalFallback(err)) {
+        error.value = 'Failed to load trades.'
+        throw err
+      }
+
+      const local = queryLocalTrades({
+        page,
+        per_page: pagination.value.per_page,
+        pair: filters.value.pair,
+        direction: filters.value.direction,
+        model: filters.value.model,
+        date_from: filters.value.date_from,
+        date_to: filters.value.date_to,
+      })
+      trades.value = local.data
+      pagination.value.current_page = local.current_page
+      pagination.value.last_page = local.last_page
+      pagination.value.per_page = local.per_page
+      pagination.value.total = local.total
     } finally {
       loading.value = false
     }
@@ -109,10 +136,28 @@ export const useTradeStore = defineStore('trades', () => {
         await fetchTrades(pagination.value.current_page)
       }
 
-      void analyticsStore.fetchAnalytics()
-      void accountStore.fetchAccounts()
+      void analyticsStore.fetchAnalytics().catch(() => undefined)
+      void accountStore.fetchAccounts().catch(() => undefined)
       return data
     } catch (err) {
+      if (shouldUseLocalFallback(err)) {
+        const local = createLocalTrade(payload)
+        if (shouldOptimisticallyInsert) {
+          const index = trades.value.findIndex((trade) => trade.id === tempId)
+          if (index >= 0) {
+            trades.value[index] = local
+          } else {
+            trades.value = [local, ...trades.value].slice(0, pagination.value.per_page)
+          }
+        } else {
+          await fetchTrades(1)
+        }
+
+        void analyticsStore.fetchAnalytics().catch(() => undefined)
+        void accountStore.fetchAccounts().catch(() => undefined)
+        return local
+      }
+
       if (shouldOptimisticallyInsert) {
         trades.value = previousTrades
         pagination.value = previousPagination
@@ -164,10 +209,22 @@ export const useTradeStore = defineStore('trades', () => {
         await fetchTrades(pagination.value.current_page)
       }
 
-      void analyticsStore.fetchAnalytics()
-      void accountStore.fetchAccounts()
+      void analyticsStore.fetchAnalytics().catch(() => undefined)
+      void accountStore.fetchAccounts().catch(() => undefined)
       return data
     } catch (err) {
+      if (shouldUseLocalFallback(err)) {
+        const data = updateLocalTrade(id, payload)
+        if (index >= 0) {
+          trades.value[index] = data
+        } else {
+          await fetchTrades(pagination.value.current_page)
+        }
+        void analyticsStore.fetchAnalytics().catch(() => undefined)
+        void accountStore.fetchAccounts().catch(() => undefined)
+        return data
+      }
+
       if (index >= 0 && previous) {
         trades.value[index] = previous
       }
@@ -193,9 +250,17 @@ export const useTradeStore = defineStore('trades', () => {
         await fetchTrades(pagination.value.current_page - 1)
       }
 
-      void analyticsStore.fetchAnalytics()
-      void accountStore.fetchAccounts()
+      void analyticsStore.fetchAnalytics().catch(() => undefined)
+      void accountStore.fetchAccounts().catch(() => undefined)
     } catch (err) {
+      if (shouldUseLocalFallback(err)) {
+        deleteLocalTrade(id)
+        await fetchTrades(Math.max(1, pagination.value.current_page))
+        void analyticsStore.fetchAnalytics().catch(() => undefined)
+        void accountStore.fetchAccounts().catch(() => undefined)
+        return
+      }
+
       if (index >= 0 && previous) {
         trades.value.splice(index, 0, previous)
         pagination.value.total += 1
@@ -205,8 +270,15 @@ export const useTradeStore = defineStore('trades', () => {
   }
 
   async function fetchTradeDetails(id: number): Promise<TradeDetailsResponse> {
-    const { data } = await api.get<TradeDetailsResponse>(`/trades/${id}`)
-    return data
+    try {
+      const { data } = await api.get<TradeDetailsResponse>(`/trades/${id}`)
+      return data
+    } catch (error) {
+      if (!shouldUseLocalFallback(error)) {
+        throw error
+      }
+      return fetchLocalTradeDetails(id)
+    }
   }
 
   async function uploadTradeImage(
@@ -221,24 +293,40 @@ export const useTradeStore = defineStore('trades', () => {
       formData.append('sort_order', String(sortOrder))
     }
 
-    const { data } = await api.post<TradeImage>(`/trades/${tradeId}/images`, formData, {
-      headers: {
-        'Content-Type': 'multipart/form-data',
-      },
-      onUploadProgress: (progressEvent) => {
-        if (!onProgress) return
-        const total = progressEvent.total ?? 0
-        if (total <= 0) return
-        const value = Math.round((progressEvent.loaded / total) * 100)
-        onProgress(Math.max(0, Math.min(100, value)))
-      },
-    })
+    try {
+      const { data } = await api.post<TradeImage>(`/trades/${tradeId}/images`, formData, {
+        headers: {
+          'Content-Type': 'multipart/form-data',
+        },
+        onUploadProgress: (progressEvent) => {
+          if (!onProgress) return
+          const total = progressEvent.total ?? 0
+          if (total <= 0) return
+          const value = Math.round((progressEvent.loaded / total) * 100)
+          onProgress(Math.max(0, Math.min(100, value)))
+        },
+      })
 
-    return data
+      return data
+    } catch (error) {
+      if (!shouldUseLocalFallback(error)) {
+        throw error
+      }
+
+      onProgress?.(100)
+      return await uploadLocalTradeImage(tradeId, file, sortOrder)
+    }
   }
 
   async function deleteTradeImage(imageId: number) {
-    await api.delete(`/trade-images/${imageId}`)
+    try {
+      await api.delete(`/trade-images/${imageId}`)
+    } catch (error) {
+      if (!shouldUseLocalFallback(error)) {
+        throw error
+      }
+      deleteLocalTradeImage(imageId)
+    }
   }
 
   function resetFilters() {

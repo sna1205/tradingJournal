@@ -3,7 +3,6 @@ import { computed, onMounted, reactive, ref } from 'vue'
 import { storeToRefs } from 'pinia'
 import type { AxiosError } from 'axios'
 import { Pencil, Plus, Trash2, WalletCards, X } from 'lucide-vue-next'
-import api from '@/services/api'
 import GlassPanel from '@/components/layout/GlassPanel.vue'
 import SkeletonBlock from '@/components/layout/SkeletonBlock.vue'
 import EmptyState from '@/components/layout/EmptyState.vue'
@@ -205,8 +204,35 @@ async function removeAccount(account: Account) {
 async function fetchAnalyticsData() {
   loadingAnalytics.value = true
   try {
-    const { data } = await api.get<{ accounts: AccountAnalyticsRow[] }>('/analytics/accounts')
-    analyticsRows.value = data.accounts ?? []
+    const rows = await Promise.all(
+      accounts.value.map(async (account) => {
+        try {
+          const data = await accountStore.fetchAccountAnalytics(account.id)
+          const currentBalance = Number(account.current_balance)
+          return {
+            account_id: account.id,
+            name: account.name,
+            broker: account.broker,
+            account_type: account.account_type,
+            currency: account.currency,
+            is_active: account.is_active,
+            starting_balance: Number(account.starting_balance),
+            current_balance: currentBalance,
+            computed_current_balance: currentBalance,
+            total_trades: Number(data.total_trades ?? 0),
+            win_rate: Number(data.win_rate ?? 0),
+            net_profit: Number(data.net_profit ?? 0),
+            profit_factor: data.profit_factor === null ? null : Number(data.profit_factor),
+            expectancy: Number(data.expectancy ?? 0),
+            max_drawdown: Number(data.max_drawdown ?? 0),
+            max_drawdown_percent: Number(data.max_drawdown_percent ?? 0),
+          } satisfies AccountAnalyticsRow
+        } catch {
+          return null
+        }
+      })
+    )
+    analyticsRows.value = rows.filter((item): item is AccountAnalyticsRow => item !== null)
 
     const sparklineEntries = await Promise.all(
       accounts.value.map(async (account) => {
