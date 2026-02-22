@@ -99,3 +99,15 @@ export interface AccountAnalyticsPayload {
   total_trades: number
   net_profit: number
 }
+
+export function isPropAccountType(type: AccountType): boolean {
+  return type === 'funded'
+}
+
+export function isLiveAccountType(type: AccountType): boolean {
+  return type === 'personal'
+}
+
+export function isDemoAccountType(type: AccountType): boolean {
+  return type === 'demo'
+}

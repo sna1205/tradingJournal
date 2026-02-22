@@ -12,7 +12,14 @@ import MiniSparkline from '@/components/charts/MiniSparkline.vue'
 import { useAccountStore, type AccountPayload } from '@/stores/accountStore'
 import { useUiStore } from '@/stores/uiStore'
 import { asCurrency } from '@/utils/format'
-import type { Account, AccountType, ChallengeStatus } from '@/types/account'
+import {
+  isDemoAccountType,
+  isLiveAccountType,
+  isPropAccountType,
+  type Account,
+  type AccountType,
+  type ChallengeStatus,
+} from '@/types/account'
 
 interface AccountAnalyticsRow {
   account_id: number
@@ -31,6 +38,19 @@ interface AccountAnalyticsRow {
   expectancy: number
   max_drawdown: number
   max_drawdown_percent: number
+}
+
+interface AccountCardRow {
+  account: Account
+  analytics?: AccountAnalyticsRow
+  sparkline: number[]
+}
+
+interface AccountCardGroup {
+  id: 'prop' | 'live' | 'demo'
+  title: string
+  description: string
+  rows: AccountCardRow[]
 }
 
 const accountStore = useAccountStore()
@@ -92,7 +112,7 @@ const challengeForm = reactive({
   failed_at: '',
 })
 
-const cards = computed(() =>
+const accountCards = computed<AccountCardRow[]>(() =>
   accounts.value.map((account) => {
     const analytics = analyticsRows.value.find((row) => row.account_id === account.id)
     return {
@@ -102,6 +122,35 @@ const cards = computed(() =>
     }
   })
 )
+
+const accountGroups = computed<AccountCardGroup[]>(() => {
+  const rows = accountCards.value
+
+  const groups: AccountCardGroup[] = [
+    {
+      id: 'prop',
+      title: 'Prop Accounts',
+      description: 'Funded/challenge accounts with strict rule tracking.',
+      rows: rows.filter((row) => isPropAccountType(row.account.account_type)),
+    },
+    {
+      id: 'live',
+      title: 'Live Accounts',
+      description: 'Personal capital performance and execution tracking.',
+      rows: rows.filter((row) => isLiveAccountType(row.account.account_type)),
+    },
+    {
+      id: 'demo',
+      title: 'Demo Accounts',
+      description: 'Practice and forward-testing accounts.',
+      rows: rows.filter((row) => isDemoAccountType(row.account.account_type)),
+    },
+  ]
+
+  return groups.filter((group) => group.rows.length > 0)
+})
+
+const totalCardCount = computed(() => accountCards.value.length)
 
 const formErrors = computed<Record<string, string>>(() => {
   const errors: Record<string, string> = {}
@@ -479,7 +528,7 @@ onMounted(async () => {
     </div>
 
     <EmptyState
-      v-else-if="cards.length === 0"
+      v-else-if="totalCardCount === 0"
       title="No accounts yet"
       description="Create your first account to start account-isolated analytics."
       :icon="WalletCards"
@@ -487,69 +536,86 @@ onMounted(async () => {
       @cta="openCreateModal"
     />
 
-    <section v-else class="grid grid-premium md:grid-cols-2 xl:grid-cols-3">
-      <GlassPanel
-        v-for="row in cards"
-        :key="row.account.id"
-        class="account-card"
-        :class="accountCardClass(row.account.account_type)"
-      >
+    <section v-else class="space-y-5">
+      <div v-for="group in accountGroups" :key="group.id" class="space-y-3">
         <div class="section-head">
           <div>
-            <p class="text-base font-semibold">{{ row.account.name }}</p>
-            <p class="text-xs muted">{{ row.account.broker }}</p>
+            <h3 class="section-title">{{ group.title }}</h3>
+            <p class="section-note">{{ group.description }}</p>
           </div>
-          <span :class="accountTypeBadgeClass(row.account.account_type)">{{ row.account.account_type }}</span>
+          <span class="pill">{{ group.rows.length }}</span>
         </div>
 
-        <div class="grid grid-cols-2 gap-3 text-sm">
-          <article class="panel p-3">
-            <p class="kicker-label">Starting</p>
-            <p class="mt-1 value-display font-semibold">{{ asCurrency(Number(row.account.starting_balance)) }}</p>
-          </article>
-          <article class="panel p-3">
-            <p class="kicker-label">Current</p>
-            <p class="mt-1 value-display font-semibold">{{ asCurrency(Number(row.account.current_balance)) }}</p>
-          </article>
-          <article class="panel p-3">
-            <p class="kicker-label">Net Profit</p>
-            <p class="mt-1 value-display font-semibold" :class="Number(row.analytics?.net_profit ?? 0) >= 0 ? 'positive' : 'negative'">
-              {{ asCurrency(Number(row.analytics?.net_profit ?? 0)) }}
-            </p>
-          </article>
-          <article class="panel p-3">
-            <p class="kicker-label">Return on Equity</p>
-            <p class="mt-1 value-display font-semibold" :class="Number(row.analytics?.net_profit ?? 0) >= 0 ? 'positive' : 'negative'">
-              {{ asReturnPercent(Number(row.analytics?.net_profit ?? 0), Number(row.account.starting_balance)) }}
-            </p>
-          </article>
-        </div>
+        <div class="grid grid-premium md:grid-cols-2 xl:grid-cols-3">
+          <GlassPanel
+            v-for="row in group.rows"
+            :key="row.account.id"
+            class="account-card"
+            :class="accountCardClass(row.account.account_type)"
+          >
+            <div class="section-head">
+              <div>
+                <p class="text-base font-semibold">{{ row.account.name }}</p>
+                <p class="text-xs muted">{{ row.account.broker }}</p>
+              </div>
+              <span :class="accountTypeBadgeClass(row.account.account_type)">{{ row.account.account_type }}</span>
+            </div>
 
-        <article class="panel mt-3 p-3">
-          <div class="mb-2 flex items-center justify-between">
-            <p class="kicker-label">Drawdown</p>
-            <p class="value-display text-xs" :class="Number(row.analytics?.max_drawdown_percent ?? 0) > 10 ? 'negative' : 'muted'">
-              {{ Number(row.analytics?.max_drawdown_percent ?? 0).toFixed(2) }}%
-            </p>
-          </div>
-          <MiniSparkline
-            :values="row.sparkline"
-            :positive="Number(row.analytics?.net_profit ?? 0) >= 0"
-          />
-        </article>
+            <div class="grid grid-cols-2 gap-3 text-sm">
+              <article class="panel p-3">
+                <p class="kicker-label">Starting</p>
+                <p class="mt-1 value-display font-semibold">{{ asCurrency(Number(row.account.starting_balance)) }}</p>
+              </article>
+              <article class="panel p-3">
+                <p class="kicker-label">Current</p>
+                <p class="mt-1 value-display font-semibold">{{ asCurrency(Number(row.account.current_balance)) }}</p>
+              </article>
+              <article class="panel p-3">
+                <p class="kicker-label">Net Profit</p>
+                <p class="mt-1 value-display font-semibold" :class="Number(row.analytics?.net_profit ?? 0) >= 0 ? 'positive' : 'negative'">
+                  {{ asCurrency(Number(row.analytics?.net_profit ?? 0)) }}
+                </p>
+              </article>
+              <article class="panel p-3">
+                <p class="kicker-label">Return on Equity</p>
+                <p class="mt-1 value-display font-semibold" :class="Number(row.analytics?.net_profit ?? 0) >= 0 ? 'positive' : 'negative'">
+                  {{ asReturnPercent(Number(row.analytics?.net_profit ?? 0), Number(row.account.starting_balance)) }}
+                </p>
+              </article>
+            </div>
 
-        <div class="mt-3 flex items-center justify-end gap-2">
-          <button type="button" class="btn btn-ghost p-2" @click="openChallengeModal(row.account)">
-            <Flag class="h-4 w-4" />
-          </button>
-          <button type="button" class="btn btn-ghost p-2" @click="openEditModal(row.account)">
-            <Pencil class="h-4 w-4" />
-          </button>
-          <button type="button" class="btn btn-ghost is-danger p-2" @click="removeAccount(row.account)">
-            <Trash2 class="h-4 w-4" />
-          </button>
+            <article class="panel mt-3 p-3">
+              <div class="mb-2 flex items-center justify-between">
+                <p class="kicker-label">Drawdown</p>
+                <p class="value-display text-xs" :class="Number(row.analytics?.max_drawdown_percent ?? 0) > 10 ? 'negative' : 'muted'">
+                  {{ Number(row.analytics?.max_drawdown_percent ?? 0).toFixed(2) }}%
+                </p>
+              </div>
+              <MiniSparkline
+                :values="row.sparkline"
+                :positive="Number(row.analytics?.net_profit ?? 0) >= 0"
+              />
+            </article>
+
+            <div class="mt-3 flex items-center justify-end gap-2">
+              <button
+                v-if="isPropAccountType(row.account.account_type)"
+                type="button"
+                class="btn btn-ghost p-2"
+                @click="openChallengeModal(row.account)"
+              >
+                <Flag class="h-4 w-4" />
+              </button>
+              <button type="button" class="btn btn-ghost p-2" @click="openEditModal(row.account)">
+                <Pencil class="h-4 w-4" />
+              </button>
+              <button type="button" class="btn btn-ghost is-danger p-2" @click="removeAccount(row.account)">
+                <Trash2 class="h-4 w-4" />
+              </button>
+            </div>
+          </GlassPanel>
         </div>
-      </GlassPanel>
+      </div>
     </section>
 
     <Transition name="fade">

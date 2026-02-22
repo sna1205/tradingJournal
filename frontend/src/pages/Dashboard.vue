@@ -29,11 +29,17 @@ import { asCurrency, asSignedCurrency } from '@/utils/format'
 import { useAccountStore } from '@/stores/accountStore'
 import { useAnalyticsStore } from '@/stores/analyticsStore'
 import { useSyncStatusStore } from '@/stores/syncStatusStore'
-import type { AccountChallengeStatusPayload } from '@/types/account'
+import {
+  isDemoAccountType,
+  isLiveAccountType,
+  isPropAccountType,
+  type AccountChallengeStatusPayload,
+} from '@/types/account'
 import type { MissedTrade, Paginated, Trade } from '@/types/trade'
 
 type DashboardTab = 'overview' | 'chart' | 'calendar'
 type RangePreset = '30d' | 'custom'
+type DashboardMode = 'live' | 'prop'
 
 const analyticsStore = useAnalyticsStore()
 const accountStore = useAccountStore()
@@ -52,6 +58,7 @@ const {
 const { accounts, selectedAccount, selectedAccountId } = storeToRefs(accountStore)
 
 const activeTab = ref<DashboardTab>('overview')
+const dashboardMode = ref<DashboardMode>('live')
 const rangePreset = ref<RangePreset>('30d')
 const initialRangeEnd = getTodayIso()
 const calendarMonthKey = ref(monthKeyFromDate(new Date()))
@@ -108,6 +115,10 @@ const scopeMetaLabel = computed(() => {
   return `${selectedAccount.value.broker} | ${selectedAccount.value.account_type}`
 })
 
+const propAccounts = computed(() => accounts.value.filter((account) => isPropAccountType(account.account_type)))
+const liveAccounts = computed(() => accounts.value.filter((account) => isLiveAccountType(account.account_type)))
+const demoAccounts = computed(() => accounts.value.filter((account) => isDemoAccountType(account.account_type)))
+
 const accountScopeOptions = computed(() => [
   {
     label: 'All Accounts (Portfolio)',
@@ -115,11 +126,23 @@ const accountScopeOptions = computed(() => [
     subtitle: 'Aggregate analytics',
     badge: 'portfolio',
   },
-  ...accounts.value.map((account) => ({
-    label: account.name,
+  ...propAccounts.value.map((account) => ({
+    label: `Prop | ${account.name}`,
     value: String(account.id),
     subtitle: `${account.broker} - ${account.currency} ${Number(account.current_balance).toLocaleString()}${account.is_active ? '' : ' - inactive'}`,
-    badge: account.account_type,
+    badge: 'funded',
+  })),
+  ...liveAccounts.value.map((account) => ({
+    label: `Live | ${account.name}`,
+    value: String(account.id),
+    subtitle: `${account.broker} - ${account.currency} ${Number(account.current_balance).toLocaleString()}${account.is_active ? '' : ' - inactive'}`,
+    badge: 'personal',
+  })),
+  ...demoAccounts.value.map((account) => ({
+    label: `Demo | ${account.name}`,
+    value: String(account.id),
+    subtitle: `${account.broker} - ${account.currency} ${Number(account.current_balance).toLocaleString()}${account.is_active ? '' : ' - inactive'}`,
+    badge: 'demo',
   })),
 ])
 
@@ -133,6 +156,20 @@ const selectedAccountScopeModel = computed({
 
     accountStore.setSelectedAccountId(Number(value))
   },
+})
+
+const isPropScopeEligible = computed(() => {
+  if (selectedAccountId.value === null) return false
+  if (!selectedAccount.value) return false
+  return isPropAccountType(selectedAccount.value.account_type)
+})
+
+const effectiveDashboardMode = computed<DashboardMode>(() => {
+  if (dashboardMode.value === 'prop' && isPropScopeEligible.value) {
+    return 'prop'
+  }
+
+  return 'live'
 })
 
 const activeRangeFilters = computed(() => {
@@ -274,6 +311,19 @@ watch(
 )
 
 watch(
+  [() => selectedAccountId.value, () => selectedAccount.value?.account_type],
+  () => {
+    if (selectedAccountId.value === null || !selectedAccount.value) {
+      dashboardMode.value = 'live'
+      return
+    }
+
+    dashboardMode.value = isPropAccountType(selectedAccount.value.account_type) ? 'prop' : 'live'
+  },
+  { immediate: true }
+)
+
+watch(
   () => calendarMonthOptions.value,
   (options) => {
     if (options.length === 0) return
@@ -294,7 +344,7 @@ async function refreshDashboardData() {
 }
 
 async function fetchChallengeStatus() {
-  if (selectedAccountId.value === null) {
+  if (!isPropScopeEligible.value || selectedAccountId.value === null) {
     challengeStatus.value = null
     challengeStatusLoading.value = false
     return
@@ -579,6 +629,10 @@ function shortDate(value: string): string {
     year: 'numeric',
   })
 }
+
+function selectScopeAccount(accountId: number) {
+  accountStore.setSelectedAccountId(accountId)
+}
 </script>
 
 <template>
@@ -599,6 +653,20 @@ function shortDate(value: string): string {
             </button>
             <button class="overview-tab-btn" :class="{ active: activeTab === 'chart' }" @click="activeTab = 'chart'">
               Chart
+            </button>
+          </div>
+
+          <div class="overview-tab-switch">
+            <button class="overview-tab-btn" :class="{ active: effectiveDashboardMode === 'live' }" @click="dashboardMode = 'live'">
+              Live Journal
+            </button>
+            <button
+              class="overview-tab-btn"
+              :class="{ active: effectiveDashboardMode === 'prop' }"
+              :disabled="!isPropScopeEligible"
+              @click="dashboardMode = 'prop'"
+            >
+              Prop Challenge
             </button>
           </div>
 
@@ -654,6 +722,44 @@ function shortDate(value: string): string {
               size="sm"
             />
           </div>
+          <div class="space-y-1 text-xs">
+            <div v-if="propAccounts.length > 0" class="flex flex-wrap items-center gap-1">
+              <span class="kicker-label">Prop</span>
+              <button
+                v-for="account in propAccounts"
+                :key="`prop-scope-${account.id}`"
+                type="button"
+                class="btn btn-ghost px-2 py-1 text-xs"
+                @click="selectScopeAccount(account.id)"
+              >
+                {{ account.name }}
+              </button>
+            </div>
+            <div v-if="liveAccounts.length > 0" class="flex flex-wrap items-center gap-1">
+              <span class="kicker-label">Live</span>
+              <button
+                v-for="account in liveAccounts"
+                :key="`live-scope-${account.id}`"
+                type="button"
+                class="btn btn-ghost px-2 py-1 text-xs"
+                @click="selectScopeAccount(account.id)"
+              >
+                {{ account.name }}
+              </button>
+            </div>
+            <div v-if="demoAccounts.length > 0" class="flex flex-wrap items-center gap-1">
+              <span class="kicker-label">Demo</span>
+              <button
+                v-for="account in demoAccounts"
+                :key="`demo-scope-${account.id}`"
+                type="button"
+                class="btn btn-ghost px-2 py-1 text-xs"
+                @click="selectScopeAccount(account.id)"
+              >
+                {{ account.name }}
+              </button>
+            </div>
+          </div>
           <RouterLink to="/accounts" class="overview-account-link">
             View accounts
             <ChevronRight class="h-4 w-4" />
@@ -661,7 +767,7 @@ function shortDate(value: string): string {
         </div>
       </section>
 
-      <section class="panel">
+      <section v-if="activeTab === 'overview' && effectiveDashboardMode === 'prop'" class="panel">
         <div class="section-head">
           <div>
             <h2 class="section-title">Prop Challenge Status</h2>
@@ -725,7 +831,11 @@ function shortDate(value: string): string {
           <SkeletonBlock v-for="index in 4" :key="`dashboard-kpi-skeleton-${index}`" height-class="h-52" rounded-class="rounded-2xl" />
         </section>
 
-        <section v-else class="overview-kpi-grid">
+        <section v-if="effectiveDashboardMode === 'prop'" class="panel p-3 text-sm">
+          <p class="section-note">Trading analytics below are secondary to challenge compliance in this view.</p>
+        </section>
+
+        <section class="overview-kpi-grid">
           <GlassPanel class="overview-kpi-card overview-kpi-card-performance">
             <header class="overview-kpi-head">
               <span class="overview-kpi-icon">
