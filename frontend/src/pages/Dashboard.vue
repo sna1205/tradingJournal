@@ -228,6 +228,29 @@ const challengeRiskStateClass = computed(() => {
   if (challengeStatus.value.risk_state === 'fail') return 'negative'
   return 'muted'
 })
+const challengeTargetProgressPct = computed(() =>
+  clampPercent(toNumber(challengeStatus.value?.target_progress.progress_pct))
+)
+const challengeDailyUsagePct = computed(() =>
+  ratioToPercent(
+    toNumber(challengeStatus.value?.daily_loss_headroom.used),
+    toNumber(challengeStatus.value?.daily_loss_headroom.limit)
+  )
+)
+const challengeTotalDdUsagePct = computed(() =>
+  ratioToPercent(
+    toNumber(challengeStatus.value?.total_dd_headroom.used),
+    toNumber(challengeStatus.value?.total_dd_headroom.limit)
+  )
+)
+const challengeMinDaysProgressPct = computed(() =>
+  clampPercent(toNumber(challengeStatus.value?.min_days_progress.progress_pct))
+)
+const challengeEvaluatedLabel = computed(() => {
+  const value = challengeStatus.value?.evaluated_through
+  if (!value) return 'No evaluation timestamp yet.'
+  return `Evaluated through ${shortDate(value)}`
+})
 
 const reviewCandidates = computed(() => recentTrades.value.filter((trade) => needsReview(trade)))
 const nextReviewTrade = computed(() => reviewCandidates.value[0] ?? null)
@@ -543,6 +566,15 @@ function toPercent(partial: number, total: number): number {
   return (partial / total) * 100
 }
 
+function clampPercent(value: number): number {
+  return Math.min(100, Math.max(0, value))
+}
+
+function ratioToPercent(partial: number, total: number): number {
+  if (total <= 0) return 0
+  return clampPercent((Math.abs(partial) / Math.abs(total)) * 100)
+}
+
 function isWithinLastDays(value: string, days: number): boolean {
   const parsed = new Date(value)
   if (Number.isNaN(parsed.getTime())) return false
@@ -617,7 +649,7 @@ function setDashboardMode(mode: DashboardMode) {
 
 <template>
   <Transition name="account-switch">
-    <div :key="`mode-${effectiveDashboardMode}-${scopedSelectedAccountId === null ? 'none' : scopedSelectedAccountId}`" class="space-y-4 dashboard-overview-shell dashboard-minimal">
+    <div :key="`mode-${effectiveDashboardMode}-${scopedSelectedAccountId === null ? 'none' : scopedSelectedAccountId}`" class="space-y-5 dashboard-overview-shell dashboard-minimal">
       <section class="overview-top-row">
         <div class="overview-heading-block">
           <h1 class="overview-heading-title">Overview</h1>
@@ -712,13 +744,14 @@ function setDashboardMode(mode: DashboardMode) {
         </div>
       </section>
 
-      <section v-if="activeTab === 'overview' && effectiveDashboardMode === 'prop'" class="panel">
-        <div class="section-head">
+      <section v-if="activeTab === 'overview' && effectiveDashboardMode === 'prop'" class="panel overview-challenge-shell">
+        <div class="overview-challenge-head">
           <div>
             <h2 class="section-title">Prop Challenge Status</h2>
             <p class="section-note">Live pass/fail risk state based on current trade history.</p>
+            <p class="section-note">{{ challengeEvaluatedLabel }}</p>
           </div>
-          <span class="pill" :class="challengeRiskStateClass">{{ challengeRiskStateLabel }}</span>
+          <span class="pill overview-challenge-state-pill" :class="challengeRiskStateClass">{{ challengeRiskStateLabel }}</span>
         </div>
 
         <EmptyState
@@ -732,35 +765,70 @@ function setDashboardMode(mode: DashboardMode) {
           <SkeletonBlock v-for="index in 4" :key="`challenge-status-skeleton-${index}`" height-class="h-24" rounded-class="rounded-2xl" />
         </div>
 
-        <div v-else-if="challengeStatus" class="grid grid-premium md:grid-cols-4">
-          <article class="panel p-3">
+        <div v-else-if="challengeStatus" class="overview-challenge-layout">
+          <article class="overview-challenge-main">
             <p class="kicker-label">Target Progress</p>
-            <p class="mt-1 text-lg font-semibold value-display">
+            <p class="mt-1 text-2xl font-semibold value-display">
               <AnimatedNumber :value="challengeStatus.target_progress.progress_pct" :decimals="2" suffix="%" />
             </p>
             <p class="muted text-xs">{{ asCurrency(challengeStatus.target_progress.net_profit) }} / {{ asCurrency(challengeStatus.target_progress.target_profit) }}</p>
-          </article>
-          <article class="panel p-3">
-            <p class="kicker-label">Daily Loss Headroom</p>
-            <p class="mt-1 text-lg font-semibold value-display" :class="challengeStatus.daily_loss_headroom.breached ? 'negative' : 'positive'">
-              {{ asCurrency(challengeStatus.daily_loss_headroom.headroom) }}
+            <div class="overview-progress-track">
+              <span class="overview-progress-fill is-primary" :style="{ width: `${challengeTargetProgressPct}%` }" />
+            </div>
+            <p class="overview-progress-meta">
+              <span>Remaining</span>
+              <strong class="value-display" :class="challengeStatus.target_progress.met ? 'positive' : 'muted'">
+                {{ asCurrency(challengeStatus.target_progress.remaining) }}
+              </strong>
             </p>
-            <p class="muted text-xs">Used today: {{ asCurrency(challengeStatus.daily_loss_headroom.used) }}</p>
           </article>
-          <article class="panel p-3">
-            <p class="kicker-label">Total DD Headroom</p>
-            <p class="mt-1 text-lg font-semibold value-display" :class="challengeStatus.total_dd_headroom.breached ? 'negative' : 'positive'">
-              {{ asCurrency(challengeStatus.total_dd_headroom.headroom) }}
-            </p>
-            <p class="muted text-xs">Used: {{ asCurrency(challengeStatus.total_dd_headroom.used) }}</p>
-          </article>
-          <article class="panel p-3">
-            <p class="kicker-label">Min Trading Days</p>
-            <p class="mt-1 text-lg font-semibold value-display">
-              <AnimatedNumber :value="challengeStatus.min_days_progress.progress_pct" :decimals="2" suffix="%" />
-            </p>
-            <p class="muted text-xs">{{ challengeStatus.min_days_progress.actual }} / {{ challengeStatus.min_days_progress.required }} days</p>
-          </article>
+
+          <div class="overview-challenge-grid">
+            <article class="overview-challenge-stat">
+              <p class="kicker-label">Daily Loss Headroom</p>
+              <p class="mt-1 text-lg font-semibold value-display" :class="challengeStatus.daily_loss_headroom.breached ? 'negative' : 'positive'">
+                {{ asCurrency(challengeStatus.daily_loss_headroom.headroom) }}
+              </p>
+              <div class="overview-progress-track">
+                <span
+                  class="overview-progress-fill"
+                  :class="challengeStatus.daily_loss_headroom.breached ? 'is-danger' : 'is-safe'"
+                  :style="{ width: `${challengeDailyUsagePct}%` }"
+                />
+              </div>
+              <p class="muted text-xs">
+                Used today: {{ asCurrency(challengeStatus.daily_loss_headroom.used) }} / {{ asCurrency(challengeStatus.daily_loss_headroom.limit) }}
+              </p>
+            </article>
+
+            <article class="overview-challenge-stat">
+              <p class="kicker-label">Total DD Headroom</p>
+              <p class="mt-1 text-lg font-semibold value-display" :class="challengeStatus.total_dd_headroom.breached ? 'negative' : 'positive'">
+                {{ asCurrency(challengeStatus.total_dd_headroom.headroom) }}
+              </p>
+              <div class="overview-progress-track">
+                <span
+                  class="overview-progress-fill"
+                  :class="challengeStatus.total_dd_headroom.breached ? 'is-danger' : 'is-safe'"
+                  :style="{ width: `${challengeTotalDdUsagePct}%` }"
+                />
+              </div>
+              <p class="muted text-xs">
+                Used: {{ asCurrency(challengeStatus.total_dd_headroom.used) }} / {{ asCurrency(challengeStatus.total_dd_headroom.limit) }}
+              </p>
+            </article>
+
+            <article class="overview-challenge-stat">
+              <p class="kicker-label">Min Trading Days</p>
+              <p class="mt-1 text-lg font-semibold value-display">
+                <AnimatedNumber :value="challengeStatus.min_days_progress.progress_pct" :decimals="2" suffix="%" />
+              </p>
+              <div class="overview-progress-track">
+                <span class="overview-progress-fill is-primary" :style="{ width: `${challengeMinDaysProgressPct}%` }" />
+              </div>
+              <p class="muted text-xs">{{ challengeStatus.min_days_progress.actual }} / {{ challengeStatus.min_days_progress.required }} days</p>
+            </article>
+          </div>
         </div>
 
         <EmptyState
@@ -776,7 +844,7 @@ function setDashboardMode(mode: DashboardMode) {
           <SkeletonBlock v-for="index in 4" :key="`dashboard-kpi-skeleton-${index}`" height-class="h-52" rounded-class="rounded-2xl" />
         </section>
 
-        <section v-if="effectiveDashboardMode === 'prop'" class="panel p-3 text-sm">
+        <section v-if="effectiveDashboardMode === 'prop'" class="panel overview-prop-note">
           <p class="section-note">Trading analytics below are secondary to challenge compliance in this view.</p>
         </section>
 
