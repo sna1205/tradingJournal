@@ -2,6 +2,7 @@
 
 use App\Http\Controllers\Api\AnalyticsController;
 use App\Http\Controllers\Api\AccountController;
+use App\Http\Controllers\Api\InstrumentController;
 use App\Http\Controllers\Api\MissedTradeController;
 use App\Http\Controllers\Api\MissedTradeImageController;
 use App\Http\Controllers\Api\TradeController;
@@ -16,6 +17,10 @@ Route::get('health', fn () => response()->json([
 Route::apiResource('accounts', AccountController::class);
 Route::get('accounts/{account}/equity', [AccountController::class, 'equity']);
 Route::get('accounts/{account}/analytics', [AccountController::class, 'analytics']);
+Route::get('accounts/{account}/risk-policy', [AccountController::class, 'riskPolicy']);
+Route::put('accounts/{account}/risk-policy', [AccountController::class, 'upsertRiskPolicy']);
+Route::get('instruments', [InstrumentController::class, 'index']);
+Route::post('trades/precheck', [TradeController::class, 'precheck']);
 Route::apiResource('trades', TradeController::class);
 Route::post('trades/{trade}/images', [TradeImageController::class, 'store']);
 Route::delete('trade-images/{tradeImage}', [TradeImageController::class, 'destroy']);

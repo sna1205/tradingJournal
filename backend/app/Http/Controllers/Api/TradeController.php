@@ -3,10 +3,13 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Models\Instrument;
 use App\Models\Trade;
 use App\Models\TradeImage;
 use App\Services\AccountBalanceService;
 use App\Services\TradeCalculationEngine;
+use App\Services\TradeRiskPolicyService;
+use Carbon\CarbonImmutable;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
@@ -29,7 +32,8 @@ class TradeController extends Controller
 
     public function __construct(
         private readonly TradeCalculationEngine $calculationEngine,
-        private readonly AccountBalanceService $accountBalanceService
+        private readonly AccountBalanceService $accountBalanceService,
+        private readonly TradeRiskPolicyService $tradeRiskPolicyService
     ) {
     }
 
@@ -42,6 +46,7 @@ class TradeController extends Controller
         $trades = Trade::query()
             ->with([
                 'account',
+                'instrument',
                 'images' => fn ($query) => $query
                     ->select(['id', 'trade_id', 'image_url', 'thumbnail_url', 'file_size', 'file_type', 'sort_order'])
                     ->orderBy('sort_order')
@@ -65,6 +70,50 @@ class TradeController extends Controller
         return response()->json($trades);
     }
 
+    /**
+     * Validate risk policy limits before save.
+     */
+    public function precheck(Request $request)
+    {
+        $tradeId = (int) $request->integer('trade_id', 0);
+        $existingTrade = $tradeId > 0
+            ? Trade::query()->find($tradeId)
+            : null;
+        $isUpdate = $existingTrade !== null;
+
+        $payload = $this->validatePayload($request, $isUpdate, $existingTrade);
+        $payload = $this->applyDefaults($payload, $isUpdate);
+        $payload = $this->normalizePrecheckPayload($payload, $existingTrade);
+        $payload['pair'] = strtoupper((string) $payload['pair']);
+
+        $account = $this->resolveAccountForRead((int) $payload['account_id']);
+        $instrument = $this->resolveInstrumentForRead((int) $payload['instrument_id']);
+        $payloadWithMetrics = $this->buildPayloadWithCalculatedFields($payload, $account, $instrument);
+        $riskEvaluation = $this->evaluateRiskPolicy(
+            $payloadWithMetrics,
+            $account,
+            $isUpdate ? (int) $existingTrade->id : null
+        );
+
+        return response()->json([
+            'allowed' => $riskEvaluation['allowed'],
+            'requires_override_reason' => $riskEvaluation['requires_override_reason'],
+            'policy' => $riskEvaluation['policy'],
+            'violations' => $riskEvaluation['violations'],
+            'stats' => $riskEvaluation['stats'],
+            'calculated' => [
+                'monetary_risk' => $payloadWithMetrics['monetary_risk'],
+                'monetary_reward' => $payloadWithMetrics['monetary_reward'],
+                'gross_profit_loss' => $payloadWithMetrics['gross_profit_loss'],
+                'costs_total' => $payloadWithMetrics['costs_total'],
+                'profit_loss' => $payloadWithMetrics['profit_loss'],
+                'risk_percent' => $payloadWithMetrics['risk_percent'],
+                'r_multiple' => $payloadWithMetrics['r_multiple'],
+                'rr' => $payloadWithMetrics['rr'],
+            ],
+        ]);
+    }
+
     public function store(Request $request)
     {
         $payload = $this->validatePayload($request);
@@ -73,16 +122,15 @@ class TradeController extends Controller
 
         $trade = DB::transaction(function () use ($payload): Trade {
             $account = $this->resolveAccountForWrite((int) $payload['account_id']);
+            $instrument = $this->resolveInstrumentForRead((int) $payload['instrument_id']);
+            $payloadWithMetrics = $this->buildPayloadWithCalculatedFields($payload, $account, $instrument);
+            $riskEvaluation = $this->evaluateRiskPolicy($payloadWithMetrics, $account, null);
+            $this->throwIfRiskPolicyBlocked($riskEvaluation);
 
-            $payloadWithBalance = [
-                ...$payload,
-                'account_balance_before_trade' => (float) $account->current_balance,
-            ];
-
-            $createdTrade = Trade::create($this->hydrateWithCalculatedFields($payloadWithBalance));
+            $createdTrade = Trade::create($payloadWithMetrics);
             $this->accountBalanceService->rebuildAccountState((int) $account->id);
 
-            return $createdTrade->fresh(['account']);
+            return $createdTrade->fresh(['account', 'instrument']);
         });
 
         $this->touchAnalyticsCacheVersion();
@@ -94,6 +142,7 @@ class TradeController extends Controller
     {
         $trade->load([
             'account',
+            'instrument',
             'images' => fn ($query) => $query->orderBy('sort_order')->orderBy('id'),
         ]);
 
@@ -121,15 +170,18 @@ class TradeController extends Controller
         $previousAccountId = (int) $trade->account_id;
 
         $updatedTrade = DB::transaction(function () use ($trade, $payload, $previousAccountId): Trade {
-            if (array_key_exists('account_id', $payload)) {
-                $this->resolveAccountForWrite((int) $payload['account_id']);
-            }
+            $effectivePayload = $this->normalizePrecheckPayload($payload, $trade);
+            $account = $this->resolveAccountForWrite((int) $effectivePayload['account_id']);
+            $instrument = $this->resolveInstrumentForRead((int) $effectivePayload['instrument_id']);
+            $payloadWithMetrics = $this->buildPayloadWithCalculatedFields($effectivePayload, $account, $instrument);
+            $riskEvaluation = $this->evaluateRiskPolicy($payloadWithMetrics, $account, (int) $trade->id);
+            $this->throwIfRiskPolicyBlocked($riskEvaluation);
 
             $trade->update($payload);
 
             $this->accountBalanceService->rebuildMany([$previousAccountId, (int) $trade->account_id]);
 
-            return $trade->fresh(['account']);
+            return $trade->fresh(['account', 'instrument']);
         });
 
         $this->touchAnalyticsCacheVersion();
@@ -161,6 +213,7 @@ class TradeController extends Controller
 
         $validator = Validator::make($input, [
             'account_id' => [$required, 'integer', 'exists:accounts,id'],
+            'instrument_id' => [$required, 'integer', 'exists:instruments,id'],
             'pair' => [$required, 'string', 'max:30', 'regex:/^[A-Z0-9._\/-]+$/i'],
             'direction' => [$required, 'in:buy,sell'],
             'entry_price' => [$required, 'numeric', 'gt:0'],
@@ -168,6 +221,11 @@ class TradeController extends Controller
             'take_profit' => [$required, 'numeric', 'gt:0'],
             'actual_exit_price' => [$required, 'numeric', 'gt:0'],
             'lot_size' => [$required, 'numeric', 'min:0.0001'],
+            'commission' => ['sometimes', 'numeric', 'min:0'],
+            'swap' => ['sometimes', 'numeric'],
+            'spread_cost' => ['sometimes', 'numeric', 'min:0'],
+            'slippage_cost' => ['sometimes', 'numeric', 'min:0'],
+            'risk_override_reason' => ['nullable', 'string', 'max:2000'],
             'followed_rules' => [$required, 'boolean'],
             'emotion' => [$required, Rule::in(self::EMOTION_VALUES)],
             'session' => ['sometimes', 'string', 'max:60'],
@@ -180,6 +238,8 @@ class TradeController extends Controller
             'reward_per_unit' => ['prohibited'],
             'monetary_risk' => ['prohibited'],
             'monetary_reward' => ['prohibited'],
+            'gross_profit_loss' => ['prohibited'],
+            'costs_total' => ['prohibited'],
             'profit_loss' => ['prohibited'],
             'rr' => ['prohibited'],
             'r_multiple' => ['prohibited'],
@@ -193,6 +253,8 @@ class TradeController extends Controller
             $stopLoss = $this->readFloatFromInputOrTrade($input, 'stop_loss', $existingTrade);
             $takeProfit = $this->readFloatFromInputOrTrade($input, 'take_profit', $existingTrade);
             $direction = (string) ($input['direction'] ?? ($existingTrade?->direction ?? ''));
+            $instrumentId = $this->readIntFromInputOrTrade($input, 'instrument_id', $existingTrade);
+            $pair = strtoupper((string) ($input['pair'] ?? ($existingTrade?->pair ?? '')));
 
             if ($entryPrice !== null && $stopLoss !== null && $entryPrice === $stopLoss) {
                 $validator->errors()->add('stop_loss', 'Stop loss must differ from entry price.');
@@ -224,6 +286,18 @@ class TradeController extends Controller
                 if ($timestamp !== false && $timestamp > now()->addMinute()->getTimestamp()) {
                     $validator->errors()->add('date', 'Close date cannot be in the future.');
                 }
+            }
+
+            if ($instrumentId !== null && $pair !== '') {
+                $instrumentSymbol = (string) (DB::table('instruments')
+                    ->where('id', $instrumentId)
+                    ->value('symbol') ?? '');
+                if ($instrumentSymbol !== '' && strtoupper($instrumentSymbol) !== $pair) {
+                    $validator->errors()->add('pair', 'Pair must match selected instrument symbol.');
+                }
+            }
+            if ($instrumentId === null) {
+                $validator->errors()->add('instrument_id', 'Instrument is required.');
             }
 
             if (!$isUpdate && !array_key_exists('pair', $input)) {
@@ -267,6 +341,19 @@ class TradeController extends Controller
         return null;
     }
 
+    private function readIntFromInputOrTrade(array $input, string $field, ?Trade $trade): ?int
+    {
+        if (array_key_exists($field, $input) && is_numeric($input[$field])) {
+            return (int) $input[$field];
+        }
+
+        if ($trade !== null && isset($trade->{$field}) && is_numeric((string) $trade->{$field})) {
+            return (int) $trade->{$field};
+        }
+
+        return null;
+    }
+
     private function normalizedFilterInputs(array $input): array
     {
         if (!array_key_exists('pair', $input) && array_key_exists('symbol', $input)) {
@@ -285,6 +372,7 @@ class TradeController extends Controller
         return [
             'account_id' => $input['account_id'] ?? null,
             'account_ids' => $input['account_ids'] ?? null,
+            'instrument_id' => $input['instrument_id'] ?? null,
             'pair' => $input['pair'] ?? null,
             'direction' => $input['direction'] ?? null,
             'session' => $input['session'] ?? null,
@@ -305,16 +393,124 @@ class TradeController extends Controller
         $payload['session'] = $payload['session'] ?? 'N/A';
         $payload['model'] = $payload['model'] ?? 'General';
         $payload['date'] = $payload['date'] ?? now()->toDateTimeString();
+        $payload['commission'] = $payload['commission'] ?? 0;
+        $payload['swap'] = $payload['swap'] ?? 0;
+        $payload['spread_cost'] = $payload['spread_cost'] ?? 0;
+        $payload['slippage_cost'] = $payload['slippage_cost'] ?? 0;
 
         return $payload;
     }
 
-    private function hydrateWithCalculatedFields(array $payload): array
+    private function normalizePrecheckPayload(array $payload, ?Trade $existingTrade = null): array
     {
+        if ($existingTrade === null) {
+            return $payload;
+        }
+
         return [
-            ...$payload,
-            ...$this->calculationEngine->calculate($payload),
+            'account_id' => $payload['account_id'] ?? (int) $existingTrade->account_id,
+            'instrument_id' => $payload['instrument_id'] ?? (int) $existingTrade->instrument_id,
+            'pair' => $payload['pair'] ?? (string) $existingTrade->pair,
+            'direction' => $payload['direction'] ?? (string) $existingTrade->direction,
+            'entry_price' => $payload['entry_price'] ?? (float) $existingTrade->entry_price,
+            'stop_loss' => $payload['stop_loss'] ?? (float) $existingTrade->stop_loss,
+            'take_profit' => $payload['take_profit'] ?? (float) $existingTrade->take_profit,
+            'actual_exit_price' => $payload['actual_exit_price'] ?? (float) $existingTrade->actual_exit_price,
+            'lot_size' => $payload['lot_size'] ?? (float) $existingTrade->lot_size,
+            'commission' => $payload['commission'] ?? (float) ($existingTrade->commission ?? 0),
+            'swap' => $payload['swap'] ?? (float) ($existingTrade->swap ?? 0),
+            'spread_cost' => $payload['spread_cost'] ?? (float) ($existingTrade->spread_cost ?? 0),
+            'slippage_cost' => $payload['slippage_cost'] ?? (float) ($existingTrade->slippage_cost ?? 0),
+            'followed_rules' => $payload['followed_rules'] ?? (bool) $existingTrade->followed_rules,
+            'emotion' => $payload['emotion'] ?? (string) $existingTrade->emotion,
+            'risk_override_reason' => $payload['risk_override_reason'] ?? $existingTrade->risk_override_reason,
+            'session' => $payload['session'] ?? (string) $existingTrade->session,
+            'model' => $payload['model'] ?? (string) $existingTrade->model,
+            'date' => $payload['date'] ?? (string) $existingTrade->date,
+            'notes' => $payload['notes'] ?? $existingTrade->notes,
         ];
+    }
+
+    /**
+     * @param array<string, mixed> $payload
+     * @param object{id:int,starting_balance:numeric-string|int|float,current_balance:numeric-string|int|float} $account
+     * @param object{id:int,tick_size:numeric-string|int|float,tick_value:numeric-string|int|float,symbol:string} $instrument
+     * @return array<string, mixed>
+     */
+    private function buildPayloadWithCalculatedFields(array $payload, object $account, object $instrument): array
+    {
+        $prepared = [
+            ...$payload,
+            'pair' => strtoupper((string) $instrument->symbol),
+            'account_balance_before_trade' => (float) $account->current_balance,
+            'instrument_tick_size' => (float) $instrument->tick_size,
+            'instrument_tick_value' => (float) $instrument->tick_value,
+            'commission' => (float) ($payload['commission'] ?? 0),
+            'swap' => (float) ($payload['swap'] ?? 0),
+            'spread_cost' => (float) ($payload['spread_cost'] ?? 0),
+            'slippage_cost' => (float) ($payload['slippage_cost'] ?? 0),
+        ];
+
+        return [
+            ...$prepared,
+            ...$this->calculationEngine->calculate($prepared),
+        ];
+    }
+
+    /**
+     * @param array<string, mixed> $payloadWithMetrics
+     * @param object{id:int,starting_balance:numeric-string|int|float,current_balance:numeric-string|int|float} $account
+     * @return array{
+     *   allowed:bool,
+     *   requires_override_reason:bool,
+     *   policy:array<string,mixed>,
+     *   violations:array<int,array{code:string,message:string,limit:float,actual:float}>,
+     *   stats:array<string,float>
+     * }
+     */
+    private function evaluateRiskPolicy(array $payloadWithMetrics, object $account, ?int $excludeTradeId): array
+    {
+        return $this->tradeRiskPolicyService->evaluate([
+            'account_id' => (int) $account->id,
+            'account_starting_balance' => (float) $account->starting_balance,
+            'account_current_balance' => (float) $account->current_balance,
+            'risk_percent' => (float) $payloadWithMetrics['risk_percent'],
+            'monetary_risk' => (float) $payloadWithMetrics['monetary_risk'],
+            'risk_override_reason' => $payloadWithMetrics['risk_override_reason'] ?? null,
+            'trade_date' => (string) ($payloadWithMetrics['date'] ?? CarbonImmutable::now()->toIso8601String()),
+            'exclude_trade_id' => $excludeTradeId,
+        ]);
+    }
+
+    /**
+     * @param array{
+     *   allowed:bool,
+     *   requires_override_reason:bool,
+     *   violations:array<int,array{code:string,message:string,limit:float,actual:float}>
+     * } $evaluation
+     * @throws ValidationException
+     */
+    private function throwIfRiskPolicyBlocked(array $evaluation): void
+    {
+        if ((bool) $evaluation['allowed']) {
+            return;
+        }
+
+        $messages = collect($evaluation['violations'] ?? [])
+            ->map(fn (array $violation): string => (string) ($violation['message'] ?? 'Risk policy violation.'))
+            ->values()
+            ->all();
+
+        if ((bool) ($evaluation['requires_override_reason'] ?? false)) {
+            throw ValidationException::withMessages([
+                'risk_override_reason' => ['Override reason is required to bypass account risk policy.'],
+                'risk_policy' => $messages,
+            ]);
+        }
+
+        throw ValidationException::withMessages([
+            'risk_policy' => $messages,
+        ]);
     }
 
     private function touchAnalyticsCacheVersion(): void
@@ -331,6 +527,20 @@ class TradeController extends Controller
         return DB::table('accounts')
             ->where('id', $accountId)
             ->lockForUpdate()
+            ->firstOrFail();
+    }
+
+    private function resolveAccountForRead(int $accountId): object
+    {
+        return DB::table('accounts')
+            ->where('id', $accountId)
+            ->firstOrFail();
+    }
+
+    private function resolveInstrumentForRead(int $instrumentId): object
+    {
+        return DB::table('instruments')
+            ->where('id', $instrumentId)
             ->firstOrFail();
     }
 

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import type { AxiosError } from 'axios'
 import { ArrowLeft } from 'lucide-vue-next'
@@ -10,9 +10,13 @@ import BaseSelect from '@/components/form/BaseSelect.vue'
 import BaseDateTime from '@/components/form/BaseDateTime.vue'
 import TradeImageUploader from '@/components/trades/TradeImageUploader.vue'
 import { useAccountStore } from '@/stores/accountStore'
-import { useTradeStore, type TradePayload } from '@/stores/tradeStore'
+import {
+  useTradeStore,
+  type TradePayload,
+  type TradePrecheckResult,
+} from '@/stores/tradeStore'
 import { useUiStore } from '@/stores/uiStore'
-import type { Trade, TradeEmotion, TradeImage } from '@/types/trade'
+import type { Instrument, Trade, TradeEmotion, TradeImage } from '@/types/trade'
 import { asCurrency, asSignedCurrency } from '@/utils/format'
 
 const router = useRouter()
@@ -21,6 +25,7 @@ const tradeStore = useTradeStore()
 const accountStore = useAccountStore()
 const uiStore = useUiStore()
 const { accounts } = storeToRefs(accountStore)
+const { instruments } = storeToRefs(tradeStore)
 
 const loadingTrade = ref(false)
 const submitAttempted = ref(false)
@@ -43,9 +48,18 @@ const accountSelectOptions = computed(() =>
     keywords: [account.broker, account.account_type, account.currency],
   }))
 )
+const instrumentSelectOptions = computed(() =>
+  instruments.value.map((instrument) => ({
+    label: instrument.symbol,
+    value: String(instrument.id),
+    subtitle: `${instrument.asset_class} | ${instrument.base_currency}/${instrument.quote_currency}`,
+    keywords: [instrument.asset_class, instrument.base_currency, instrument.quote_currency],
+  }))
+)
 
 const form = reactive({
   account_id: '',
+  instrument_id: '',
   symbol: '',
   direction: 'buy' as 'buy' | 'sell',
   date: '',
@@ -56,6 +70,11 @@ const form = reactive({
   take_profit: 0,
   actual_exit_price: 0,
   position_size: 0.01,
+  commission: 0,
+  swap: 0,
+  spread_cost: 0,
+  slippage_cost: 0,
+  risk_override_reason: '',
   followed_rules: true,
   emotion: 'neutral' as TradeEmotion,
   notes: '',
@@ -98,21 +117,54 @@ const totalImageSize = computed(() => {
   const pendingTotal = pendingImages.value.reduce((sum, image) => sum + image.file.size, 0)
   return existingTotal + pendingTotal
 })
+const selectedInstrument = computed<Instrument | null>(() => {
+  const id = Number(form.instrument_id)
+  if (!Number.isInteger(id) || id <= 0) return null
+  return instruments.value.find((instrument) => instrument.id === id) ?? null
+})
+const instrumentSymbol = computed(() => selectedInstrument.value?.symbol ?? form.symbol.trim().toUpperCase())
+const precheckLoading = ref(false)
+const precheckError = ref('')
+const precheckResult = ref<TradePrecheckResult | null>(null)
+let precheckTimer: ReturnType<typeof setTimeout> | null = null
+const isSaveBlocked = computed(() => (precheckResult.value !== null) && !precheckResult.value.allowed)
 
 const liveEstimate = computed(() => {
+  const instrument = selectedInstrument.value
   const entry = toNumber(form.entry_price)
   const stop = toNumber(form.stop_loss)
   const take = toNumber(form.take_profit)
   const exit = toNumber(form.actual_exit_price)
   const lotSize = toNumber(form.position_size)
+  const commission = toNumber(form.commission)
+  const swap = toNumber(form.swap)
+  const spreadCost = toNumber(form.spread_cost)
+  const slippageCost = toNumber(form.slippage_cost)
+  const costsTotal = commission + swap + spreadCost + slippageCost
+
+  if (!instrument) {
+    return {
+      ready: false as const,
+      error: 'Select an instrument to calculate broker-aligned P/L.',
+      riskAmount: 0,
+      targetGrossPnl: 0,
+      grossPnl: 0,
+      costsTotal: 0,
+      netPnl: 0,
+      rAtExit: 0,
+      rrPlan: 0,
+    }
+  }
 
   if (!(entry > 0) || !(stop > 0) || !(take > 0) || !(exit > 0) || !(lotSize > 0)) {
     return {
       ready: false as const,
       error: '',
       riskAmount: 0,
-      targetPnl: 0,
-      livePnl: 0,
+      targetGrossPnl: 0,
+      grossPnl: 0,
+      costsTotal: 0,
+      netPnl: 0,
       rAtExit: 0,
       rrPlan: 0,
     }
@@ -127,27 +179,40 @@ const liveEstimate = computed(() => {
       ready: false as const,
       error: 'Stop loss placement is invalid for the selected direction.',
       riskAmount: 0,
-      targetPnl: 0,
-      livePnl: 0,
+      targetGrossPnl: 0,
+      grossPnl: 0,
+      costsTotal: 0,
+      netPnl: 0,
       rAtExit: 0,
       rrPlan: 0,
     }
   }
 
-  const positionUnits = lotSize
+  const tickSize = toNumber(instrument.tick_size)
+  const tickValue = toNumber(instrument.tick_value)
+  const moveToValue = (move: number) => {
+    if (tickSize > 0 && tickValue > 0) {
+      return (move / tickSize) * tickValue * lotSize
+    }
+    return move * lotSize
+  }
+
   const liveMove = (exit - entry) * direction
-  const riskAmount = riskMove * positionUnits
-  const targetPnl = rewardMove * positionUnits
-  const livePnl = liveMove * positionUnits
+  const riskAmount = moveToValue(riskMove)
+  const targetGrossPnl = moveToValue(rewardMove)
+  const grossPnl = moveToValue(liveMove)
+  const netPnl = grossPnl - costsTotal
   const rrPlan = rewardMove / riskMove
-  const rAtExit = riskAmount !== 0 ? livePnl / riskAmount : 0
+  const rAtExit = riskAmount !== 0 ? netPnl / riskAmount : 0
 
   return {
     ready: true as const,
     error: '',
     riskAmount,
-    targetPnl,
-    livePnl,
+    targetGrossPnl,
+    grossPnl,
+    costsTotal,
+    netPnl,
     rAtExit,
     rrPlan,
   }
@@ -283,6 +348,7 @@ function parseLocalDateTime(value: string): number | null {
 
 function setFormFromTrade(trade: Trade) {
   form.account_id = String(trade.account_id || '')
+  form.instrument_id = trade.instrument_id ? String(trade.instrument_id) : ''
   form.symbol = trade.pair
   form.direction = trade.direction
   form.date = toLocalDateTime(trade.date)
@@ -293,6 +359,11 @@ function setFormFromTrade(trade: Trade) {
   form.take_profit = Number(trade.take_profit)
   form.actual_exit_price = Number(trade.actual_exit_price ?? trade.entry_price)
   form.position_size = Number(trade.lot_size)
+  form.commission = Number(trade.commission ?? 0)
+  form.swap = Number(trade.swap ?? 0)
+  form.spread_cost = Number(trade.spread_cost ?? 0)
+  form.slippage_cost = Number(trade.slippage_cost ?? 0)
+  form.risk_override_reason = trade.risk_override_reason ?? ''
   form.followed_rules = Boolean(trade.followed_rules)
   form.emotion = (trade.emotion ?? 'neutral') as TradeEmotion
   form.notes = trade.notes || ''
@@ -317,11 +388,25 @@ function applyQuickDefaultsFromQuery() {
   if (direction === 'buy' || direction === 'sell') {
     form.direction = direction
   }
+
+  if (symbol) {
+    selectInstrumentBySymbol(symbol)
+  }
+}
+
+function selectInstrumentBySymbol(symbol: string) {
+  const normalized = symbol.trim().toUpperCase()
+  if (!normalized) return
+
+  const match = instruments.value.find((instrument) => instrument.symbol.toUpperCase() === normalized)
+  if (!match) return
+
+  form.instrument_id = String(match.id)
+  form.symbol = match.symbol
 }
 
 const formErrors = computed<Record<string, string>>(() => {
   const errors: Record<string, string> = {}
-  const symbol = form.symbol.trim().toUpperCase()
   const closeDate = parseLocalDateTime(form.date)
   const now = Date.now()
 
@@ -330,17 +415,16 @@ const formErrors = computed<Record<string, string>>(() => {
   const take = toNumber(form.take_profit)
   const exit = toNumber(form.actual_exit_price)
   const positionSize = toNumber(form.position_size)
+  const commission = toNumber(form.commission)
+  const spreadCost = toNumber(form.spread_cost)
+  const slippageCost = toNumber(form.slippage_cost)
 
   if (!form.account_id) {
     errors.account_id = 'Account is required.'
   }
 
-  if (!symbol) {
-    errors.symbol = 'Symbol is required.'
-  } else if (symbol.length > 30) {
-    errors.symbol = 'Symbol must be 30 characters or fewer.'
-  } else if (!/^[A-Z0-9._/-]+$/.test(symbol)) {
-    errors.symbol = 'Use only letters, numbers, dot, underscore, slash, or dash.'
+  if (!form.instrument_id) {
+    errors.instrument_id = 'Instrument is required.'
   }
 
   if (closeDate === null) {
@@ -354,6 +438,9 @@ const formErrors = computed<Record<string, string>>(() => {
   if (!(take > 0)) errors.take_profit = 'Take profit must be greater than 0.'
   if (!(exit > 0)) errors.actual_exit_price = 'Actual exit price must be greater than 0.'
   if (!(positionSize >= 0.0001)) errors.position_size = 'Position size must be at least 0.0001.'
+  if (commission < 0) errors.commission = 'Commission cannot be negative.'
+  if (spreadCost < 0) errors.spread_cost = 'Spread cost cannot be negative.'
+  if (slippageCost < 0) errors.slippage_cost = 'Slippage cost cannot be negative.'
 
   if (entry > 0 && stop > 0 && entry === stop) {
     errors.stop_loss = 'Stop loss must differ from entry price.'
@@ -395,10 +482,15 @@ function buildPayload(): TradePayload {
   if (closeDate === null) {
     throw new Error('Close date is invalid.')
   }
+  const instrumentId = Number(form.instrument_id)
+  if (!Number.isInteger(instrumentId) || instrumentId <= 0) {
+    throw new Error('Instrument is required.')
+  }
 
   return {
     account_id: Number(form.account_id),
-    symbol: form.symbol.trim().toUpperCase(),
+    instrument_id: instrumentId,
+    symbol: instrumentSymbol.value,
     direction: form.direction,
     close_date: new Date(closeDate).toISOString(),
     session: form.session.trim() || undefined,
@@ -408,10 +500,45 @@ function buildPayload(): TradePayload {
     take_profit: Number(form.take_profit),
     actual_exit_price: Number(form.actual_exit_price),
     position_size: Number(form.position_size),
+    commission: Number(form.commission || 0),
+    swap: Number(form.swap || 0),
+    spread_cost: Number(form.spread_cost || 0),
+    slippage_cost: Number(form.slippage_cost || 0),
+    risk_override_reason: form.risk_override_reason.trim() ? form.risk_override_reason.trim() : null,
     followed_rules: form.followed_rules,
     emotion: form.emotion,
     notes: form.notes.trim() ? form.notes.trim() : null,
   }
+}
+
+async function runPrecheck() {
+  precheckError.value = ''
+  precheckResult.value = null
+
+  const firstError = Object.values(formErrors.value)[0]
+  if (firstError) return
+
+  try {
+    const payload = buildPayload()
+    precheckLoading.value = true
+    precheckResult.value = await tradeStore.precheckTrade(
+      payload,
+      tradeId.value ?? undefined
+    )
+  } catch (error) {
+    precheckError.value = extractErrorMessage(error)
+  } finally {
+    precheckLoading.value = false
+  }
+}
+
+function schedulePrecheck() {
+  if (precheckTimer) {
+    clearTimeout(precheckTimer)
+  }
+  precheckTimer = setTimeout(() => {
+    void runPrecheck()
+  }, 250)
 }
 
 function clearPendingImages() {
@@ -565,6 +692,24 @@ async function submitForm() {
     return
   }
 
+  if (precheckLoading.value) {
+    uiStore.toast({
+      type: 'info',
+      title: 'Risk check in progress',
+      message: 'Please wait for pre-trade risk validation to finish.',
+    })
+    return
+  }
+
+  if (isSaveBlocked.value) {
+    uiStore.toast({
+      type: 'error',
+      title: 'Trade blocked by risk policy',
+      message: 'Review risk violations or provide override reason if policy allows.',
+    })
+    return
+  }
+
   try {
     const payload = buildPayload()
     const hadPendingImages = pendingImages.value.length > 0
@@ -624,11 +769,14 @@ async function loadTradeIfNeeded() {
 
 onMounted(async () => {
   try {
-    await accountStore.fetchAccounts()
+    await Promise.all([
+      accountStore.fetchAccounts(),
+      tradeStore.fetchInstruments(),
+    ])
   } catch {
     uiStore.toast({
       type: 'error',
-      title: 'Failed to load accounts',
+      title: 'Failed to load setup data',
       message: 'Please refresh and try again.',
     })
   }
@@ -636,13 +784,59 @@ onMounted(async () => {
   if (!isEditMode.value && !form.account_id && accountSelectOptions.value.length > 0) {
     form.account_id = accountSelectOptions.value[0]?.value ?? ''
   }
+  if (!isEditMode.value && !form.instrument_id && instrumentSelectOptions.value.length > 0) {
+    form.instrument_id = instrumentSelectOptions.value[0]?.value ?? ''
+  }
 
   applyQuickDefaultsFromQuery()
   await loadTradeIfNeeded()
+  if (!form.instrument_id && form.symbol.trim()) {
+    selectInstrumentBySymbol(form.symbol)
+  }
+  schedulePrecheck()
 })
+
+watch(
+  () => form.instrument_id,
+  (value) => {
+    const id = Number(value)
+    const instrument = instruments.value.find((item) => item.id === id)
+    if (instrument) {
+      form.symbol = instrument.symbol
+      if (toNumber(form.position_size) < toNumber(instrument.min_lot)) {
+        form.position_size = toNumber(instrument.min_lot)
+      }
+    }
+    schedulePrecheck()
+  }
+)
+
+watch(
+  () => [
+    form.account_id,
+    form.direction,
+    form.date,
+    form.entry_price,
+    form.stop_loss,
+    form.take_profit,
+    form.actual_exit_price,
+    form.position_size,
+    form.commission,
+    form.swap,
+    form.spread_cost,
+    form.slippage_cost,
+    form.risk_override_reason,
+  ],
+  () => {
+    schedulePrecheck()
+  }
+)
 
 onBeforeUnmount(() => {
   clearPendingImages()
+  if (precheckTimer) {
+    clearTimeout(precheckTimer)
+  }
 })
 
 async function compressImage(file: File): Promise<File> {
@@ -727,7 +921,7 @@ async function loadImage(file: File): Promise<HTMLImageElement> {
             type="submit"
             :form="tradeFormId"
             class="btn btn-primary px-4 py-2 text-sm"
-            :disabled="tradeStore.saving || uploadingImages || loadingTrade"
+            :disabled="tradeStore.saving || uploadingImages || loadingTrade || precheckLoading || isSaveBlocked"
           >
             {{
               uploadingImages
@@ -773,12 +967,20 @@ async function loadImage(file: File): Promise<HTMLImageElement> {
               :options="accountSelectOptions"
               :error="fieldError('account_id')"
             />
-            <BaseInput
-              v-model="form.symbol"
-              label="Symbol"
+            <BaseSelect
+              v-model="form.instrument_id"
+              label="Instrument"
               required
-              placeholder="EURUSD"
-              :error="fieldError('symbol')"
+              searchable
+              search-placeholder="Search instrument..."
+              :options="instrumentSelectOptions"
+              :error="fieldError('instrument_id')"
+            />
+            <BaseInput
+              :model-value="instrumentSymbol"
+              label="Symbol"
+              readonly
+              placeholder="Select instrument"
             />
             <BaseSelect v-model="form.direction" label="Direction" :options="directionOptions" />
             <BaseInput
@@ -799,6 +1001,16 @@ async function loadImage(file: File): Promise<HTMLImageElement> {
               step="0.0001"
               :error="fieldError('position_size')"
             />
+          </div>
+
+          <div v-if="selectedInstrument" class="panel mt-3 p-3 text-xs">
+            <p class="kicker-label">Instrument Spec</p>
+            <div class="mt-2 grid grid-cols-2 gap-2 md:grid-cols-4">
+              <p>Class: <strong>{{ selectedInstrument.asset_class }}</strong></p>
+              <p>Contract: <strong>{{ selectedInstrument.contract_size }}</strong></p>
+              <p>Tick Size: <strong>{{ selectedInstrument.tick_size }}</strong></p>
+              <p>Tick Value: <strong>{{ selectedInstrument.tick_value }}</strong></p>
+            </div>
           </div>
 
           <div class="mt-3">
@@ -853,6 +1065,42 @@ async function loadImage(file: File): Promise<HTMLImageElement> {
           </div>
         </section>
 
+        <section class="trade-form-section">
+          <p class="trade-section-title">Execution Costs</p>
+          <div class="grid grid-premium md:grid-cols-2 xl:grid-cols-4">
+            <BaseInput
+              v-model="form.commission"
+              label="Commission"
+              type="number"
+              min="0"
+              step="0.01"
+              :error="fieldError('commission')"
+            />
+            <BaseInput
+              v-model="form.swap"
+              label="Swap"
+              type="number"
+              step="0.01"
+            />
+            <BaseInput
+              v-model="form.spread_cost"
+              label="Spread Cost"
+              type="number"
+              min="0"
+              step="0.01"
+              :error="fieldError('spread_cost')"
+            />
+            <BaseInput
+              v-model="form.slippage_cost"
+              label="Slippage Cost"
+              type="number"
+              min="0"
+              step="0.01"
+              :error="fieldError('slippage_cost')"
+            />
+          </div>
+        </section>
+
         <section class="trade-form-section trade-estimate-quiet">
           <div class="section-head">
             <p class="trade-section-title">Live Estimate</p>
@@ -861,23 +1109,35 @@ async function loadImage(file: File): Promise<HTMLImageElement> {
           <p v-if="liveEstimate.error" class="field-error-text">{{ liveEstimate.error }}</p>
           <div v-else-if="liveEstimate.ready" class="trade-preview-stack">
             <article class="trade-preview-primary">
-              <p>Live P/L</p>
-              <strong :class="liveEstimate.livePnl >= 0 ? 'positive' : 'negative'">
-                {{ asSignedCurrency(liveEstimate.livePnl) }}
+              <p>Net P/L</p>
+              <strong :class="liveEstimate.netPnl >= 0 ? 'positive' : 'negative'">
+                {{ asSignedCurrency(liveEstimate.netPnl) }}
               </strong>
             </article>
 
             <details class="trade-estimate-details">
-              <summary>Show plan details</summary>
+              <summary>Show gross/cost breakdown</summary>
               <div class="trade-preview-secondary">
                 <article>
                   <p>Risk</p>
                   <strong class="negative">{{ asSignedCurrency(-Math.abs(liveEstimate.riskAmount)) }}</strong>
                 </article>
                 <article>
-                  <p>Target P/L</p>
-                  <strong :class="liveEstimate.targetPnl >= 0 ? 'positive' : 'negative'">
-                    {{ asSignedCurrency(liveEstimate.targetPnl) }}
+                  <p>Target Gross</p>
+                  <strong :class="liveEstimate.targetGrossPnl >= 0 ? 'positive' : 'negative'">
+                    {{ asSignedCurrency(liveEstimate.targetGrossPnl) }}
+                  </strong>
+                </article>
+                <article>
+                  <p>Gross P/L</p>
+                  <strong :class="liveEstimate.grossPnl >= 0 ? 'positive' : 'negative'">
+                    {{ asSignedCurrency(liveEstimate.grossPnl) }}
+                  </strong>
+                </article>
+                <article>
+                  <p>Costs</p>
+                  <strong class="negative">
+                    {{ asSignedCurrency(-Math.abs(liveEstimate.costsTotal)) }}
                   </strong>
                 </article>
                 <article>
@@ -891,7 +1151,46 @@ async function loadImage(file: File): Promise<HTMLImageElement> {
               </div>
             </details>
           </div>
-          <p v-else class="section-note">Enter Entry, Stop Loss, Take Profit, Exit Price, and Position Size to preview.</p>
+          <p v-else class="section-note">Select instrument and enter Entry/SL/TP/Exit/Size for preview.</p>
+        </section>
+
+        <section class="trade-form-section">
+          <div class="section-head">
+            <p class="trade-section-title">Risk Policy Precheck</p>
+            <span class="section-note">
+              <template v-if="precheckLoading">Checking...</template>
+              <template v-else-if="precheckResult?.allowed">Allowed</template>
+              <template v-else-if="precheckResult">Blocked</template>
+              <template v-else>Awaiting inputs</template>
+            </span>
+          </div>
+          <p v-if="precheckError" class="field-error-text">{{ precheckError }}</p>
+          <div v-else-if="precheckResult" class="panel p-3 text-sm">
+            <p :class="precheckResult.allowed ? 'positive' : 'negative'">
+              {{ precheckResult.allowed ? 'Trade passes account policy.' : 'Trade violates account policy.' }}
+            </p>
+            <ul v-if="precheckResult.violations.length > 0" class="mt-2 list-disc pl-5">
+              <li v-for="violation in precheckResult.violations" :key="violation.code">
+                {{ violation.message }} ({{ violation.actual.toFixed(2) }} vs limit {{ violation.limit.toFixed(2) }})
+              </li>
+            </ul>
+            <div class="mt-2 grid grid-cols-2 gap-2 text-xs">
+              <p>Risk %: <strong>{{ precheckResult.stats.risk_percent.toFixed(2) }}%</strong></p>
+              <p>Monetary Risk: <strong>{{ asCurrency(precheckResult.stats.monetary_risk) }}</strong></p>
+              <p>Projected Daily Loss %: <strong>{{ precheckResult.stats.projected_daily_loss_pct.toFixed(2) }}%</strong></p>
+              <p>Projected DD %: <strong>{{ precheckResult.stats.projected_drawdown_pct.toFixed(2) }}%</strong></p>
+            </div>
+          </div>
+
+          <BaseInput
+            v-if="precheckResult?.requires_override_reason"
+            v-model="form.risk_override_reason"
+            class="mt-3"
+            label="Risk Override Reason"
+            multiline
+            :rows="2"
+            placeholder="Required by policy to override risk limits..."
+          />
         </section>
 
         <section class="trade-form-section trade-workflow-loop">
@@ -945,7 +1244,11 @@ async function loadImage(file: File): Promise<HTMLImageElement> {
 
         <div class="flex items-center justify-end gap-2 pt-2">
           <button type="button" class="btn btn-ghost px-4 py-2 text-sm" @click="router.push('/trades')">Cancel</button>
-          <button type="submit" class="btn btn-primary px-4 py-2 text-sm" :disabled="tradeStore.saving || uploadingImages">
+          <button
+            type="submit"
+            class="btn btn-primary px-4 py-2 text-sm"
+            :disabled="tradeStore.saving || uploadingImages || precheckLoading || isSaveBlocked"
+          >
             {{
               uploadingImages
                 ? 'Uploading images...'

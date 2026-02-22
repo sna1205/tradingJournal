@@ -3,6 +3,7 @@
 namespace Database\Factories;
 
 use App\Models\Account;
+use App\Models\Instrument;
 use App\Models\Trade;
 use Illuminate\Database\Eloquent\Factories\Factory;
 use Illuminate\Support\Carbon;
@@ -57,9 +58,11 @@ class TradeFactory extends Factory
         $rMultiple = $monetaryRisk > 0 ? ($profitLoss / $monetaryRisk) : 0.0;
         $riskPercent = $accountBefore > 0 ? (($monetaryRisk / $accountBefore) * 100) : 0.0;
         $accountAfter = $accountBefore + $profitLoss;
+        $instrumentId = Instrument::query()->where('symbol', $pair)->value('id');
 
         return [
             'account_id' => Account::factory(),
+            'instrument_id' => $instrumentId ? (int) $instrumentId : null,
             'pair' => $pair,
             'direction' => $direction,
             'entry_price' => $entryPrice,
@@ -71,6 +74,12 @@ class TradeFactory extends Factory
             'reward_per_unit' => round($rewardPerUnit, 6),
             'monetary_risk' => round($monetaryRisk, 6),
             'monetary_reward' => round($monetaryReward, 6),
+            'gross_profit_loss' => round($profitLoss, 6),
+            'costs_total' => 0,
+            'commission' => 0,
+            'swap' => 0,
+            'spread_cost' => 0,
+            'slippage_cost' => 0,
             'profit_loss' => round($profitLoss, 2),
             'rr' => round($rMultiple, 2),
             'r_multiple' => round($rMultiple, 4),
@@ -79,6 +88,7 @@ class TradeFactory extends Factory
             'account_balance_after_trade' => round($accountAfter, 2),
             'followed_rules' => fake()->boolean(70),
             'emotion' => fake()->randomElement(['neutral', 'calm', 'confident', 'fearful', 'greedy', 'hesitant', 'revenge']),
+            'risk_override_reason' => null,
             'session' => fake()->randomElement(['Asia', 'London', 'New York']),
             'model' => fake()->randomElement(['Breakout', 'Pullback', 'Liquidity Sweep', 'Reversal']),
             'date' => Carbon::now()

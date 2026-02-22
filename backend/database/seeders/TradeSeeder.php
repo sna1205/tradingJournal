@@ -3,6 +3,7 @@
 namespace Database\Seeders;
 
 use App\Models\Account;
+use App\Models\Instrument;
 use App\Models\Trade;
 use Illuminate\Database\Seeder;
 use Illuminate\Support\Facades\DB;
@@ -23,6 +24,18 @@ class TradeSeeder extends Seeder
             ->count(180)
             ->state(fn () => ['account_id' => fake()->randomElement($accountIds)])
             ->create();
+
+        $instrumentIdsBySymbol = Instrument::query()
+            ->pluck('id', 'symbol')
+            ->all();
+
+        if (count($instrumentIdsBySymbol) > 0) {
+            foreach ($instrumentIdsBySymbol as $symbol => $instrumentId) {
+                Trade::query()
+                    ->where('pair', $symbol)
+                    ->update(['instrument_id' => (int) $instrumentId]);
+            }
+        }
 
         // Keep account balances consistent with seeded trade P&L.
         foreach ($accountIds as $accountId) {

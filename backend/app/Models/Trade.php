@@ -16,6 +16,7 @@ class Trade extends Model
 
     protected $fillable = [
         'account_id',
+        'instrument_id',
         'pair',
         'direction',
         'entry_price',
@@ -27,6 +28,12 @@ class Trade extends Model
         'reward_per_unit',
         'monetary_risk',
         'monetary_reward',
+        'gross_profit_loss',
+        'costs_total',
+        'commission',
+        'swap',
+        'spread_cost',
+        'slippage_cost',
         'profit_loss',
         'rr',
         'r_multiple',
@@ -35,6 +42,7 @@ class Trade extends Model
         'account_balance_after_trade',
         'followed_rules',
         'emotion',
+        'risk_override_reason',
         'session',
         'model',
         'date',
@@ -43,6 +51,7 @@ class Trade extends Model
 
     protected $casts = [
         'account_id' => 'integer',
+        'instrument_id' => 'integer',
         'entry_price' => 'decimal:6',
         'stop_loss' => 'decimal:6',
         'take_profit' => 'decimal:6',
@@ -52,6 +61,12 @@ class Trade extends Model
         'reward_per_unit' => 'decimal:6',
         'monetary_risk' => 'decimal:6',
         'monetary_reward' => 'decimal:6',
+        'gross_profit_loss' => 'decimal:6',
+        'costs_total' => 'decimal:6',
+        'commission' => 'decimal:6',
+        'swap' => 'decimal:6',
+        'spread_cost' => 'decimal:6',
+        'slippage_cost' => 'decimal:6',
         'profit_loss' => 'decimal:2',
         'rr' => 'decimal:2',
         'r_multiple' => 'decimal:4',
@@ -82,6 +97,7 @@ class Trade extends Model
                     $builder->whereIn('account_id', $ids);
                 }
             })
+            ->when($filters['instrument_id'] ?? null, fn (Builder $builder, int|string $instrumentId) => $builder->where('instrument_id', (int) $instrumentId))
             ->when($filters['pair'] ?? null, fn (Builder $builder, string $pair) => $builder->where('pair', 'like', "%{$pair}%"))
             ->when($filters['direction'] ?? null, fn (Builder $builder, string $direction) => $builder->where('direction', $direction))
             ->when($filters['session'] ?? null, fn (Builder $builder, string $session) => $builder->where('session', 'like', "%{$session}%"))
@@ -98,6 +114,11 @@ class Trade extends Model
     public function account(): BelongsTo
     {
         return $this->belongsTo(Account::class);
+    }
+
+    public function instrument(): BelongsTo
+    {
+        return $this->belongsTo(Instrument::class);
     }
 
     public function images(): HasMany

@@ -3,6 +3,8 @@
 namespace Tests\Feature;
 
 use App\Models\Account;
+use App\Models\AccountRiskPolicy;
+use App\Models\Instrument;
 use App\Models\Trade;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
@@ -10,6 +12,27 @@ use Tests\TestCase;
 class TradeValidationTest extends TestCase
 {
     use RefreshDatabase;
+
+    private int $eurusdInstrumentId;
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        $this->eurusdInstrumentId = (int) Instrument::query()->create([
+            'symbol' => 'EURUSD',
+            'asset_class' => 'forex',
+            'base_currency' => 'EUR',
+            'quote_currency' => 'USD',
+            'contract_size' => 100000,
+            'tick_size' => 0.00001,
+            'tick_value' => 1,
+            'pip_size' => 0.0001,
+            'min_lot' => 0.01,
+            'lot_step' => 0.01,
+            'is_active' => true,
+        ])->id;
+    }
 
     public function test_trade_creation_rejects_future_close_date(): void
     {
@@ -78,6 +101,8 @@ class TradeValidationTest extends TestCase
 
         $trade = Trade::factory()->create([
             'account_id' => $account->id,
+            'instrument_id' => $this->eurusdInstrumentId,
+            'pair' => 'EURUSD',
             'direction' => 'buy',
             'entry_price' => 1.1000,
             'stop_loss' => 1.0950,
@@ -94,6 +119,73 @@ class TradeValidationTest extends TestCase
         $response->assertJsonValidationErrors(['stop_loss']);
     }
 
+    public function test_trade_precheck_blocks_when_risk_exceeds_policy(): void
+    {
+        $account = Account::factory()->create([
+            'starting_balance' => 10_000,
+            'current_balance' => 10_000,
+            'is_active' => true,
+        ]);
+        AccountRiskPolicy::factory()->create([
+            'account_id' => $account->id,
+            'max_risk_per_trade_pct' => 0.5,
+            'max_open_risk_pct' => 0.5,
+            'max_daily_loss_pct' => 2.0,
+            'max_total_drawdown_pct' => 5.0,
+            'enforce_hard_limits' => true,
+            'allow_override' => false,
+        ]);
+
+        $response = $this->postJson('/api/trades/precheck', [
+            ...$this->tradePayload((int) $account->id),
+            'entry_price' => 1.1000,
+            'stop_loss' => 1.0900,
+            'position_size' => 1.0,
+        ]);
+
+        $response->assertOk();
+        $response->assertJsonPath('allowed', false);
+        $response->assertJsonPath('requires_override_reason', false);
+    }
+
+    public function test_trade_creation_requires_override_reason_when_policy_allows_override(): void
+    {
+        $account = Account::factory()->create([
+            'starting_balance' => 10_000,
+            'current_balance' => 10_000,
+            'is_active' => true,
+        ]);
+        AccountRiskPolicy::factory()->create([
+            'account_id' => $account->id,
+            'max_risk_per_trade_pct' => 0.5,
+            'max_open_risk_pct' => 0.5,
+            'max_daily_loss_pct' => 2.0,
+            'max_total_drawdown_pct' => 5.0,
+            'enforce_hard_limits' => true,
+            'allow_override' => true,
+        ]);
+
+        $blocked = $this->postJson('/api/trades', [
+            ...$this->tradePayload((int) $account->id),
+            'entry_price' => 1.1000,
+            'stop_loss' => 1.0900,
+            'position_size' => 1.0,
+        ]);
+
+        $blocked->assertStatus(422);
+        $blocked->assertJsonValidationErrors(['risk_override_reason']);
+
+        $allowed = $this->postJson('/api/trades', [
+            ...$this->tradePayload((int) $account->id),
+            'entry_price' => 1.1000,
+            'stop_loss' => 1.0900,
+            'position_size' => 1.0,
+            'risk_override_reason' => 'High conviction setup after planned review.',
+        ]);
+
+        $allowed->assertCreated();
+    }
+
     /**
      * @return array<string, mixed>
      */
@@ -101,11 +193,12 @@ class TradeValidationTest extends TestCase
     {
         return [
             'account_id' => $accountId,
+            'instrument_id' => $this->eurusdInstrumentId,
             'symbol' => 'EURUSD',
             'direction' => 'buy',
             'entry_price' => 1.1000,
-            'stop_loss' => 1.0950,
-            'take_profit' => 1.1150,
+            'stop_loss' => 1.0995,
+            'take_profit' => 1.1015,
             'position_size' => 1.0,
             'actual_exit_price' => 1.1100,
             'followed_rules' => true,
@@ -117,4 +210,3 @@ class TradeValidationTest extends TestCase
         ];
     }
 }
-

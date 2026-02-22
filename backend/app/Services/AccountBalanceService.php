@@ -26,6 +26,7 @@ class AccountBalanceService
         $runningBalance = (float) $account->starting_balance;
         $trades = Trade::query()
             ->where('account_id', $accountId)
+            ->with('instrument')
             ->orderBy('date')
             ->orderBy('id')
             ->get();
@@ -38,6 +39,12 @@ class AccountBalanceService
                 'take_profit' => (float) $trade->take_profit,
                 'actual_exit_price' => (float) $trade->actual_exit_price,
                 'lot_size' => (float) $trade->lot_size,
+                'instrument_tick_size' => (float) ($trade->instrument?->tick_size ?? 0),
+                'instrument_tick_value' => (float) ($trade->instrument?->tick_value ?? 0),
+                'commission' => (float) ($trade->commission ?? 0),
+                'swap' => (float) ($trade->swap ?? 0),
+                'spread_cost' => (float) ($trade->spread_cost ?? 0),
+                'slippage_cost' => (float) ($trade->slippage_cost ?? 0),
                 'account_balance_before_trade' => $runningBalance,
             ]);
 
@@ -48,6 +55,12 @@ class AccountBalanceService
                     'reward_per_unit' => $calculated['reward_per_unit'],
                     'monetary_risk' => $calculated['monetary_risk'],
                     'monetary_reward' => $calculated['monetary_reward'],
+                    'gross_profit_loss' => $calculated['gross_profit_loss'],
+                    'costs_total' => $calculated['costs_total'],
+                    'commission' => $calculated['commission'],
+                    'swap' => $calculated['swap'],
+                    'spread_cost' => $calculated['spread_cost'],
+                    'slippage_cost' => $calculated['slippage_cost'],
                     'profit_loss' => $calculated['profit_loss'],
                     'rr' => $calculated['rr'],
                     'r_multiple' => $calculated['r_multiple'],

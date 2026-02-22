@@ -9,6 +9,7 @@ use App\Services\AccountBalanceService;
 use App\Services\Analytics\EquityEngine;
 use App\Services\Analytics\StreakEngine;
 use App\Services\Analytics\TradeMetricsEngine;
+use App\Services\TradeRiskPolicyService;
 use Illuminate\Database\Query\Builder as QueryBuilder;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -22,7 +23,8 @@ class AccountController extends Controller
         private readonly AccountBalanceService $accountBalanceService,
         private readonly EquityEngine $equityEngine,
         private readonly TradeMetricsEngine $metricsEngine,
-        private readonly StreakEngine $streakEngine
+        private readonly StreakEngine $streakEngine,
+        private readonly TradeRiskPolicyService $tradeRiskPolicyService
     ) {
     }
 
@@ -160,6 +162,26 @@ class AccountController extends Controller
         ]);
     }
 
+    public function riskPolicy(Account $account)
+    {
+        $policy = $this->tradeRiskPolicyService->getOrCreatePolicy((int) $account->id);
+
+        return response()->json($policy);
+    }
+
+    /**
+     * @throws ValidationException
+     */
+    public function upsertRiskPolicy(Request $request, Account $account)
+    {
+        $payload = $this->validateRiskPolicyPayload($request);
+        $policy = $this->tradeRiskPolicyService->getOrCreatePolicy((int) $account->id);
+        $policy->fill($payload);
+        $policy->save();
+
+        return response()->json($policy->fresh());
+    }
+
     /**
      * @throws ValidationException
      */
@@ -189,6 +211,23 @@ class AccountController extends Controller
             'starting_balance' => [$required, 'numeric', 'gt:0'],
             'currency' => [$required, 'string', 'max:12'],
             'is_active' => ['sometimes', 'boolean'],
+        ]);
+
+        return $validator->validate();
+    }
+
+    /**
+     * @throws ValidationException
+     */
+    private function validateRiskPolicyPayload(Request $request): array
+    {
+        $validator = Validator::make($request->all(), [
+            'max_risk_per_trade_pct' => ['sometimes', 'numeric', 'gt:0', 'max:100'],
+            'max_daily_loss_pct' => ['sometimes', 'numeric', 'gt:0', 'max:100'],
+            'max_total_drawdown_pct' => ['sometimes', 'numeric', 'gt:0', 'max:100'],
+            'max_open_risk_pct' => ['sometimes', 'numeric', 'gt:0', 'max:100'],
+            'enforce_hard_limits' => ['sometimes', 'boolean'],
+            'allow_override' => ['sometimes', 'boolean'],
         ]);
 
         return $validator->validate();

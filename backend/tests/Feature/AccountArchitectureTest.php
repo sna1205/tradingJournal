@@ -3,6 +3,7 @@
 namespace Tests\Feature;
 
 use App\Models\Account;
+use App\Models\Instrument;
 use App\Models\Trade;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\UploadedFile;
@@ -12,6 +13,27 @@ use Tests\TestCase;
 class AccountArchitectureTest extends TestCase
 {
     use RefreshDatabase;
+
+    private int $eurusdInstrumentId;
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        $this->eurusdInstrumentId = (int) Instrument::query()->create([
+            'symbol' => 'EURUSD',
+            'asset_class' => 'forex',
+            'base_currency' => 'EUR',
+            'quote_currency' => 'USD',
+            'contract_size' => 100000,
+            'tick_size' => 0.00001,
+            'tick_value' => 1,
+            'pip_size' => 0.0001,
+            'min_lot' => 0.01,
+            'lot_step' => 0.01,
+            'is_active' => true,
+        ])->id;
+    }
 
     public function test_trade_creation_requires_account_id(): void
     {
@@ -55,33 +77,33 @@ class AccountArchitectureTest extends TestCase
             ...$this->tradePayload((int) $account->id),
             'close_date' => '2026-01-02T10:00:00Z',
             'entry_price' => 1.1000,
-            'stop_loss' => 1.0000,
-            'take_profit' => 1.3000,
-            'actual_exit_price' => 1.2000,
-            'position_size' => 100,
+            'stop_loss' => 1.0990,
+            'take_profit' => 1.1020,
+            'actual_exit_price' => 1.1010,
+            'position_size' => 0.2,
         ])->assertCreated()->json();
 
         $tradeB = $this->postJson('/api/trades', [
             ...$this->tradePayload((int) $account->id),
             'close_date' => '2026-01-03T10:00:00Z',
             'entry_price' => 1.2000,
-            'stop_loss' => 1.1000,
-            'take_profit' => 1.4000,
-            'actual_exit_price' => 1.1500,
-            'position_size' => 100,
+            'stop_loss' => 1.1990,
+            'take_profit' => 1.2020,
+            'actual_exit_price' => 1.1995,
+            'position_size' => 0.2,
         ])->assertCreated()->json();
 
         $this->putJson("/api/trades/{$tradeA['id']}", [
-            'actual_exit_price' => 1.3000,
+            'actual_exit_price' => 1.1020,
         ])->assertOk();
 
         $second = Trade::query()->findOrFail((int) $tradeB['id']);
-        $this->assertSame(10020.0, (float) $second->account_balance_before_trade);
+        $this->assertSame(10040.0, (float) $second->account_balance_before_trade);
 
         $this->deleteJson("/api/trades/{$tradeB['id']}")->assertNoContent();
 
         $account->refresh();
-        $this->assertSame(10020.0, (float) $account->current_balance);
+        $this->assertSame(10040.0, (float) $account->current_balance);
     }
 
     public function test_portfolio_analytics_can_scope_to_a_single_account(): void
@@ -147,20 +169,20 @@ class AccountArchitectureTest extends TestCase
         $this->postJson('/api/trades', [
             ...$this->tradePayload((int) $account->id),
             'entry_price' => 1.1000,
-            'stop_loss' => 1.0000,
-            'take_profit' => 1.2000,
-            'actual_exit_price' => 1.2000,
-            'position_size' => 100,
+            'stop_loss' => 1.0990,
+            'take_profit' => 1.1020,
+            'actual_exit_price' => 1.1010,
+            'position_size' => 0.2,
             'close_date' => '2026-01-02T10:00:00Z',
         ])->assertCreated();
 
         $this->postJson('/api/trades', [
             ...$this->tradePayload((int) $account->id),
             'entry_price' => 1.1000,
-            'stop_loss' => 1.0000,
-            'take_profit' => 1.2000,
-            'actual_exit_price' => 1.0000,
-            'position_size' => 100,
+            'stop_loss' => 1.0990,
+            'take_profit' => 1.1020,
+            'actual_exit_price' => 1.0990,
+            'position_size' => 0.2,
             'close_date' => '2026-01-03T10:00:00Z',
         ])->assertCreated();
 
@@ -255,11 +277,12 @@ class AccountArchitectureTest extends TestCase
     {
         return [
             'account_id' => $accountId,
+            'instrument_id' => $this->eurusdInstrumentId,
             'symbol' => 'EURUSD',
             'direction' => 'buy',
             'entry_price' => 1.1000,
-            'stop_loss' => 1.0950,
-            'take_profit' => 1.1150,
+            'stop_loss' => 1.0995,
+            'take_profit' => 1.1015,
             'position_size' => 1.0,
             'actual_exit_price' => 1.1100,
             'followed_rules' => true,

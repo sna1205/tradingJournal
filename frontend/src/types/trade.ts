@@ -11,6 +11,7 @@ export type TradeEmotion =
 export interface Trade {
   id: number
   account_id: number
+  instrument_id?: number | null
   pair: string
   direction: TradeDirection
   entry_price: string
@@ -22,6 +23,12 @@ export interface Trade {
   reward_per_unit: string | null
   monetary_risk: string | null
   monetary_reward: string | null
+  gross_profit_loss?: string | null
+  costs_total?: string | null
+  commission?: string | null
+  swap?: string | null
+  spread_cost?: string | null
+  slippage_cost?: string | null
   profit_loss: string
   rr: string
   r_multiple: string | null
@@ -30,6 +37,7 @@ export interface Trade {
   account_balance_after_trade: string | null
   followed_rules: boolean
   emotion: TradeEmotion
+  risk_override_reason?: string | null
   session: string
   model: string
   date: string
@@ -43,9 +51,25 @@ export interface Trade {
     current_balance?: string
     currency?: string
   } | null
+  instrument?: Instrument | null
   created_at: string
   updated_at: string
   deleted_at?: string | null
+}
+
+export interface Instrument {
+  id: number
+  symbol: string
+  asset_class: string
+  base_currency: string
+  quote_currency: string
+  contract_size: string
+  tick_size: string
+  tick_value: string
+  pip_size: string
+  min_lot: string
+  lot_step: string
+  is_active: boolean
 }
 
 export interface TradeImage {
