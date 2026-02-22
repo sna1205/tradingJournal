@@ -30,7 +30,6 @@ import { useAccountStore } from '@/stores/accountStore'
 import { useAnalyticsStore } from '@/stores/analyticsStore'
 import { useSyncStatusStore } from '@/stores/syncStatusStore'
 import {
-  isDemoAccountType,
   isLiveAccountType,
   isPropAccountType,
   type AccountChallengeStatusPayload,
@@ -117,40 +116,37 @@ const scopeMetaLabel = computed(() => {
 
 const propAccounts = computed(() => accounts.value.filter((account) => isPropAccountType(account.account_type)))
 const liveAccounts = computed(() => accounts.value.filter((account) => isLiveAccountType(account.account_type)))
-const demoAccounts = computed(() => accounts.value.filter((account) => isDemoAccountType(account.account_type)))
 
-const accountScopeOptions = computed(() => [
-  {
-    label: 'All Accounts (Portfolio)',
-    value: '',
-    subtitle: 'Aggregate analytics',
-    badge: 'portfolio',
-  },
-  ...propAccounts.value.map((account) => ({
-    label: `Prop | ${account.name}`,
+const hasPropAccounts = computed(() => propAccounts.value.length > 0)
+
+const modeScopeAccounts = computed(() => {
+  if (effectiveDashboardMode.value === 'prop') {
+    return propAccounts.value
+  }
+
+  // Live mode intentionally scopes to personal accounts only.
+  return liveAccounts.value
+})
+
+const accountScopeOptions = computed(() =>
+  modeScopeAccounts.value.map((account) => ({
+    label: account.name,
     value: String(account.id),
     subtitle: `${account.broker} - ${account.currency} ${Number(account.current_balance).toLocaleString()}${account.is_active ? '' : ' - inactive'}`,
-    badge: 'funded',
-  })),
-  ...liveAccounts.value.map((account) => ({
-    label: `Live | ${account.name}`,
-    value: String(account.id),
-    subtitle: `${account.broker} - ${account.currency} ${Number(account.current_balance).toLocaleString()}${account.is_active ? '' : ' - inactive'}`,
-    badge: 'personal',
-  })),
-  ...demoAccounts.value.map((account) => ({
-    label: `Demo | ${account.name}`,
-    value: String(account.id),
-    subtitle: `${account.broker} - ${account.currency} ${Number(account.current_balance).toLocaleString()}${account.is_active ? '' : ' - inactive'}`,
-    badge: 'demo',
-  })),
-])
+    badge: account.account_type,
+  }))
+)
 
 const selectedAccountScopeModel = computed({
-  get: () => (selectedAccountId.value === null ? '' : String(selectedAccountId.value)),
+  get: () => {
+    if (selectedAccountId.value !== null) {
+      return String(selectedAccountId.value)
+    }
+
+    return accountScopeOptions.value[0]?.value ?? ''
+  },
   set: (value: string) => {
     if (!value) {
-      accountStore.setSelectedAccountId(null)
       return
     }
 
@@ -158,14 +154,8 @@ const selectedAccountScopeModel = computed({
   },
 })
 
-const isPropScopeEligible = computed(() => {
-  if (selectedAccountId.value === null) return false
-  if (!selectedAccount.value) return false
-  return isPropAccountType(selectedAccount.value.account_type)
-})
-
 const effectiveDashboardMode = computed<DashboardMode>(() => {
-  if (dashboardMode.value === 'prop' && isPropScopeEligible.value) {
+  if (dashboardMode.value === 'prop' && hasPropAccounts.value) {
     return 'prop'
   }
 
@@ -324,6 +314,26 @@ watch(
 )
 
 watch(
+  [() => effectiveDashboardMode.value, () => accounts.value, () => selectedAccountId.value],
+  () => {
+    const scoped = modeScopeAccounts.value
+    if (scoped.length === 0) {
+      if (selectedAccountId.value !== null) {
+        accountStore.setSelectedAccountId(null)
+      }
+      return
+    }
+
+    const currentId = selectedAccountId.value
+    const hasCurrent = currentId !== null && scoped.some((account) => account.id === currentId)
+    if (!hasCurrent) {
+      accountStore.setSelectedAccountId(scoped[0]!.id)
+    }
+  },
+  { immediate: true }
+)
+
+watch(
   () => calendarMonthOptions.value,
   (options) => {
     if (options.length === 0) return
@@ -344,7 +354,7 @@ async function refreshDashboardData() {
 }
 
 async function fetchChallengeStatus() {
-  if (!isPropScopeEligible.value || selectedAccountId.value === null) {
+  if (effectiveDashboardMode.value !== 'prop' || selectedAccountId.value === null) {
     challengeStatus.value = null
     challengeStatusLoading.value = false
     return
@@ -630,9 +640,6 @@ function shortDate(value: string): string {
   })
 }
 
-function selectScopeAccount(accountId: number) {
-  accountStore.setSelectedAccountId(accountId)
-}
 </script>
 
 <template>
@@ -663,7 +670,7 @@ function selectScopeAccount(accountId: number) {
             <button
               class="overview-tab-btn"
               :class="{ active: effectiveDashboardMode === 'prop' }"
-              :disabled="!isPropScopeEligible"
+              :disabled="!hasPropAccounts"
               @click="dashboardMode = 'prop'"
             >
               Prop Challenge
@@ -721,44 +728,6 @@ function selectScopeAccount(accountId: number) {
               :options="accountScopeOptions"
               size="sm"
             />
-          </div>
-          <div class="space-y-1 text-xs">
-            <div v-if="propAccounts.length > 0" class="flex flex-wrap items-center gap-1">
-              <span class="kicker-label">Prop</span>
-              <button
-                v-for="account in propAccounts"
-                :key="`prop-scope-${account.id}`"
-                type="button"
-                class="btn btn-ghost px-2 py-1 text-xs"
-                @click="selectScopeAccount(account.id)"
-              >
-                {{ account.name }}
-              </button>
-            </div>
-            <div v-if="liveAccounts.length > 0" class="flex flex-wrap items-center gap-1">
-              <span class="kicker-label">Live</span>
-              <button
-                v-for="account in liveAccounts"
-                :key="`live-scope-${account.id}`"
-                type="button"
-                class="btn btn-ghost px-2 py-1 text-xs"
-                @click="selectScopeAccount(account.id)"
-              >
-                {{ account.name }}
-              </button>
-            </div>
-            <div v-if="demoAccounts.length > 0" class="flex flex-wrap items-center gap-1">
-              <span class="kicker-label">Demo</span>
-              <button
-                v-for="account in demoAccounts"
-                :key="`demo-scope-${account.id}`"
-                type="button"
-                class="btn btn-ghost px-2 py-1 text-xs"
-                @click="selectScopeAccount(account.id)"
-              >
-                {{ account.name }}
-              </button>
-            </div>
           </div>
           <RouterLink to="/accounts" class="overview-account-link">
             View accounts
