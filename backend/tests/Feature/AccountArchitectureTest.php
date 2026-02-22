@@ -202,6 +202,136 @@ class AccountArchitectureTest extends TestCase
         ]);
     }
 
+    public function test_account_challenge_endpoints_support_get_put_and_live_status(): void
+    {
+        $account = Account::factory()->create([
+            'starting_balance' => 10_000,
+            'current_balance' => 10_000,
+            'is_active' => true,
+        ]);
+
+        $this->getJson("/api/accounts/{$account->id}/challenge")
+            ->assertOk()
+            ->assertJsonPath('account_id', $account->id)
+            ->assertJsonPath('starting_balance', '10000.00');
+
+        $this->putJson("/api/accounts/{$account->id}/challenge", [
+            'provider' => 'FTMO',
+            'phase' => 'Phase 1',
+            'starting_balance' => 10000,
+            'profit_target_pct' => 10,
+            'max_daily_loss_pct' => 5,
+            'max_total_drawdown_pct' => 10,
+            'min_trading_days' => 2,
+            'start_date' => '2026-01-01',
+            'status' => 'active',
+        ])->assertOk();
+
+        Trade::factory()->create([
+            'account_id' => $account->id,
+            'instrument_id' => $this->eurusdInstrumentId,
+            'pair' => 'EURUSD',
+            'profit_loss' => 400,
+            'date' => '2026-01-02 10:00:00',
+        ]);
+        Trade::factory()->create([
+            'account_id' => $account->id,
+            'instrument_id' => $this->eurusdInstrumentId,
+            'pair' => 'EURUSD',
+            'profit_loss' => 300,
+            'date' => '2026-01-03 10:00:00',
+        ]);
+        Trade::factory()->create([
+            'account_id' => $account->id,
+            'instrument_id' => $this->eurusdInstrumentId,
+            'pair' => 'EURUSD',
+            'profit_loss' => 350,
+            'date' => '2026-01-04 10:00:00',
+        ]);
+
+        $statusResponse = $this->getJson("/api/accounts/{$account->id}/challenge-status");
+        $statusResponse->assertOk();
+        $statusResponse->assertJsonPath('risk_state', 'pass');
+        $statusResponse->assertJsonPath('status', 'passed');
+        $statusResponse->assertJsonPath('target_progress.met', true);
+        $statusResponse->assertJsonPath('min_days_progress.met', true);
+    }
+
+    public function test_account_challenge_status_marks_fail_on_daily_loss_breach(): void
+    {
+        $account = Account::factory()->create([
+            'starting_balance' => 10_000,
+            'current_balance' => 10_000,
+            'is_active' => true,
+        ]);
+
+        $this->putJson("/api/accounts/{$account->id}/challenge", [
+            'provider' => 'FTMO',
+            'phase' => 'Phase 1',
+            'starting_balance' => 10000,
+            'profit_target_pct' => 10,
+            'max_daily_loss_pct' => 5,
+            'max_total_drawdown_pct' => 10,
+            'min_trading_days' => 2,
+            'start_date' => '2026-01-01',
+            'status' => 'active',
+        ])->assertOk();
+
+        Trade::factory()->create([
+            'account_id' => $account->id,
+            'instrument_id' => $this->eurusdInstrumentId,
+            'pair' => 'EURUSD',
+            'profit_loss' => -600,
+            'date' => '2026-01-02 10:00:00',
+        ]);
+
+        $statusResponse = $this->getJson("/api/accounts/{$account->id}/challenge-status");
+        $statusResponse->assertOk();
+        $statusResponse->assertJsonPath('risk_state', 'fail');
+        $statusResponse->assertJsonPath('status', 'failed');
+        $statusResponse->assertJsonPath('daily_loss_headroom.breached', true);
+    }
+
+    public function test_analytics_overview_and_metrics_contracts_are_truthful(): void
+    {
+        $account = Account::factory()->create([
+            'starting_balance' => 10_000,
+            'current_balance' => 10_000,
+            'is_active' => true,
+        ]);
+
+        Trade::factory()->create([
+            'account_id' => $account->id,
+            'instrument_id' => $this->eurusdInstrumentId,
+            'pair' => 'EURUSD',
+            'profit_loss' => 0,
+            'r_multiple' => null,
+            'rr' => 3,
+            'date' => '2026-01-02 10:00:00',
+        ]);
+        Trade::factory()->create([
+            'account_id' => $account->id,
+            'instrument_id' => $this->eurusdInstrumentId,
+            'pair' => 'EURUSD',
+            'profit_loss' => 100,
+            'r_multiple' => 1,
+            'rr' => 1,
+            'date' => '2026-01-03 10:00:00',
+        ]);
+
+        $overview = $this->getJson("/api/analytics/overview?account_id={$account->id}");
+        $overview->assertOk();
+        $overview->assertJsonPath('return_on_equity_pct', 1);
+        $overview->assertJsonMissingPath('returns_percent');
+
+        $metrics = $this->getJson("/api/analytics/metrics?account_id={$account->id}");
+        $metrics->assertOk();
+        $metrics->assertJsonPath('expectancy_money', 50);
+        $metrics->assertJsonPath('expectancy_r', 0.5);
+        $metrics->assertJsonPath('avg_r_realized', 1);
+        $metrics->assertJsonPath('avg_rr_planned', 2);
+    }
+
     public function test_trade_image_upload_and_trade_details_include_images(): void
     {
         Storage::fake('public');

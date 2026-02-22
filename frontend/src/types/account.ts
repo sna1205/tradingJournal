@@ -14,6 +14,64 @@ export interface Account {
   updated_at: string
 }
 
+export type ChallengeStatus = 'active' | 'passed' | 'failed' | 'paused'
+
+export interface AccountChallenge {
+  id: number
+  account_id: number
+  provider: string
+  phase: string
+  starting_balance: string
+  profit_target_pct: string
+  max_daily_loss_pct: string
+  max_total_drawdown_pct: string
+  min_trading_days: number
+  start_date: string
+  status: ChallengeStatus
+  passed_at: string | null
+  failed_at: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface AccountChallengeStatusPayload {
+  account_id: number
+  challenge_id: number
+  provider: string
+  phase: string
+  start_date: string
+  status: ChallengeStatus
+  risk_state: 'pass' | 'fail' | 'in_progress'
+  target_progress: {
+    net_profit: number
+    target_profit: number
+    remaining: number
+    progress_pct: number
+    met: boolean
+  }
+  daily_loss_headroom: {
+    limit: number
+    used: number
+    headroom: number
+    worst_used: number
+    breached: boolean
+  }
+  total_dd_headroom: {
+    limit: number
+    used: number
+    headroom: number
+    breached: boolean
+  }
+  min_days_progress: {
+    required: number
+    actual: number
+    remaining: number
+    progress_pct: number
+    met: boolean
+  }
+  evaluated_through: string
+}
+
 export interface AccountEquityPayload {
   account_id: number
   equity_points: number[]

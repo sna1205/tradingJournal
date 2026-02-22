@@ -27,18 +27,13 @@ class AnalyticsController extends Controller
     public function overview(Request $request)
     {
         $payload = $this->remember('overview', $request, function () use ($request): array {
-            $query = $this->baseQuery($request);
             $trades = $this->chronologicalTrades($request);
             $startingBalance = $this->startingBalance($request);
 
             $equity = $this->equityEngine->build($trades, $startingBalance);
             $metrics = $this->metricsEngine->calculate($trades, (float) $equity['max_drawdown']);
-            $notional = (float) ((clone $query)
-                ->selectRaw('SUM(entry_price * lot_size) as total_notional')
-                ->value('total_notional') ?? 0);
-
-            $returnsPercent = $notional > 0
-                ? ((float) $metrics['net_profit'] / $notional) * 100
+            $returnOnEquityPct = $startingBalance > 0
+                ? ((float) $metrics['net_profit'] / $startingBalance) * 100
                 : 0.0;
 
             return [
@@ -47,9 +42,9 @@ class AnalyticsController extends Controller
                 'total_profit' => $metrics['total_winning_amount'],
                 'total_loss' => round(abs((float) $metrics['total_losing_amount']), 2),
                 'profit_factor' => $metrics['profit_factor'],
-                'returns_percent' => round($returnsPercent, 2),
-                'expectancy' => $metrics['expectancy'],
-                'average_r' => $metrics['average_r'],
+                'return_on_equity_pct' => round($returnOnEquityPct, 4),
+                'expectancy' => $metrics['expectancy_money'],
+                'average_r' => $metrics['avg_r_realized'],
                 'recovery_factor' => $metrics['recovery_factor'],
             ];
         });
@@ -61,7 +56,7 @@ class AnalyticsController extends Controller
     {
         $payload = $this->remember('daily', $request, function () use ($request): array {
             return $this->baseQuery($request)
-                ->selectRaw('DATE(`date`) as close_date, COUNT(*) as total_trades, ROUND(SUM(profit_loss), 2) as profit_loss, ROUND(AVG(COALESCE(r_multiple, rr)), 4) as average_r, SUM(CASE WHEN profit_loss > 0 THEN 1 ELSE 0 END) as wins')
+                ->selectRaw('DATE(`date`) as close_date, COUNT(*) as total_trades, ROUND(SUM(profit_loss), 2) as profit_loss, ROUND(AVG(r_multiple), 4) as average_r, SUM(CASE WHEN profit_loss > 0 THEN 1 ELSE 0 END) as wins')
                 ->groupByRaw('DATE(`date`)')
                 ->orderByRaw('DATE(`date`)')
                 ->get()
@@ -96,7 +91,7 @@ class AnalyticsController extends Controller
 
             return [
                 'win_rate' => $metrics['win_rate'],
-                'avg_rr' => $metrics['average_r'],
+                'avg_rr' => $metrics['avg_r_realized'],
                 'profit_factor' => $metrics['profit_factor'],
                 'consistency_score' => $consistencyScore,
                 'recovery_factor' => $metrics['recovery_factor'],
@@ -199,7 +194,7 @@ class AnalyticsController extends Controller
     {
         $payload = $this->remember('monthly-heatmap', $request, function () use ($request): array {
             $rows = $this->baseQuery($request)
-                ->selectRaw('DATE(`date`) as close_date, COUNT(*) as number_of_trades, ROUND(SUM(profit_loss), 2) as total_profit, ROUND(AVG(COALESCE(r_multiple, rr)), 4) as average_r, SUM(CASE WHEN profit_loss > 0 THEN 1 ELSE 0 END) as wins')
+                ->selectRaw('DATE(`date`) as close_date, COUNT(*) as number_of_trades, ROUND(SUM(profit_loss), 2) as total_profit, ROUND(AVG(r_multiple), 4) as average_r, SUM(CASE WHEN profit_loss > 0 THEN 1 ELSE 0 END) as wins')
                 ->groupByRaw('DATE(`date`)')
                 ->orderByRaw('DATE(`date`)')
                 ->get()
@@ -341,8 +336,8 @@ class AnalyticsController extends Controller
                     'total_trades' => (int) $metrics['total_trades'],
                     'win_rate' => (float) $metrics['win_rate'],
                     'net_profit' => (float) $metrics['net_profit'],
-                    'profit_factor' => (float) $metrics['profit_factor'],
-                    'expectancy' => (float) $metrics['expectancy'],
+                    'profit_factor' => $metrics['profit_factor'] !== null ? (float) $metrics['profit_factor'] : null,
+                    'expectancy' => (float) $metrics['expectancy_money'],
                     'max_drawdown' => (float) $equity['max_drawdown'],
                     'max_drawdown_percent' => (float) $equity['max_drawdown_percent'],
                 ];
@@ -372,8 +367,8 @@ class AnalyticsController extends Controller
                 'current_equity' => (float) $equity['current_equity'],
                 'net_profit' => (float) $metrics['net_profit'],
                 'win_rate' => (float) $metrics['win_rate'],
-                'profit_factor' => (float) $metrics['profit_factor'],
-                'expectancy' => (float) $metrics['expectancy'],
+                'profit_factor' => $metrics['profit_factor'] !== null ? (float) $metrics['profit_factor'] : null,
+                'expectancy' => (float) $metrics['expectancy_money'],
                 'max_drawdown' => (float) $equity['max_drawdown'],
                 'max_drawdown_percent' => (float) $equity['max_drawdown_percent'],
                 'equity_points' => $equity['equity_points'],

@@ -11,7 +11,15 @@ import {
   updateLocalAccount,
 } from '@/services/localFallback'
 import { useSyncStatusStore } from '@/stores/syncStatusStore'
-import type { Account, AccountAnalyticsPayload, AccountEquityPayload, AccountType } from '@/types/account'
+import type {
+  Account,
+  AccountAnalyticsPayload,
+  AccountChallenge,
+  AccountChallengeStatusPayload,
+  AccountEquityPayload,
+  AccountType,
+  ChallengeStatus,
+} from '@/types/account'
 
 export interface AccountPayload {
   user_id?: number | null
@@ -21,6 +29,20 @@ export interface AccountPayload {
   starting_balance: number
   currency: string
   is_active: boolean
+}
+
+export interface AccountChallengePayload {
+  provider?: string
+  phase?: string
+  starting_balance?: number
+  profit_target_pct?: number
+  max_daily_loss_pct?: number
+  max_total_drawdown_pct?: number
+  min_trading_days?: number
+  start_date?: string
+  status?: ChallengeStatus
+  passed_at?: string | null
+  failed_at?: string | null
 }
 
 const SELECTED_ACCOUNT_KEY = 'analytics_selected_account_id'
@@ -180,6 +202,48 @@ export const useAccountStore = defineStore('accounts', () => {
     }
   }
 
+  async function fetchAccountChallenge(id: number): Promise<AccountChallenge | null> {
+    try {
+      const { data } = await api.get<AccountChallenge>(`/accounts/${id}/challenge`)
+      syncStatusStore.markServerHealthy()
+      return data
+    } catch (error) {
+      if (!shouldUseLocalFallback(error)) {
+        throw error
+      }
+      syncStatusStore.markLocalFallback('account-challenge')
+      return null
+    }
+  }
+
+  async function updateAccountChallenge(id: number, payload: AccountChallengePayload): Promise<AccountChallenge> {
+    try {
+      const { data } = await api.put<AccountChallenge>(`/accounts/${id}/challenge`, payload)
+      syncStatusStore.markServerHealthy()
+      return data
+    } catch (error) {
+      if (!shouldUseLocalFallback(error)) {
+        throw error
+      }
+      syncStatusStore.markLocalFallback('account-challenge')
+      throw new Error('Challenge configuration is unavailable in local fallback mode.')
+    }
+  }
+
+  async function fetchAccountChallengeStatus(id: number): Promise<AccountChallengeStatusPayload | null> {
+    try {
+      const { data } = await api.get<AccountChallengeStatusPayload>(`/accounts/${id}/challenge-status`)
+      syncStatusStore.markServerHealthy()
+      return data
+    } catch (error) {
+      if (!shouldUseLocalFallback(error)) {
+        throw error
+      }
+      syncStatusStore.markLocalFallback('account-challenge-status')
+      return null
+    }
+  }
+
   return {
     accounts,
     activeAccounts,
@@ -194,6 +258,9 @@ export const useAccountStore = defineStore('accounts', () => {
     deleteAccount,
     fetchAccountEquity,
     fetchAccountAnalytics,
+    fetchAccountChallenge,
+    updateAccountChallenge,
+    fetchAccountChallengeStatus,
   }
 })
 

@@ -29,23 +29,11 @@ import { asCurrency, asSignedCurrency } from '@/utils/format'
 import { useAccountStore } from '@/stores/accountStore'
 import { useAnalyticsStore } from '@/stores/analyticsStore'
 import { useSyncStatusStore } from '@/stores/syncStatusStore'
+import type { AccountChallengeStatusPayload } from '@/types/account'
 import type { MissedTrade, Paginated, Trade } from '@/types/trade'
 
 type DashboardTab = 'overview' | 'chart' | 'calendar'
 type RangePreset = '30d' | 'custom'
-
-const chartMockEmotionRows = [
-  { emotion: 'confident', total_trades: 6, total_profit: 420 },
-  { emotion: 'calm', total_trades: 5, total_profit: 280 },
-  { emotion: 'hesitant', total_trades: 3, total_profit: -110 },
-  { emotion: 'fearful', total_trades: 2, total_profit: -160 },
-]
-
-const chartMockSessionRows = [
-  { session: 'London', total_pnl: 360 },
-  { session: 'New York', total_pnl: 140 },
-  { session: 'Asia', total_pnl: -80 },
-]
 
 const analyticsStore = useAnalyticsStore()
 const accountStore = useAccountStore()
@@ -57,7 +45,6 @@ const {
   equity,
   drawdown,
   drawdownSeries,
-  streaks,
   rankings,
   behavioral,
   loading,
@@ -74,6 +61,8 @@ const recentTrades = ref<Trade[]>([])
 const recentMissedTrades = ref<MissedTrade[]>([])
 const recentTradesLoading = ref(false)
 const recentMissedTradesLoading = ref(false)
+const challengeStatus = ref<AccountChallengeStatusPayload | null>(null)
+const challengeStatusLoading = ref(false)
 let recentTradesRefreshHandle: number | null = null
 
 const totalStartingBalance = computed(() =>
@@ -178,14 +167,19 @@ const calendarMonthOptions = computed(() => {
 const calendarMonthOptionValues = computed(() => new Set(calendarMonthOptions.value.map((item) => item.value)))
 const netPnl = computed(() => toNumber(summary.value?.total_pnl))
 const winRate = computed(() => toNumber(overview.value?.win_rate))
-const avgR = computed(() => toNumber(metrics.value?.avg_r || metrics.value?.average_r))
-const expectancy = computed(() => toNumber(metrics.value?.expectancy || summary.value?.expectancy))
-const profitFactor = computed<number | null>(() => {
-  const value = metrics.value?.profit_factor
+const avgRRealized = computed(() =>
+  toNumber(metrics.value?.avg_r_realized || metrics.value?.avg_r || metrics.value?.average_r)
+)
+const avgRrPlanned = computed(() => toNumber(metrics.value?.avg_rr_planned))
+const expectancyMoney = computed(() =>
+  toNumber(metrics.value?.expectancy_money || metrics.value?.expectancy || summary.value?.expectancy)
+)
+const expectancyR = computed(() => toNumber(metrics.value?.expectancy_r))
+const payoffRatio = computed<number | null>(() => {
+  const value = metrics.value?.payoff_ratio
   if (value === undefined || value === null) return null
   return Number(value)
 })
-const longestWinStreak = computed(() => toNumber(streaks.value?.longest_win_streak))
 const maxDrawdown = computed(() => toNumber(drawdown.value?.max_drawdown))
 const avgLoss = computed(() => Math.abs(toNumber(metrics.value?.average_loss)))
 const currentDrawdownPct = computed(() => toNumber(drawdown.value?.current_drawdown_percent))
@@ -206,15 +200,21 @@ const emotionChartRows = computed(() =>
     total_profit: Number((item as Record<string, unknown>).total_profit ?? 0),
   }))
 )
-const chartEmotionRows = computed(() =>
-  emotionChartRows.value.length > 0 ? emotionChartRows.value : chartMockEmotionRows
-)
-const chartSessionRows = computed(() =>
-  sessionRows.value.length > 0 ? sessionRows.value : chartMockSessionRows
-)
-const usingChartMockData = computed(() =>
-  emotionChartRows.value.length === 0 && sessionRows.value.length === 0
-)
+const chartEmotionRows = computed(() => emotionChartRows.value)
+const chartSessionRows = computed(() => sessionRows.value)
+const hasChartData = computed(() => chartEmotionRows.value.length > 0 || chartSessionRows.value.length > 0)
+const challengeRiskStateLabel = computed(() => {
+  if (!challengeStatus.value) return 'No status'
+  if (challengeStatus.value.risk_state === 'pass') return 'Pass'
+  if (challengeStatus.value.risk_state === 'fail') return 'Fail'
+  return 'In Progress'
+})
+const challengeRiskStateClass = computed(() => {
+  if (!challengeStatus.value) return 'muted'
+  if (challengeStatus.value.risk_state === 'pass') return 'positive'
+  if (challengeStatus.value.risk_state === 'fail') return 'negative'
+  return 'muted'
+})
 
 const reviewCandidates = computed(() => recentTrades.value.filter((trade) => needsReview(trade)))
 const nextReviewTrade = computed(() => reviewCandidates.value[0] ?? null)
@@ -287,9 +287,27 @@ async function refreshDashboardData() {
   const filters = activeRangeFilters.value
   await Promise.allSettled([
     analyticsStore.fetchAnalytics(filters),
+    fetchChallengeStatus(),
     fetchRecentTrades(filters),
     fetchRecentMissedTrades(filters),
   ])
+}
+
+async function fetchChallengeStatus() {
+  if (selectedAccountId.value === null) {
+    challengeStatus.value = null
+    challengeStatusLoading.value = false
+    return
+  }
+
+  challengeStatusLoading.value = true
+  try {
+    challengeStatus.value = await accountStore.fetchAccountChallengeStatus(selectedAccountId.value)
+  } catch {
+    challengeStatus.value = null
+  } finally {
+    challengeStatusLoading.value = false
+  }
 }
 
 async function fetchRecentTrades(filters: { date_from?: string; date_to?: string } = {}) {
@@ -643,6 +661,65 @@ function shortDate(value: string): string {
         </div>
       </section>
 
+      <section class="panel">
+        <div class="section-head">
+          <div>
+            <h2 class="section-title">Prop Challenge Status</h2>
+            <p class="section-note">Live pass/fail risk state based on current trade history.</p>
+          </div>
+          <span class="pill" :class="challengeRiskStateClass">{{ challengeRiskStateLabel }}</span>
+        </div>
+
+        <EmptyState
+          v-if="selectedAccountId === null"
+          title="Select an account"
+          description="Challenge status is calculated per account."
+          :icon="ShieldAlert"
+        />
+
+        <div v-else-if="challengeStatusLoading" class="grid grid-premium md:grid-cols-4">
+          <SkeletonBlock v-for="index in 4" :key="`challenge-status-skeleton-${index}`" height-class="h-24" rounded-class="rounded-2xl" />
+        </div>
+
+        <div v-else-if="challengeStatus" class="grid grid-premium md:grid-cols-4">
+          <article class="panel p-3">
+            <p class="kicker-label">Target Progress</p>
+            <p class="mt-1 text-lg font-semibold value-display">
+              <AnimatedNumber :value="challengeStatus.target_progress.progress_pct" :decimals="2" suffix="%" />
+            </p>
+            <p class="muted text-xs">{{ asCurrency(challengeStatus.target_progress.net_profit) }} / {{ asCurrency(challengeStatus.target_progress.target_profit) }}</p>
+          </article>
+          <article class="panel p-3">
+            <p class="kicker-label">Daily Loss Headroom</p>
+            <p class="mt-1 text-lg font-semibold value-display" :class="challengeStatus.daily_loss_headroom.breached ? 'negative' : 'positive'">
+              {{ asCurrency(challengeStatus.daily_loss_headroom.headroom) }}
+            </p>
+            <p class="muted text-xs">Used today: {{ asCurrency(challengeStatus.daily_loss_headroom.used) }}</p>
+          </article>
+          <article class="panel p-3">
+            <p class="kicker-label">Total DD Headroom</p>
+            <p class="mt-1 text-lg font-semibold value-display" :class="challengeStatus.total_dd_headroom.breached ? 'negative' : 'positive'">
+              {{ asCurrency(challengeStatus.total_dd_headroom.headroom) }}
+            </p>
+            <p class="muted text-xs">Used: {{ asCurrency(challengeStatus.total_dd_headroom.used) }}</p>
+          </article>
+          <article class="panel p-3">
+            <p class="kicker-label">Min Trading Days</p>
+            <p class="mt-1 text-lg font-semibold value-display">
+              <AnimatedNumber :value="challengeStatus.min_days_progress.progress_pct" :decimals="2" suffix="%" />
+            </p>
+            <p class="muted text-xs">{{ challengeStatus.min_days_progress.actual }} / {{ challengeStatus.min_days_progress.required }} days</p>
+          </article>
+        </div>
+
+        <EmptyState
+          v-else
+          title="No challenge status"
+          description="Configure challenge settings for this account."
+          :icon="ShieldAlert"
+        />
+      </section>
+
       <template v-if="activeTab === 'overview'">
         <section v-if="loading && !summary" class="grid grid-premium lg:grid-cols-4">
           <SkeletonBlock v-for="index in 4" :key="`dashboard-kpi-skeleton-${index}`" height-class="h-52" rounded-class="rounded-2xl" />
@@ -659,19 +736,19 @@ function shortDate(value: string): string {
             <p class="overview-kpi-value value-display" :class="tradePnlClass(netPnl)">
               <AnimatedNumber :value="netPnl" :decimals="2" prefix="$" :sign="true" />
             </p>
-            <p class="overview-kpi-caption">Net P/L</p>
+            <p class="overview-kpi-caption">Net Profit (USD)</p>
             <div class="overview-kpi-split">
               <article>
-                <strong class="value-display" :class="tradePnlClass(expectancy)">
-                  <AnimatedNumber :value="expectancy" :decimals="2" prefix="$" :sign="true" />
+                <strong class="value-display" :class="tradePnlClass(expectancyMoney)">
+                  <AnimatedNumber :value="expectancyMoney" :decimals="2" prefix="$" :sign="true" />
                 </strong>
-                <span>Expectancy</span>
+                <span>Expectancy (USD/Trade)</span>
               </article>
               <article>
-                <strong class="value-display" :class="profitFactor !== null && profitFactor < 1 ? 'negative' : ''">
-                  {{ profitFactor === null ? '-' : Number(profitFactor).toFixed(2) }}
+                <strong class="value-display" :class="payoffRatio !== null && payoffRatio < 1 ? 'negative' : ''">
+                  {{ payoffRatio === null ? '-' : Number(payoffRatio).toFixed(2) }}
                 </strong>
-                <span>Profit Factor</span>
+                <span>Payoff Ratio (Avg Win/Avg Loss)</span>
               </article>
             </div>
           </GlassPanel>
@@ -690,15 +767,15 @@ function shortDate(value: string): string {
             <div class="overview-kpi-split">
               <article>
                 <strong class="value-display">
-                  <AnimatedNumber :value="avgR" :decimals="2" suffix="R" />
+                  <AnimatedNumber :value="avgRRealized" :decimals="2" suffix="R" />
                 </strong>
-                <span>Avg R:R</span>
+                <span>Avg R Realized</span>
               </article>
               <article>
                 <strong class="value-display">
-                  <AnimatedNumber :value="longestWinStreak" />
+                  <AnimatedNumber :value="avgRrPlanned" :decimals="2" />
                 </strong>
-                <span>Longest Win Streak</span>
+                <span>Avg RR Planned</span>
               </article>
             </div>
           </GlassPanel>
@@ -746,9 +823,9 @@ function shortDate(value: string): string {
               </article>
               <article>
                 <strong class="value-display">
-                  <AnimatedNumber :value="avgR" :decimals="2" suffix="R" />
+                  <AnimatedNumber :value="expectancyR" :decimals="2" suffix="R" />
                 </strong>
-                <span>Average R</span>
+                <span>Expectancy (R/Trade)</span>
               </article>
             </div>
           </GlassPanel>
@@ -923,11 +1000,16 @@ function shortDate(value: string): string {
       </template>
 
       <template v-else-if="activeTab === 'chart'">
-        <section v-if="usingChartMockData" class="panel p-3 text-sm">
-          <p class="section-note">Showing mock chart data for preview. Add executions in the selected range to replace this.</p>
+        <section v-if="!hasChartData" class="grid grid-premium xl:grid-cols-2">
+          <GlassPanel>
+            <EmptyState title="No emotion data" description="Log trades with emotion tags to populate this chart." :icon="BarChartHorizontalBig" />
+          </GlassPanel>
+          <GlassPanel>
+            <EmptyState title="No session data" description="Log trades with session tags to populate this chart." :icon="BarChartHorizontalBig" />
+          </GlassPanel>
         </section>
 
-        <section class="grid grid-premium xl:grid-cols-2">
+        <section v-else class="grid grid-premium xl:grid-cols-2">
           <GlassPanel>
             <div class="section-head">
               <h2 class="section-title">Emotional Impact</h2>

@@ -13,6 +13,7 @@ class DatabaseSeeder extends Seeder
             InstrumentSeeder::class,
             AccountSeeder::class,
             AccountRiskPolicySeeder::class,
+            PropChallengeSeeder::class,
             TradeSeeder::class,
             TradeImageSeeder::class,
             MissedTradeSeeder::class,

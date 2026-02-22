@@ -9,6 +9,7 @@ use App\Services\AccountBalanceService;
 use App\Services\Analytics\EquityEngine;
 use App\Services\Analytics\StreakEngine;
 use App\Services\Analytics\TradeMetricsEngine;
+use App\Services\PropChallengeService;
 use App\Services\TradeRiskPolicyService;
 use Illuminate\Database\Query\Builder as QueryBuilder;
 use Illuminate\Http\Request;
@@ -24,7 +25,8 @@ class AccountController extends Controller
         private readonly EquityEngine $equityEngine,
         private readonly TradeMetricsEngine $metricsEngine,
         private readonly StreakEngine $streakEngine,
-        private readonly TradeRiskPolicyService $tradeRiskPolicyService
+        private readonly TradeRiskPolicyService $tradeRiskPolicyService,
+        private readonly PropChallengeService $propChallengeService
     ) {
     }
 
@@ -182,6 +184,33 @@ class AccountController extends Controller
         return response()->json($policy->fresh());
     }
 
+    public function challenge(Account $account)
+    {
+        $challenge = $this->propChallengeService->getOrCreateChallenge($account);
+
+        return response()->json($challenge);
+    }
+
+    /**
+     * @throws ValidationException
+     */
+    public function upsertChallenge(Request $request, Account $account)
+    {
+        $payload = $this->validateChallengePayload($request);
+        $challenge = $this->propChallengeService->getOrCreateChallenge($account);
+        $challenge->fill($payload);
+        $challenge->save();
+
+        return response()->json($challenge->fresh());
+    }
+
+    public function challengeStatus(Account $account)
+    {
+        return response()->json(
+            $this->propChallengeService->status($account)
+        );
+    }
+
     /**
      * @throws ValidationException
      */
@@ -229,6 +258,41 @@ class AccountController extends Controller
             'enforce_hard_limits' => ['sometimes', 'boolean'],
             'allow_override' => ['sometimes', 'boolean'],
         ]);
+
+        return $validator->validate();
+    }
+
+    /**
+     * @throws ValidationException
+     */
+    private function validateChallengePayload(Request $request): array
+    {
+        $validator = Validator::make($request->all(), [
+            'provider' => ['sometimes', 'string', 'max:120'],
+            'phase' => ['sometimes', 'string', 'max:80'],
+            'starting_balance' => ['sometimes', 'numeric', 'gt:0'],
+            'profit_target_pct' => ['sometimes', 'numeric', 'gt:0', 'max:1000'],
+            'max_daily_loss_pct' => ['sometimes', 'numeric', 'gt:0', 'max:100'],
+            'max_total_drawdown_pct' => ['sometimes', 'numeric', 'gt:0', 'max:100'],
+            'min_trading_days' => ['sometimes', 'integer', 'min:1', 'max:365'],
+            'start_date' => ['sometimes', 'date'],
+            'status' => ['sometimes', Rule::in(['active', 'passed', 'failed', 'paused'])],
+            'passed_at' => ['sometimes', 'nullable', 'date'],
+            'failed_at' => ['sometimes', 'nullable', 'date'],
+        ]);
+
+        $validator->after(function ($validator) use ($request): void {
+            $status = (string) $request->input('status', '');
+            $passedAt = $request->input('passed_at');
+            $failedAt = $request->input('failed_at');
+
+            if ($status === 'passed' && $passedAt === null) {
+                $validator->errors()->add('passed_at', 'passed_at is required when status is passed.');
+            }
+            if ($status === 'failed' && $failedAt === null) {
+                $validator->errors()->add('failed_at', 'failed_at is required when status is failed.');
+            }
+        });
 
         return $validator->validate();
     }

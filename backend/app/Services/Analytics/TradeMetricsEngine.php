@@ -22,9 +22,14 @@ class TradeMetricsEngine
      *   net_profit:float,
      *   profit_factor:float|null,
      *   expectancy:float,
+     *   expectancy_money:float,
+     *   expectancy_r:float,
+     *   payoff_ratio:float|null,
      *   recovery_factor:float|null,
      *   average_r:float,
      *   avg_r:float,
+     *   avg_r_realized:float,
+     *   avg_rr_planned:float,
      *   sharpe_ratio:float|null
      * }
      */
@@ -60,25 +65,55 @@ class TradeMetricsEngine
         $profitFactor = abs($totalLosingAmount) > 0
             ? $totalWinningAmount / abs($totalLosingAmount)
             : null;
-        $expectancy = ($winRate * $averageWin) - ($lossRate * $averageLoss);
+        $expectancyMoney = ($winRate * $averageWin) - ($lossRate * $averageLoss);
+        $payoffRatio = $averageLoss > 0
+            ? ($averageWin / $averageLoss)
+            : null;
 
         $effectiveMaxDrawdown = $maxDrawdown ?? 0.0;
         $recoveryFactor = $effectiveMaxDrawdown > 0
             ? $netProfit / $effectiveMaxDrawdown
             : null;
 
-        $rValues = $trades
-            ->map(function ($trade): float {
+        $realizedRValues = $trades
+            ->map(function ($trade): ?float {
                 $candidate = data_get($trade, 'r_multiple');
-                if ($candidate !== null) {
-                    return (float) $candidate;
+                if ($candidate === null || $candidate === '') {
+                    return null;
                 }
 
-                return (float) (data_get($trade, 'rr') ?? 0);
-            });
-        $averageR = $rValues->count() > 0
-            ? ((float) $rValues->sum()) / $rValues->count()
+                return (float) $candidate;
+            })
+            ->filter(fn ($value): bool => $value !== null)
+            ->values();
+        $avgRRealized = $realizedRValues->count() > 0
+            ? ((float) $realizedRValues->sum()) / $realizedRValues->count()
             : 0.0;
+
+        $plannedRrValues = $trades
+            ->map(function ($trade): ?float {
+                $candidate = data_get($trade, 'rr');
+                if ($candidate === null || $candidate === '') {
+                    return null;
+                }
+
+                return (float) $candidate;
+            })
+            ->filter(fn ($value): bool => $value !== null)
+            ->values();
+        $avgRrPlanned = $plannedRrValues->count() > 0
+            ? ((float) $plannedRrValues->sum()) / $plannedRrValues->count()
+            : 0.0;
+
+        $winRValues = $realizedRValues->filter(fn (float $value): bool => $value > 0);
+        $lossRValues = $realizedRValues->filter(fn (float $value): bool => $value < 0);
+        $averageWinR = $winRValues->count() > 0
+            ? ((float) $winRValues->sum()) / $winRValues->count()
+            : 0.0;
+        $averageLossR = $lossRValues->count() > 0
+            ? abs(((float) $lossRValues->sum()) / $lossRValues->count())
+            : 0.0;
+        $expectancyR = ($winRate * $averageWinR) - ($lossRate * $averageLossR);
 
         $returns = $trades
             ->map(function ($trade): ?float {
@@ -107,10 +142,15 @@ class TradeMetricsEngine
             'total_losing_amount' => round($totalLosingAmount, 2),
             'net_profit' => round($netProfit, 2),
             'profit_factor' => $profitFactor === null ? null : round($profitFactor, 4),
-            'expectancy' => round($expectancy, 4),
+            'expectancy' => round($expectancyMoney, 4),
+            'expectancy_money' => round($expectancyMoney, 4),
+            'expectancy_r' => round($expectancyR, 4),
+            'payoff_ratio' => $payoffRatio === null ? null : round($payoffRatio, 4),
             'recovery_factor' => $recoveryFactor === null ? null : round($recoveryFactor, 4),
-            'average_r' => round($averageR, 4),
-            'avg_r' => round($averageR, 4),
+            'average_r' => round($avgRRealized, 4),
+            'avg_r' => round($avgRRealized, 4),
+            'avg_r_realized' => round($avgRRealized, 4),
+            'avg_rr_planned' => round($avgRrPlanned, 4),
             'sharpe_ratio' => $sharpeRatio === null ? null : round($sharpeRatio, 4),
         ];
     }
@@ -139,4 +179,3 @@ class TradeMetricsEngine
         return $mean / $stdDeviation;
     }
 }
-

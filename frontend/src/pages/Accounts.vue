@@ -2,7 +2,7 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import { storeToRefs } from 'pinia'
 import type { AxiosError } from 'axios'
-import { Pencil, Plus, Trash2, WalletCards, X } from 'lucide-vue-next'
+import { Flag, Pencil, Plus, Trash2, WalletCards, X } from 'lucide-vue-next'
 import GlassPanel from '@/components/layout/GlassPanel.vue'
 import SkeletonBlock from '@/components/layout/SkeletonBlock.vue'
 import EmptyState from '@/components/layout/EmptyState.vue'
@@ -12,7 +12,7 @@ import MiniSparkline from '@/components/charts/MiniSparkline.vue'
 import { useAccountStore, type AccountPayload } from '@/stores/accountStore'
 import { useUiStore } from '@/stores/uiStore'
 import { asCurrency } from '@/utils/format'
-import type { Account, AccountType } from '@/types/account'
+import type { Account, AccountType, ChallengeStatus } from '@/types/account'
 
 interface AccountAnalyticsRow {
   account_id: number
@@ -45,6 +45,11 @@ const modalOpen = ref(false)
 const isEditing = ref(false)
 const editingId = ref<number | null>(null)
 const submitAttempted = ref(false)
+const challengeModalOpen = ref(false)
+const challengeLoading = ref(false)
+const challengeSaving = ref(false)
+const challengeSubmitAttempted = ref(false)
+const challengeAccount = ref<Account | null>(null)
 
 const accountTypeOptions = [
   { label: 'Funded', value: 'funded' },
@@ -57,6 +62,13 @@ const statusOptions = [
   { label: 'Inactive', value: 'false' },
 ]
 
+const challengeStatusOptions = [
+  { label: 'Active', value: 'active' },
+  { label: 'Paused', value: 'paused' },
+  { label: 'Passed', value: 'passed' },
+  { label: 'Failed', value: 'failed' },
+]
+
 const form = reactive({
   name: '',
   broker: '',
@@ -64,6 +76,20 @@ const form = reactive({
   starting_balance: 10000,
   currency: 'USD',
   is_active: true,
+})
+
+const challengeForm = reactive({
+  provider: 'FTMO',
+  phase: 'Phase 1',
+  starting_balance: 10000,
+  profit_target_pct: 10,
+  max_daily_loss_pct: 5,
+  max_total_drawdown_pct: 10,
+  min_trading_days: 4,
+  start_date: toIsoDateOnly(new Date().toISOString()),
+  status: 'active' as ChallengeStatus,
+  passed_at: '',
+  failed_at: '',
 })
 
 const cards = computed(() =>
@@ -100,6 +126,47 @@ function fieldError(name: string) {
   return submitAttempted.value ? formErrors.value[name] : ''
 }
 
+const challengeErrors = computed<Record<string, string>>(() => {
+  const errors: Record<string, string> = {}
+
+  if (!challengeForm.provider.trim()) {
+    errors.provider = 'Provider is required.'
+  }
+  if (!challengeForm.phase.trim()) {
+    errors.phase = 'Phase is required.'
+  }
+  if (!(Number(challengeForm.starting_balance) > 0)) {
+    errors.starting_balance = 'Starting balance must be greater than 0.'
+  }
+  if (!(Number(challengeForm.profit_target_pct) > 0)) {
+    errors.profit_target_pct = 'Profit target % must be greater than 0.'
+  }
+  if (!(Number(challengeForm.max_daily_loss_pct) > 0)) {
+    errors.max_daily_loss_pct = 'Max daily loss % must be greater than 0.'
+  }
+  if (!(Number(challengeForm.max_total_drawdown_pct) > 0)) {
+    errors.max_total_drawdown_pct = 'Max total drawdown % must be greater than 0.'
+  }
+  if (!(Number(challengeForm.min_trading_days) >= 1)) {
+    errors.min_trading_days = 'Minimum trading days must be at least 1.'
+  }
+  if (!challengeForm.start_date) {
+    errors.start_date = 'Start date is required.'
+  }
+  if (challengeForm.status === 'passed' && !challengeForm.passed_at) {
+    errors.passed_at = 'Passed date is required when status is passed.'
+  }
+  if (challengeForm.status === 'failed' && !challengeForm.failed_at) {
+    errors.failed_at = 'Failed date is required when status is failed.'
+  }
+
+  return errors
+})
+
+function challengeFieldError(name: string) {
+  return challengeSubmitAttempted.value ? challengeErrors.value[name] : ''
+}
+
 function resetForm() {
   form.name = ''
   form.broker = ''
@@ -132,6 +199,103 @@ function openEditModal(account: Account) {
 
 function closeModal() {
   modalOpen.value = false
+}
+
+function resetChallengeForm(account?: Account) {
+  challengeForm.provider = account?.broker ?? 'FTMO'
+  challengeForm.phase = 'Phase 1'
+  challengeForm.starting_balance = Number(account?.starting_balance ?? 10000)
+  challengeForm.profit_target_pct = 10
+  challengeForm.max_daily_loss_pct = 5
+  challengeForm.max_total_drawdown_pct = 10
+  challengeForm.min_trading_days = 4
+  challengeForm.start_date = toIsoDateOnly(new Date().toISOString())
+  challengeForm.status = 'active'
+  challengeForm.passed_at = ''
+  challengeForm.failed_at = ''
+  challengeSubmitAttempted.value = false
+}
+
+async function openChallengeModal(account: Account) {
+  challengeAccount.value = account
+  challengeModalOpen.value = true
+  challengeLoading.value = true
+  resetChallengeForm(account)
+
+  try {
+    const challenge = await accountStore.fetchAccountChallenge(account.id)
+    if (challenge) {
+      challengeForm.provider = challenge.provider
+      challengeForm.phase = challenge.phase
+      challengeForm.starting_balance = Number(challenge.starting_balance)
+      challengeForm.profit_target_pct = Number(challenge.profit_target_pct)
+      challengeForm.max_daily_loss_pct = Number(challenge.max_daily_loss_pct)
+      challengeForm.max_total_drawdown_pct = Number(challenge.max_total_drawdown_pct)
+      challengeForm.min_trading_days = Number(challenge.min_trading_days)
+      challengeForm.start_date = toIsoDateOnly(challenge.start_date)
+      challengeForm.status = challenge.status
+      challengeForm.passed_at = challenge.passed_at ? toIsoDateOnly(challenge.passed_at) : ''
+      challengeForm.failed_at = challenge.failed_at ? toIsoDateOnly(challenge.failed_at) : ''
+    }
+  } catch (error) {
+    uiStore.toast({
+      type: 'error',
+      title: 'Failed to load challenge config',
+      message: extractErrorMessage(error),
+    })
+  } finally {
+    challengeLoading.value = false
+  }
+}
+
+function closeChallengeModal() {
+  challengeModalOpen.value = false
+  challengeLoading.value = false
+  challengeSaving.value = false
+  challengeSubmitAttempted.value = false
+  challengeAccount.value = null
+}
+
+async function submitChallenge() {
+  if (!challengeAccount.value) return
+
+  challengeSubmitAttempted.value = true
+  const firstError = Object.values(challengeErrors.value)[0]
+  if (firstError) {
+    uiStore.toast({
+      type: 'error',
+      title: 'Invalid challenge input',
+      message: firstError,
+    })
+    return
+  }
+
+  challengeSaving.value = true
+  try {
+    await accountStore.updateAccountChallenge(challengeAccount.value.id, {
+      provider: challengeForm.provider.trim(),
+      phase: challengeForm.phase.trim(),
+      starting_balance: Number(challengeForm.starting_balance),
+      profit_target_pct: Number(challengeForm.profit_target_pct),
+      max_daily_loss_pct: Number(challengeForm.max_daily_loss_pct),
+      max_total_drawdown_pct: Number(challengeForm.max_total_drawdown_pct),
+      min_trading_days: Number(challengeForm.min_trading_days),
+      start_date: challengeForm.start_date,
+      status: challengeForm.status,
+      passed_at: challengeForm.passed_at || null,
+      failed_at: challengeForm.failed_at || null,
+    })
+    uiStore.toast({ type: 'success', title: 'Challenge configuration saved' })
+    closeChallengeModal()
+  } catch (error) {
+    uiStore.toast({
+      type: 'error',
+      title: 'Failed to save challenge config',
+      message: extractErrorMessage(error),
+    })
+  } finally {
+    challengeSaving.value = false
+  }
 }
 
 function toPayload(): AccountPayload {
@@ -277,6 +441,10 @@ function extractErrorMessage(error: unknown): string {
   return firstValidationError || responseMessage || 'Please review values and try again.'
 }
 
+function toIsoDateOnly(value: string) {
+  return value.slice(0, 10)
+}
+
 onMounted(async () => {
   try {
     await accountStore.fetchAccounts()
@@ -350,7 +518,7 @@ onMounted(async () => {
             </p>
           </article>
           <article class="panel p-3">
-            <p class="kicker-label">Return</p>
+            <p class="kicker-label">Return on Equity</p>
             <p class="mt-1 value-display font-semibold" :class="Number(row.analytics?.net_profit ?? 0) >= 0 ? 'positive' : 'negative'">
               {{ asReturnPercent(Number(row.analytics?.net_profit ?? 0), Number(row.account.starting_balance)) }}
             </p>
@@ -371,6 +539,9 @@ onMounted(async () => {
         </article>
 
         <div class="mt-3 flex items-center justify-end gap-2">
+          <button type="button" class="btn btn-ghost p-2" @click="openChallengeModal(row.account)">
+            <Flag class="h-4 w-4" />
+          </button>
           <button type="button" class="btn btn-ghost p-2" @click="openEditModal(row.account)">
             <Pencil class="h-4 w-4" />
           </button>
@@ -418,6 +589,103 @@ onMounted(async () => {
               <button type="button" class="btn btn-ghost px-4 py-2 text-sm" @click="closeModal">Cancel</button>
               <button type="submit" class="btn btn-primary px-4 py-2 text-sm" :disabled="saving">
                 {{ saving ? 'Saving...' : isEditing ? 'Update Account' : 'Create Account' }}
+              </button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </Transition>
+
+    <Transition name="fade">
+      <div v-if="challengeModalOpen" class="app-modal-overlay fixed inset-0 flex items-center justify-center bg-black/45 px-4 backdrop-blur-sm">
+        <div class="panel w-full max-w-3xl p-6">
+          <div class="section-head">
+            <h3 class="section-title">Prop Challenge Config{{ challengeAccount ? ` - ${challengeAccount.name}` : '' }}</h3>
+            <button type="button" class="btn btn-ghost p-2" @click="closeChallengeModal">
+              <X class="h-4 w-4" />
+            </button>
+          </div>
+
+          <div v-if="challengeLoading" class="grid grid-premium md:grid-cols-2">
+            <SkeletonBlock v-for="item in 6" :key="`challenge-loading-${item}`" height-class="h-16" rounded-class="rounded-xl" />
+          </div>
+
+          <form v-else class="form-block space-y-4" @submit.prevent="submitChallenge">
+            <div class="grid grid-premium md:grid-cols-2">
+              <BaseInput v-model="challengeForm.provider" label="Provider" required :error="challengeFieldError('provider')" />
+              <BaseInput v-model="challengeForm.phase" label="Phase" required :error="challengeFieldError('phase')" />
+              <BaseInput
+                v-model="challengeForm.starting_balance"
+                label="Challenge Starting Balance"
+                type="number"
+                required
+                min="0.01"
+                step="0.01"
+                :error="challengeFieldError('starting_balance')"
+              />
+              <BaseInput
+                v-model="challengeForm.profit_target_pct"
+                label="Profit Target %"
+                type="number"
+                required
+                min="0.01"
+                step="0.0001"
+                :error="challengeFieldError('profit_target_pct')"
+              />
+              <BaseInput
+                v-model="challengeForm.max_daily_loss_pct"
+                label="Max Daily Loss %"
+                type="number"
+                required
+                min="0.01"
+                step="0.0001"
+                :error="challengeFieldError('max_daily_loss_pct')"
+              />
+              <BaseInput
+                v-model="challengeForm.max_total_drawdown_pct"
+                label="Max Total Drawdown %"
+                type="number"
+                required
+                min="0.01"
+                step="0.0001"
+                :error="challengeFieldError('max_total_drawdown_pct')"
+              />
+              <BaseInput
+                v-model="challengeForm.min_trading_days"
+                label="Minimum Trading Days"
+                type="number"
+                required
+                min="1"
+                step="1"
+                :error="challengeFieldError('min_trading_days')"
+              />
+              <BaseInput
+                v-model="challengeForm.start_date"
+                label="Challenge Start Date"
+                type="date"
+                required
+                :error="challengeFieldError('start_date')"
+              />
+              <BaseSelect v-model="challengeForm.status" label="Status" :options="challengeStatusOptions" />
+              <div />
+              <BaseInput
+                v-model="challengeForm.passed_at"
+                label="Passed At"
+                type="date"
+                :error="challengeFieldError('passed_at')"
+              />
+              <BaseInput
+                v-model="challengeForm.failed_at"
+                label="Failed At"
+                type="date"
+                :error="challengeFieldError('failed_at')"
+              />
+            </div>
+
+            <div class="flex items-center justify-end gap-2">
+              <button type="button" class="btn btn-ghost px-4 py-2 text-sm" @click="closeChallengeModal">Cancel</button>
+              <button type="submit" class="btn btn-primary px-4 py-2 text-sm" :disabled="challengeSaving">
+                {{ challengeSaving ? 'Saving...' : 'Save Challenge Config' }}
               </button>
             </div>
           </form>

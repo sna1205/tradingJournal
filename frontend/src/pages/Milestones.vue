@@ -95,7 +95,7 @@ async function fetchMonthOverview() {
     total_profit: Number(data.total_profit || 0),
     total_loss: Number(data.total_loss || 0),
     profit_factor: data.profit_factor === null ? null : Number(data.profit_factor),
-    returns_percent: Number(data.returns_percent || 0),
+    return_on_equity_pct: Number(data.return_on_equity_pct || 0),
   }
 }
 

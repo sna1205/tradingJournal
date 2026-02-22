@@ -12,7 +12,7 @@ export interface AnalyticsOverview {
   total_profit: number
   total_loss: number
   profit_factor: number | null
-  returns_percent: number
+  return_on_equity_pct: number
   expectancy?: number
   average_r?: number
   recovery_factor?: number | null
@@ -76,9 +76,14 @@ export interface MetricsPayload {
   net_profit: number
   profit_factor: number | null
   expectancy: number
+  expectancy_money: number
+  expectancy_r: number
+  payoff_ratio: number | null
   recovery_factor: number | null
   average_r: number
   avg_r: number
+  avg_r_realized: number
+  avg_rr_planned: number
   sharpe_ratio: number | null
 }
 
@@ -327,7 +332,7 @@ export const useAnalyticsStore = defineStore('analytics', () => {
         total_profit: Number(overviewRes.data.total_profit || 0),
         total_loss: Number(overviewRes.data.total_loss || 0),
         profit_factor: overviewRes.data.profit_factor === null ? null : Number(overviewRes.data.profit_factor),
-        returns_percent: Number(overviewRes.data.returns_percent || 0),
+        return_on_equity_pct: Number(overviewRes.data.return_on_equity_pct || 0),
         expectancy: Number(overviewRes.data.expectancy || 0),
         average_r: Number(overviewRes.data.average_r || 0),
         recovery_factor: overviewRes.data.recovery_factor === null ? null : Number(overviewRes.data.recovery_factor),
@@ -395,9 +400,14 @@ export const useAnalyticsStore = defineStore('analytics', () => {
         net_profit: Number(metricsRes.data.net_profit || 0),
         profit_factor: metricsRes.data.profit_factor === null ? null : Number(metricsRes.data.profit_factor),
         expectancy: Number(metricsRes.data.expectancy || 0),
+        expectancy_money: Number(metricsRes.data.expectancy_money || metricsRes.data.expectancy || 0),
+        expectancy_r: Number(metricsRes.data.expectancy_r || 0),
+        payoff_ratio: metricsRes.data.payoff_ratio === null ? null : Number(metricsRes.data.payoff_ratio),
         recovery_factor: metricsRes.data.recovery_factor === null ? null : Number(metricsRes.data.recovery_factor),
         average_r: Number(metricsRes.data.average_r || 0),
         avg_r: Number(metricsRes.data.avg_r || 0),
+        avg_r_realized: Number(metricsRes.data.avg_r_realized || metricsRes.data.avg_r || metricsRes.data.average_r || 0),
+        avg_rr_planned: Number(metricsRes.data.avg_rr_planned || 0),
         sharpe_ratio: metricsRes.data.sharpe_ratio === null ? null : Number(metricsRes.data.sharpe_ratio),
       }
 
@@ -462,26 +472,6 @@ export const useAnalyticsStore = defineStore('analytics', () => {
         warnings: riskStatusRes.data.warnings || [],
       }
 
-      if (shouldUseMockAnalytics({
-        overview: overview.value,
-        dailyStats: dailyStats.value,
-        rankings: rankings.value,
-        behavioral: behavioral.value,
-      })) {
-        applyMockAnalyticsPreset({
-          overview,
-          dailyStats,
-          performanceProfile,
-          equity,
-          drawdown,
-          streaks,
-          metrics,
-          rankings,
-          monthlyHeatmap,
-          riskStatus,
-          behavioral,
-        })
-      }
     } catch (error) {
       if (!shouldUseLocalFallback(error)) {
         throw error
@@ -588,7 +578,7 @@ function applyLocalAnalyticsFallback(args: {
     .sort((left, right) => left.date.localeCompare(right.date) || left.id - right.id)
 
   if (sorted.length === 0) {
-    applyMockAnalyticsPreset(args)
+    applyEmptyAnalyticsState(args)
     return
   }
 
@@ -645,6 +635,9 @@ function applyLocalAnalyticsFallback(args: {
   const avgR = totalTrades > 0 ? Number((totalR / totalTrades).toFixed(3)) : 0
   const expectancy = totalTrades > 0 ? Number((netProfit / totalTrades).toFixed(2)) : 0
   const profitFactor = totalLossAbs > 0 ? Number((totalProfit / totalLossAbs).toFixed(2)) : null
+  const averageWin = wins > 0 ? Number((totalProfit / wins).toFixed(2)) : 0
+  const averageLoss = losses > 0 ? Number((totalLossAbs / losses).toFixed(2)) : 0
+  const payoffRatio = averageLoss > 0 ? Number((averageWin / averageLoss).toFixed(4)) : null
 
   const startingBalance = args.selectedAccountId === null
     ? args.accounts.reduce((sum, account) => sum + Number(account.starting_balance || 0), 0)
@@ -689,7 +682,7 @@ function applyLocalAnalyticsFallback(args: {
     total_profit: Number(totalProfit.toFixed(2)),
     total_loss: Number(totalLossAbs.toFixed(2)),
     profit_factor: profitFactor,
-    returns_percent: startingBalance > 0 ? Number(((netProfit / startingBalance) * 100).toFixed(2)) : 0,
+    return_on_equity_pct: startingBalance > 0 ? Number(((netProfit / startingBalance) * 100).toFixed(4)) : 0,
     expectancy,
     average_r: avgR,
     recovery_factor: maxDrawdown > 0 ? Number((netProfit / maxDrawdown).toFixed(2)) : null,
@@ -724,16 +717,21 @@ function applyLocalAnalyticsFallback(args: {
     breakeven: Math.max(0, totalTrades - wins - losses),
     win_rate: winRate,
     loss_rate: totalTrades > 0 ? Number(((losses / totalTrades) * 100).toFixed(2)) : 0,
-    average_win: wins > 0 ? Number((totalProfit / wins).toFixed(2)) : 0,
-    average_loss: losses > 0 ? Number((totalLossAbs / losses).toFixed(2)) : 0,
+    average_win: averageWin,
+    average_loss: averageLoss,
     total_winning_amount: Number(totalProfit.toFixed(2)),
     total_losing_amount: Number(totalLossAbs.toFixed(2)),
     net_profit: netProfit,
     profit_factor: profitFactor,
     expectancy,
+    expectancy_money: expectancy,
+    expectancy_r: avgR,
+    payoff_ratio: payoffRatio,
     recovery_factor: maxDrawdown > 0 ? Number((netProfit / maxDrawdown).toFixed(2)) : null,
     average_r: avgR,
     avg_r: avgR,
+    avg_r_realized: avgR,
+    avg_rr_planned: 0,
     sharpe_ratio: null,
   }
   args.rankings.value = {
@@ -848,22 +846,7 @@ function toIsoDateKey(value: string): string {
   return parsed.toISOString().slice(0, 10)
 }
 
-function shouldUseMockAnalytics(payload: {
-  overview: AnalyticsOverview | null
-  dailyStats: AnalyticsDailyRow[]
-  rankings: RankingsPayload | null
-  behavioral: BehavioralPayload | null
-}): boolean {
-  const totalTrades = Number(payload.overview?.total_trades ?? 0)
-  const noDaily = payload.dailyStats.length === 0
-  const noRankings = (payload.rankings?.sessions?.length ?? 0) === 0
-    && (payload.rankings?.strategy_models?.length ?? 0) === 0
-    && (payload.rankings?.symbols?.length ?? 0) === 0
-  const noBehavioral = (payload.behavioral?.emotion_analytics?.breakdown?.length ?? 0) === 0
-  return totalTrades === 0 && noDaily && noRankings && noBehavioral
-}
-
-function applyMockAnalyticsPreset(args: {
+function applyEmptyAnalyticsState(args: {
   overview: Ref<AnalyticsOverview | null>
   dailyStats: Ref<AnalyticsDailyRow[]>
   performanceProfile: Ref<PerformanceProfile | null>
@@ -876,129 +859,92 @@ function applyMockAnalyticsPreset(args: {
   riskStatus: Ref<RiskStatusPayload | null>
   behavioral: Ref<BehavioralPayload | null>
 }) {
-  const mockDaily: AnalyticsDailyRow[] = [
-    { date: shiftIsoDate(new Date(), -6), close_date: shiftIsoDate(new Date(), -6), total_trades: 2, profit_loss: 48, average_r: 0.62, win_rate: 50 },
-    { date: shiftIsoDate(new Date(), -5), close_date: shiftIsoDate(new Date(), -5), total_trades: 1, profit_loss: -22, average_r: -0.35, win_rate: 0 },
-    { date: shiftIsoDate(new Date(), -4), close_date: shiftIsoDate(new Date(), -4), total_trades: 2, profit_loss: 64, average_r: 0.88, win_rate: 100 },
-    { date: shiftIsoDate(new Date(), -3), close_date: shiftIsoDate(new Date(), -3), total_trades: 1, profit_loss: -15, average_r: -0.24, win_rate: 0 },
-    { date: shiftIsoDate(new Date(), -2), close_date: shiftIsoDate(new Date(), -2), total_trades: 2, profit_loss: 52, average_r: 0.71, win_rate: 50 },
-    { date: shiftIsoDate(new Date(), -1), close_date: shiftIsoDate(new Date(), -1), total_trades: 1, profit_loss: 34, average_r: 0.49, win_rate: 100 },
-    { date: shiftIsoDate(new Date(), 0), close_date: shiftIsoDate(new Date(), 0), total_trades: 1, profit_loss: 19, average_r: 0.28, win_rate: 100 },
-  ]
-
-  const startingBalance = 10000
-  const cumulativeProfit: number[] = []
-  const equityPoints: number[] = []
-  const equityTimestamps: string[] = []
-  let runningProfit = 0
-  for (const day of mockDaily) {
-    runningProfit = Number((runningProfit + Number(day.profit_loss || 0)).toFixed(2))
-    cumulativeProfit.push(runningProfit)
-    equityPoints.push(Number((startingBalance + runningProfit).toFixed(2)))
-    equityTimestamps.push(day.date)
-  }
-
-  const totalTrades = mockDaily.reduce((sum, day) => sum + Number(day.total_trades || 0), 0)
-  const netProfit = Number(cumulativeProfit[cumulativeProfit.length - 1] ?? 0)
-
   args.overview.value = {
-    total_trades: totalTrades,
-    win_rate: 62.5,
-    total_profit: 217,
-    total_loss: 37,
-    profit_factor: 5.86,
-    returns_percent: 1.8,
-    expectancy: 18,
-    average_r: 0.48,
-    recovery_factor: 3.2,
+    total_trades: 0,
+    win_rate: 0,
+    total_profit: 0,
+    total_loss: 0,
+    profit_factor: null,
+    return_on_equity_pct: 0,
+    expectancy: 0,
+    average_r: 0,
+    recovery_factor: null,
   }
-  args.dailyStats.value = mockDaily
+  args.dailyStats.value = []
   args.performanceProfile.value = {
-    win_rate: 62.5,
-    avg_rr: 0.48,
-    profit_factor: 5.86,
-    consistency_score: 7.4,
-    recovery_factor: 3.2,
+    win_rate: 0,
+    avg_rr: 0,
+    profit_factor: null,
+    consistency_score: 0,
+    recovery_factor: null,
     sharpe_ratio: null,
   }
   args.equity.value = {
-    equity_points: equityPoints,
-    cumulative_profit: cumulativeProfit,
-    equity_timestamps: equityTimestamps,
+    equity_points: [],
+    cumulative_profit: [],
+    equity_timestamps: [],
   }
   args.drawdown.value = {
-    max_drawdown: 37,
-    max_drawdown_percent: 0.36,
+    max_drawdown: 0,
+    max_drawdown_percent: 0,
     current_drawdown: 0,
     current_drawdown_percent: 0,
-    peak_balance: 10180,
-    current_equity: 10180,
+    peak_balance: 0,
+    current_equity: 0,
   }
   args.streaks.value = {
-    longest_win_streak: 3,
-    longest_loss_streak: 1,
-    current_win_streak: 2,
+    longest_win_streak: 0,
+    longest_loss_streak: 0,
+    current_win_streak: 0,
     current_loss_streak: 0,
-    current_streak: { type: 'win', length: 2 },
+    current_streak: { type: 'flat', length: 0 },
   }
   args.metrics.value = {
-    total_trades: totalTrades,
-    wins: 5,
-    losses: 3,
-    breakeven: 2,
-    win_rate: 62.5,
-    loss_rate: 30,
-    average_win: 43.4,
-    average_loss: 12.33,
-    total_winning_amount: 217,
-    total_losing_amount: 37,
-    net_profit: netProfit,
-    profit_factor: 5.86,
-    expectancy: 18,
-    recovery_factor: 3.2,
-    average_r: 0.48,
-    avg_r: 0.48,
+    total_trades: 0,
+    wins: 0,
+    losses: 0,
+    breakeven: 0,
+    win_rate: 0,
+    loss_rate: 0,
+    average_win: 0,
+    average_loss: 0,
+    total_winning_amount: 0,
+    total_losing_amount: 0,
+    net_profit: 0,
+    profit_factor: null,
+    expectancy: 0,
+    expectancy_money: 0,
+    expectancy_r: 0,
+    payoff_ratio: null,
+    recovery_factor: null,
+    average_r: 0,
+    avg_r: 0,
+    avg_r_realized: 0,
+    avg_rr_planned: 0,
     sharpe_ratio: null,
   }
   args.rankings.value = {
-    sessions: [
-      { session: 'London', total_trades: 4, win_rate: 75, profit_factor: 3.2, expectancy: 24, total_pnl: 96, avg_r: 0.62 },
-      { session: 'New York', total_trades: 3, win_rate: 66.67, profit_factor: 2.1, expectancy: 18, total_pnl: 54, avg_r: 0.44 },
-      { session: 'Asia', total_trades: 3, win_rate: 33.33, profit_factor: 0.8, expectancy: -6, total_pnl: -18, avg_r: -0.12 },
-    ],
-    strategy_models: [
-      { strategy_model: 'Liquidity Sweep', total_trades: 4, win_rate: 75, profit_factor: 3.4, expectancy: 22, total_pnl: 88, avg_r: 0.58 },
-      { strategy_model: 'Reversal', total_trades: 3, win_rate: 66.67, profit_factor: 2.0, expectancy: 14, total_pnl: 42, avg_r: 0.39 },
-      { strategy_model: 'Breakout', total_trades: 3, win_rate: 33.33, profit_factor: 0.7, expectancy: -8, total_pnl: -24, avg_r: -0.16 },
-    ],
-    symbols: [
-      { symbol: 'XAUUSD', total_trades: 4, win_rate: 75, profit_factor: 3.6, expectancy: 26, total_pnl: 104, avg_r: 0.64 },
-      { symbol: 'GBPUSD', total_trades: 3, win_rate: 66.67, profit_factor: 1.9, expectancy: 12, total_pnl: 36, avg_r: 0.33 },
-      { symbol: 'USDJPY', total_trades: 3, win_rate: 33.33, profit_factor: 0.8, expectancy: -6.67, total_pnl: -20, avg_r: -0.11 },
-    ],
+    sessions: [],
+    strategy_models: [],
+    symbols: [],
   }
   args.monthlyHeatmap.value = {
     months: [],
-    max_abs_daily_pnl: 64,
+    max_abs_daily_pnl: 0,
   }
   args.behavioral.value = {
     discipline_comparison: {
-      followed_rules: { expectancy: 0.62, win_rate: 71.4, total_pnl: 144 },
-      broke_rules: { expectancy: -0.21, win_rate: 25, total_pnl: -21 },
+      followed_rules: { expectancy: 0, win_rate: 0, total_pnl: 0 },
+      broke_rules: { expectancy: 0, win_rate: 0, total_pnl: 0 },
       insight: {
-        when_follow_rules: 'Mock insight: rule-following days held better expectancy.',
-        when_break_rules: 'Mock insight: rule breaks reduced edge consistency.',
+        when_follow_rules: 'No trade data in selected range.',
+        when_break_rules: 'No trade data in selected range.',
       },
     },
     emotion_analytics: {
-      breakdown: [
-        { emotion: 'confident', total_trades: 4, total_profit: 96 },
-        { emotion: 'calm', total_trades: 3, total_profit: 62 },
-        { emotion: 'hesitant', total_trades: 2, total_profit: -14 },
-        { emotion: 'fearful', total_trades: 1, total_profit: -20 },
-      ],
-      most_costly_emotion: 'fearful',
-      most_profitable_mindset: 'confident',
+      breakdown: [],
+      most_costly_emotion: null,
+      most_profitable_mindset: null,
     },
   }
   args.riskStatus.value = {
@@ -1006,17 +952,11 @@ function applyMockAnalyticsPreset(args: {
     loss_streak_caution: false,
     drawdown_banner: false,
     revenge_behavior_flag: false,
-    latest_risk_percent: 0.75,
-    max_risk_percent: 1.2,
+    latest_risk_percent: 0,
+    max_risk_percent: 0,
     current_loss_streak: 0,
     current_drawdown_percent: 0,
     revenge_after_loss_events: [],
     warnings: [],
   }
-}
-
-function shiftIsoDate(value: Date, dayDelta: number): string {
-  const next = new Date(value)
-  next.setDate(next.getDate() + dayDelta)
-  return next.toISOString().slice(0, 10)
 }

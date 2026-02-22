@@ -43,4 +43,9 @@ class Account extends Model
     {
         return $this->hasOne(AccountRiskPolicy::class);
     }
+
+    public function challenge(): HasOne
+    {
+        return $this->hasOne(PropChallenge::class);
+    }
 }

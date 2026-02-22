@@ -68,6 +68,11 @@ class AnalyticsEnginesTest extends TestCase
         $this->assertSame(150.0, $metrics['net_profit']);
         $this->assertSame(2.0, $metrics['profit_factor']);
         $this->assertSame(37.5, $metrics['expectancy']);
+        $this->assertSame(37.5, $metrics['expectancy_money']);
+        $this->assertSame(0.5, $metrics['expectancy_r']);
+        $this->assertSame(2.0, $metrics['payoff_ratio']);
+        $this->assertSame(0.5, $metrics['avg_r_realized']);
+        $this->assertSame(0.5, $metrics['avg_rr_planned']);
 
         $behavioral = new BehavioralAnalyticsEngine($metricsEngine, $equityEngine);
         $behavioralResult = $behavioral->calculate($trades, 10000);
@@ -78,19 +83,33 @@ class AnalyticsEnginesTest extends TestCase
         $this->assertSame('confident', $behavioralResult['emotion_analytics']['most_profitable_mindset']);
     }
 
+    public function test_metrics_realized_r_does_not_fall_back_to_planned_rr(): void
+    {
+        $trades = collect([
+            $this->trade('2026-01-01 09:00:00', 0, null, true, 'neutral', 10000, 3),
+            $this->trade('2026-01-02 09:00:00', 50, 1, true, 'neutral', 10000, 1),
+        ]);
+
+        $metrics = (new TradeMetricsEngine())->calculate($trades);
+
+        $this->assertSame(1.0, $metrics['avg_r_realized']);
+        $this->assertSame(2.0, $metrics['avg_rr_planned']);
+    }
+
     private function trade(
         string $date,
         float $profitLoss,
-        float $rMultiple = 0,
+        ?float $rMultiple = 0,
         bool $followedRules = true,
         string $emotion = 'neutral',
-        float $balanceBefore = 10000
+        float $balanceBefore = 10000,
+        ?float $plannedRr = null
     ): object {
         return (object) [
             'date' => $date,
             'profit_loss' => $profitLoss,
             'r_multiple' => $rMultiple,
-            'rr' => $rMultiple,
+            'rr' => $plannedRr ?? $rMultiple,
             'followed_rules' => $followedRules,
             'emotion' => $emotion,
             'account_balance_before_trade' => $balanceBefore,
