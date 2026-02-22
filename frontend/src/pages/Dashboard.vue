@@ -143,10 +143,14 @@ const accountScopeOptions = computed(() =>
 const selectedAccountScopeModel = computed({
   get: () => {
     if (selectedAccountId.value !== null) {
-      return String(selectedAccountId.value)
+      const selected = String(selectedAccountId.value)
+      const inScope = accountScopeOptions.value.some((option) => option.value === selected)
+      if (inScope) {
+        return selected
+      }
     }
 
-    return accountScopeOptions.value[0]?.value ?? ''
+    return ''
   },
   set: (value: string) => {
     if (!value) {
@@ -305,26 +309,6 @@ watch(
 )
 
 watch(
-  [() => effectiveDashboardMode.value, () => accounts.value, () => selectedAccountId.value],
-  () => {
-    const scoped = modeScopeAccounts.value
-    if (scoped.length === 0) {
-      if (selectedAccountId.value !== null) {
-        accountStore.setSelectedAccountId(null)
-      }
-      return
-    }
-
-    const currentId = selectedAccountId.value
-    const hasCurrent = currentId !== null && scoped.some((account) => account.id === currentId)
-    if (!hasCurrent) {
-      accountStore.setSelectedAccountId(scoped[0]!.id)
-    }
-  },
-  { immediate: true }
-)
-
-watch(
   () => calendarMonthOptions.value,
   (options) => {
     if (options.length === 0) return
@@ -345,7 +329,12 @@ async function refreshDashboardData() {
 }
 
 async function fetchChallengeStatus() {
-  if (effectiveDashboardMode.value !== 'prop' || selectedAccountId.value === null) {
+  if (
+    effectiveDashboardMode.value !== 'prop'
+    || selectedAccountId.value === null
+    || !selectedAccount.value
+    || !isPropAccountType(selectedAccount.value.account_type)
+  ) {
     challengeStatus.value = null
     challengeStatusLoading.value = false
     return
