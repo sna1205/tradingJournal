@@ -695,13 +695,20 @@ function setDashboardMode(mode: DashboardMode) {
               Custom
             </button>
           </div>
+        </div>
+      </section>
 
-          <div v-if="rangePreset === 'custom'" class="overview-custom-range">
+      <Transition name="fade">
+        <section v-if="rangePreset === 'custom'" class="panel overview-custom-dropdown">
+          <div class="overview-custom-dropdown-head">
+            <p class="kicker-label">Custom Range</p>
+          </div>
+          <div class="overview-custom-range">
             <DatePopoverField v-model="customDateFrom" size="sm" placeholder="From" />
             <DatePopoverField v-model="customDateTo" size="sm" placeholder="To" />
           </div>
-        </div>
-      </section>
+        </section>
+      </Transition>
 
       <section class="panel overview-account-strip">
         <div class="overview-account-left">

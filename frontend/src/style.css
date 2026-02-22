@@ -2116,6 +2116,22 @@ input[type='time'] {
   min-width: 18rem;
 }
 
+.overview-custom-dropdown {
+  padding: 0.82rem 0.94rem;
+}
+
+.overview-custom-dropdown-head {
+  margin-bottom: 0.56rem;
+}
+
+.overview-custom-dropdown .overview-custom-range {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(10rem, 1fr));
+  gap: 0.62rem;
+  min-width: 0;
+  max-width: 28rem;
+}
+
 .overview-custom-range .date-popover {
   margin-top: 0;
 }
@@ -2766,6 +2782,10 @@ input[type='time'] {
     width: 100%;
     min-width: 0;
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .overview-custom-dropdown .overview-custom-range {
+    max-width: none;
   }
 
   .overview-range-btn {
@@ -3466,6 +3486,10 @@ textarea:focus {
 
 .dashboard-minimal .overview-account-strip {
   padding: 0.8rem 0.9rem;
+}
+
+.dashboard-minimal .overview-custom-dropdown {
+  padding: 0.74rem 0.82rem;
 }
 
 .dashboard-minimal .overview-prop-note {
