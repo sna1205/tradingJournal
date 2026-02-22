@@ -123,6 +123,7 @@ const propAccounts = computed(() => accounts.value.filter((account) => isPropAcc
 const liveAccounts = computed(() => accounts.value.filter((account) => isLiveAccountType(account.account_type)))
 
 const hasPropAccounts = computed(() => propAccounts.value.length > 0)
+const hasLiveAccounts = computed(() => liveAccounts.value.length > 0)
 
 const modeScopeAccounts = computed(() => {
   if (effectiveDashboardMode.value === 'prop') {
@@ -161,6 +162,14 @@ const selectedAccountScopeModel = computed({
 
 const effectiveDashboardMode = computed<DashboardMode>(() => {
   if (dashboardMode.value === 'prop' && hasPropAccounts.value) {
+    return 'prop'
+  }
+
+  if (dashboardMode.value === 'live' && hasLiveAccounts.value) {
+    return 'live'
+  }
+
+  if (hasPropAccounts.value) {
     return 'prop'
   }
 
@@ -310,19 +319,6 @@ watch(
   (tab) => {
     tabMounted.value[tab] = true
   }
-)
-
-watch(
-  [() => selectedAccountId.value, () => selectedAccount.value?.account_type],
-  () => {
-    if (selectedAccountId.value === null || !selectedAccount.value) {
-      dashboardMode.value = 'live'
-      return
-    }
-
-    dashboardMode.value = isPropAccountType(selectedAccount.value.account_type) ? 'prop' : 'live'
-  },
-  { immediate: true }
 )
 
 watch(
@@ -652,6 +648,10 @@ function shortDate(value: string): string {
   })
 }
 
+function setDashboardMode(mode: DashboardMode) {
+  dashboardMode.value = mode
+}
+
 </script>
 
 <template>
@@ -676,14 +676,19 @@ function shortDate(value: string): string {
           </div>
 
           <div class="overview-tab-switch">
-            <button class="overview-tab-btn" :class="{ active: effectiveDashboardMode === 'live' }" @click="dashboardMode = 'live'">
+            <button
+              class="overview-tab-btn"
+              :class="{ active: effectiveDashboardMode === 'live' }"
+              :disabled="!hasLiveAccounts"
+              @click="setDashboardMode('live')"
+            >
               Live Journal
             </button>
             <button
               class="overview-tab-btn"
               :class="{ active: effectiveDashboardMode === 'prop' }"
               :disabled="!hasPropAccounts"
-              @click="dashboardMode = 'prop'"
+              @click="setDashboardMode('prop')"
             >
               Prop Challenge
             </button>
