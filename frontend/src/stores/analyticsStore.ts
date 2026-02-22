@@ -293,9 +293,11 @@ export const useAnalyticsStore = defineStore('analytics', () => {
     }
   })
 
-  async function fetchAnalytics(filters?: AnalyticsRangeFilters) {
+  async function fetchAnalytics(filters?: AnalyticsRangeFilters, accountIdOverride?: number | null) {
     loading.value = true
-    const params = analyticsQueryParams(accountStore.selectedAccountId, filters)
+    const activeAccountId =
+      accountIdOverride === undefined ? accountStore.selectedAccountId : accountIdOverride
+    const params = analyticsQueryParams(activeAccountId, filters)
 
     try {
       const [
@@ -481,7 +483,7 @@ export const useAnalyticsStore = defineStore('analytics', () => {
       const localTrades = queryLocalTrades({
         page: 1,
         per_page: 100000,
-        account_id: accountStore.selectedAccountId ?? undefined,
+        account_id: activeAccountId ?? undefined,
         date_from: filters?.date_from,
         date_to: filters?.date_to,
       }).data
@@ -489,7 +491,7 @@ export const useAnalyticsStore = defineStore('analytics', () => {
       applyLocalAnalyticsFallback({
         trades: localTrades,
         accounts: localAccounts,
-        selectedAccountId: accountStore.selectedAccountId,
+        selectedAccountId: activeAccountId,
         overview,
         dailyStats,
         performanceProfile,

@@ -54,7 +54,7 @@ const {
   behavioral,
   loading,
 } = storeToRefs(analyticsStore)
-const { accounts, selectedAccount, selectedAccountId } = storeToRefs(accountStore)
+const { accounts, selectedAccountId } = storeToRefs(accountStore)
 
 const activeTab = ref<DashboardTab>('overview')
 const dashboardMode = ref<DashboardMode>('live')
@@ -76,49 +76,6 @@ const challengeStatus = ref<AccountChallengeStatusPayload | null>(null)
 const challengeStatusLoading = ref(false)
 let recentTradesRefreshHandle: number | null = null
 
-const totalStartingBalance = computed(() =>
-  accounts.value.reduce((sum, account) => sum + toNumber(account.starting_balance), 0)
-)
-
-const totalCurrentBalance = computed(() =>
-  accounts.value.reduce((sum, account) => sum + toNumber(account.current_balance), 0)
-)
-
-const scopeBalance = computed(() => {
-  if (selectedAccountId.value === null) {
-    if (accounts.value.length === 0) return toNumber(drawdown.value?.current_equity)
-    return totalCurrentBalance.value
-  }
-
-  return toNumber(selectedAccount.value?.current_balance)
-})
-
-const scopeNetPnl = computed(() => {
-  if (selectedAccountId.value === null) {
-    if (accounts.value.length === 0) return toNumber(summary.value?.total_pnl)
-    return totalCurrentBalance.value - totalStartingBalance.value
-  }
-
-  const current = toNumber(selectedAccount.value?.current_balance)
-  const starting = toNumber(selectedAccount.value?.starting_balance)
-  return current - starting
-})
-
-const scopeLabel = computed(() => {
-  if (selectedAccountId.value === null) return 'All Accounts'
-  if (!selectedAccount.value) return 'Selected Account'
-  return selectedAccount.value.name
-})
-
-const scopeMetaLabel = computed(() => {
-  if (selectedAccountId.value === null) {
-    return `${accounts.value.length} accounts`
-  }
-
-  if (!selectedAccount.value) return 'Account'
-  return `${selectedAccount.value.broker} | ${selectedAccount.value.account_type}`
-})
-
 const propAccounts = computed(() => accounts.value.filter((account) => isPropAccountType(account.account_type)))
 const liveAccounts = computed(() => accounts.value.filter((account) => isLiveAccountType(account.account_type)))
 
@@ -131,6 +88,44 @@ const modeScopeAccounts = computed(() => {
   return liveAccounts.value
 })
 
+const scopedSelectedAccount = computed(() => {
+  if (selectedAccountId.value !== null) {
+    const matched = modeScopeAccounts.value.find((account) => account.id === selectedAccountId.value)
+    if (matched) {
+      return matched
+    }
+  }
+
+  return modeScopeAccounts.value[0] ?? null
+})
+
+const scopedSelectedAccountId = computed<number | null>(() => scopedSelectedAccount.value?.id ?? null)
+
+const scopeBalance = computed(() => toNumber(scopedSelectedAccount.value?.current_balance))
+
+const scopeNetPnl = computed(() => {
+  const account = scopedSelectedAccount.value
+  if (!account) return 0
+
+  const current = toNumber(account.current_balance)
+  const starting = toNumber(account.starting_balance)
+  return current - starting
+})
+
+const scopeLabel = computed(() => {
+  const account = scopedSelectedAccount.value
+  if (account) return account.name
+  return dashboardMode.value === 'live' ? 'No Live Account' : 'No Prop Account'
+})
+
+const scopeMetaLabel = computed(() => {
+  const account = scopedSelectedAccount.value
+  if (account) return `${account.broker} | ${account.account_type}`
+  return dashboardMode.value === 'live'
+    ? 'Create a personal/live account to use Live Journal.'
+    : 'Create a funded account to track Prop Challenge status.'
+})
+
 const accountScopeOptions = computed(() =>
   modeScopeAccounts.value.map((account) => ({
     label: account.name,
@@ -141,17 +136,7 @@ const accountScopeOptions = computed(() =>
 )
 
 const selectedAccountScopeModel = computed({
-  get: () => {
-    if (selectedAccountId.value !== null) {
-      const selected = String(selectedAccountId.value)
-      const inScope = accountScopeOptions.value.some((option) => option.value === selected)
-      if (inScope) {
-        return selected
-      }
-    }
-
-    return ''
-  },
+  get: () => (scopedSelectedAccountId.value === null ? '' : String(scopedSelectedAccountId.value)),
   set: (value: string) => {
     if (!value) {
       return
@@ -291,7 +276,8 @@ onBeforeUnmount(() => {
 
 watch(
   [
-    () => selectedAccountId.value,
+    () => scopedSelectedAccountId.value,
+    () => effectiveDashboardMode.value,
     () => rangePreset.value,
     () => customDateFrom.value,
     () => customDateTo.value,
@@ -321,7 +307,7 @@ watch(
 async function refreshDashboardData() {
   const filters = activeRangeFilters.value
   await Promise.allSettled([
-    analyticsStore.fetchAnalytics(filters),
+    analyticsStore.fetchAnalytics(filters, scopedSelectedAccountId.value),
     fetchChallengeStatus(),
     fetchRecentTrades(filters),
     fetchRecentMissedTrades(filters),
@@ -329,11 +315,13 @@ async function refreshDashboardData() {
 }
 
 async function fetchChallengeStatus() {
+  const account = scopedSelectedAccount.value
+  const accountId = scopedSelectedAccountId.value
   if (
     effectiveDashboardMode.value !== 'prop'
-    || selectedAccountId.value === null
-    || !selectedAccount.value
-    || !isPropAccountType(selectedAccount.value.account_type)
+    || accountId === null
+    || !account
+    || !isPropAccountType(account.account_type)
   ) {
     challengeStatus.value = null
     challengeStatusLoading.value = false
@@ -342,7 +330,7 @@ async function fetchChallengeStatus() {
 
   challengeStatusLoading.value = true
   try {
-    challengeStatus.value = await accountStore.fetchAccountChallengeStatus(selectedAccountId.value)
+    challengeStatus.value = await accountStore.fetchAccountChallengeStatus(accountId)
   } catch {
     challengeStatus.value = null
   } finally {
@@ -357,9 +345,10 @@ async function fetchRecentTrades(filters: { date_from?: string; date_to?: string
       page: 1,
       per_page: 40,
     }
+    const accountId = scopedSelectedAccountId.value
 
-    if (selectedAccountId.value !== null) {
-      params.account_id = selectedAccountId.value
+    if (accountId !== null) {
+      params.account_id = accountId
     }
 
     if (filters.date_from) {
@@ -374,8 +363,8 @@ async function fetchRecentTrades(filters: { date_from?: string; date_to?: string
     syncStatusStore.markServerHealthy()
     let rows = data.data ?? []
 
-    if (selectedAccountId.value !== null) {
-      rows = rows.filter((trade) => trade.account_id === selectedAccountId.value)
+    if (accountId !== null) {
+      rows = rows.filter((trade) => trade.account_id === accountId)
     }
 
     rows.sort((left, right) => {
@@ -394,7 +383,7 @@ async function fetchRecentTrades(filters: { date_from?: string; date_to?: string
     const local = queryLocalTrades({
       page: 1,
       per_page: 40,
-      account_id: selectedAccountId.value ?? undefined,
+      account_id: scopedSelectedAccountId.value ?? undefined,
       date_from: filters.date_from,
       date_to: filters.date_to,
     })
@@ -628,7 +617,7 @@ function setDashboardMode(mode: DashboardMode) {
 
 <template>
   <Transition name="account-switch">
-    <div :key="selectedAccountId === null ? 'portfolio' : `account-${selectedAccountId}`" class="space-y-4 dashboard-overview-shell dashboard-minimal">
+    <div :key="`mode-${effectiveDashboardMode}-${scopedSelectedAccountId === null ? 'none' : scopedSelectedAccountId}`" class="space-y-4 dashboard-overview-shell dashboard-minimal">
       <section class="overview-top-row">
         <div class="overview-heading-block">
           <h1 class="overview-heading-title">Overview</h1>
@@ -733,7 +722,7 @@ function setDashboardMode(mode: DashboardMode) {
         </div>
 
         <EmptyState
-          v-if="selectedAccountId === null"
+          v-if="scopedSelectedAccountId === null"
           title="Select an account"
           description="Challenge status is calculated per account."
           :icon="ShieldAlert"
