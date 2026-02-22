@@ -156,7 +156,7 @@ function isDeleting(imageId: number) {
           <span class="pill">Saved</span>
           <button
             type="button"
-            class="btn btn-secondary p-1.5"
+            class="btn btn-ghost is-danger p-1.5"
             :disabled="uploading || isDeleting(image.id)"
             @click.stop="emit('remove-existing', image.id)"
           >
@@ -188,7 +188,7 @@ function isDeleting(imageId: number) {
           </span>
           <button
             type="button"
-            class="btn btn-secondary p-1.5"
+            class="btn btn-ghost is-danger p-1.5"
             :disabled="uploading"
             @click.stop="emit('remove-pending', image.id)"
           >

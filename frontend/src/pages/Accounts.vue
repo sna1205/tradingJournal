@@ -374,7 +374,7 @@ onMounted(async () => {
           <button type="button" class="btn btn-ghost p-2" @click="openEditModal(row.account)">
             <Pencil class="h-4 w-4" />
           </button>
-          <button type="button" class="btn btn-secondary p-2" @click="removeAccount(row.account)">
+          <button type="button" class="btn btn-ghost is-danger p-2" @click="removeAccount(row.account)">
             <Trash2 class="h-4 w-4" />
           </button>
         </div>
@@ -382,7 +382,7 @@ onMounted(async () => {
     </section>
 
     <Transition name="fade">
-      <div v-if="modalOpen" class="fixed inset-0 z-[90] flex items-center justify-center bg-black/45 px-4 backdrop-blur-sm">
+      <div v-if="modalOpen" class="app-modal-overlay fixed inset-0 flex items-center justify-center bg-black/45 px-4 backdrop-blur-sm">
         <div class="panel w-full max-w-2xl p-6">
           <div class="section-head">
             <h3 class="section-title">{{ isEditing ? 'Edit Account' : 'New Account' }}</h3>

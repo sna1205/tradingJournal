@@ -40,7 +40,7 @@ const { confirm } = storeToRefs(uiStore)
             </button>
             <button
               class="btn px-4 py-2 text-sm"
-              :class="confirm.danger ? 'btn-secondary' : 'btn-primary'"
+              :class="confirm.danger ? 'btn-primary is-danger' : 'btn-primary'"
               @click="uiStore.closeConfirmation(true)"
             >
               {{ confirm.confirmText }}

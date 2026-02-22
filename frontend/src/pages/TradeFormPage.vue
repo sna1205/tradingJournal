@@ -134,7 +134,7 @@ const liveEstimate = computed(() => {
     }
   }
 
-  const positionUnits = lotSize * 100000
+  const positionUnits = lotSize
   const liveMove = (exit - entry) * direction
   const riskAmount = riskMove * positionUnits
   const targetPnl = rewardMove * positionUnits
@@ -153,6 +153,59 @@ const liveEstimate = computed(() => {
   }
 })
 
+type WeeklyLoopStage = 'capture' | 'triage' | 'action_plan' | 'follow_up'
+
+const notesLength = computed(() => form.notes.trim().length)
+const captureComplete = computed(() => {
+  return form.symbol.trim().length > 0
+    && toNumber(form.entry_price) > 0
+    && toNumber(form.stop_loss) > 0
+    && toNumber(form.take_profit) > 0
+})
+const triageComplete = computed(() => {
+  return form.emotion !== 'neutral'
+    || form.followed_rules === false
+    || notesLength.value >= 24
+})
+const actionPlanComplete = computed(() => /action plan|next time|i will|prevent|if setup repeats/i.test(form.notes))
+const followUpComplete = computed(() => /follow[\s-]?up|revisit|check back/i.test(form.notes))
+const weeklyLoopScore = computed(() => {
+  const checks = [captureComplete.value, triageComplete.value, actionPlanComplete.value, followUpComplete.value]
+  return checks.filter(Boolean).length * 25
+})
+const suggestedFollowUpDate = computed(() => {
+  const closeDate = parseLocalDateTime(form.date)
+  const anchor = closeDate === null ? new Date() : new Date(closeDate)
+  anchor.setDate(anchor.getDate() + 7)
+  return anchor.toISOString().slice(0, 10)
+})
+const weeklyLoopSteps = computed(() => ([
+  {
+    id: 'capture',
+    title: 'Capture',
+    helper: 'Log setup facts and screenshot context.',
+    done: captureComplete.value,
+  },
+  {
+    id: 'triage',
+    title: 'Triage',
+    helper: 'State quality, mistakes, and rule status.',
+    done: triageComplete.value,
+  },
+  {
+    id: 'action_plan',
+    title: 'Action Plan',
+    helper: 'Write exactly what to do next time.',
+    done: actionPlanComplete.value,
+  },
+  {
+    id: 'follow_up',
+    title: 'Follow-up',
+    helper: `Set review date (${suggestedFollowUpDate.value}).`,
+    done: followUpComplete.value,
+  },
+]))
+
 function toLocalDateTime(value: string) {
   const date = new Date(value)
   const offset = date.getTimezoneOffset() * 60000
@@ -169,6 +222,56 @@ function maxDateTime(a: string, b: string) {
 
 function toNumber(value: unknown) {
   return Number(value || 0)
+}
+
+function appendNotesBlock(title: string, lines: string[]) {
+  if (form.notes.includes(`${title}:`)) {
+    uiStore.toast({
+      type: 'info',
+      title: `${title} already added`,
+      message: 'Update the existing section instead of duplicating it.',
+    })
+    return
+  }
+
+  const block = `${title}:\n${lines.join('\n')}`
+  const current = form.notes.trim()
+  form.notes = current ? `${current}\n\n${block}` : block
+}
+
+function insertWeeklyLoopTemplate(stage: WeeklyLoopStage) {
+  if (stage === 'capture') {
+    appendNotesBlock('Capture', [
+      '- Setup:',
+      '- Trigger:',
+      '- Market context:',
+    ])
+    return
+  }
+
+  if (stage === 'triage') {
+    appendNotesBlock('Triage', [
+      '- Setup quality (1-5):',
+      '- Rule adherence:',
+      '- Main execution mistake:',
+    ])
+    return
+  }
+
+  if (stage === 'action_plan') {
+    appendNotesBlock('Action Plan', [
+      '- If setup repeats, I will:',
+      '- Invalidation condition:',
+      '- Risk cap:',
+    ])
+    return
+  }
+
+  appendNotesBlock('Follow-up', [
+    `- Review date: ${suggestedFollowUpDate.value}`,
+    '- Check if plan was followed:',
+    '- Adjustment:',
+  ])
 }
 
 function parseLocalDateTime(value: string): number | null {
@@ -756,37 +859,67 @@ async function loadImage(file: File): Promise<HTMLImageElement> {
             <span class="section-note">Preview only</span>
           </div>
           <p v-if="liveEstimate.error" class="field-error-text">{{ liveEstimate.error }}</p>
-          <div v-else-if="liveEstimate.ready" class="trade-preview-grid trade-preview-grid-calm">
-            <article class="trade-preview-card">
-              <p>Risk</p>
-              <strong class="negative">{{ asSignedCurrency(-Math.abs(liveEstimate.riskAmount)) }}</strong>
-            </article>
-            <article class="trade-preview-card">
-              <p>Target P/L</p>
-              <strong :class="liveEstimate.targetPnl >= 0 ? 'positive' : 'negative'">
-                {{ asSignedCurrency(liveEstimate.targetPnl) }}
-              </strong>
-            </article>
-            <article class="trade-preview-card">
+          <div v-else-if="liveEstimate.ready" class="trade-preview-stack">
+            <article class="trade-preview-primary">
               <p>Live P/L</p>
               <strong :class="liveEstimate.livePnl >= 0 ? 'positive' : 'negative'">
                 {{ asSignedCurrency(liveEstimate.livePnl) }}
               </strong>
             </article>
-            <article class="trade-preview-card">
-              <p>R @ Exit</p>
-              <strong class="value-display">{{ liveEstimate.rAtExit.toFixed(2) }}R</strong>
-            </article>
-            <article class="trade-preview-card trade-preview-card-span">
-              <p>Plan R:R</p>
-              <strong class="value-display">{{ liveEstimate.rrPlan.toFixed(2) }}R</strong>
-            </article>
+
+            <details class="trade-estimate-details">
+              <summary>Show plan details</summary>
+              <div class="trade-preview-secondary">
+                <article>
+                  <p>Risk</p>
+                  <strong class="negative">{{ asSignedCurrency(-Math.abs(liveEstimate.riskAmount)) }}</strong>
+                </article>
+                <article>
+                  <p>Target P/L</p>
+                  <strong :class="liveEstimate.targetPnl >= 0 ? 'positive' : 'negative'">
+                    {{ asSignedCurrency(liveEstimate.targetPnl) }}
+                  </strong>
+                </article>
+                <article>
+                  <p>R @ Exit</p>
+                  <strong class="value-display">{{ liveEstimate.rAtExit.toFixed(2) }}R</strong>
+                </article>
+                <article>
+                  <p>Plan R:R</p>
+                  <strong class="value-display">{{ liveEstimate.rrPlan.toFixed(2) }}R</strong>
+                </article>
+              </div>
+            </details>
           </div>
           <p v-else class="section-note">Enter Entry, Stop Loss, Take Profit, Exit Price, and Position Size to preview.</p>
         </section>
 
+        <section class="trade-form-section trade-workflow-loop">
+          <div class="section-head">
+            <p class="trade-section-title">Weekly Review Loop</p>
+            <span class="section-note">Capture -> Triage -> Action Plan -> Follow-up</span>
+          </div>
+
+          <div class="trade-loop-grid">
+            <article v-for="step in weeklyLoopSteps" :key="step.id" class="trade-loop-step" :class="{ 'is-done': step.done }">
+              <p class="trade-loop-step-title">{{ step.title }}</p>
+              <p class="section-note">{{ step.helper }}</p>
+              <span class="trade-loop-step-status">{{ step.done ? 'Ready' : 'Pending' }}</span>
+            </article>
+          </div>
+
+          <div class="trade-loop-actions">
+            <button type="button" class="chip-btn" @click="insertWeeklyLoopTemplate('capture')">Capture</button>
+            <button type="button" class="chip-btn" @click="insertWeeklyLoopTemplate('triage')">Triage</button>
+            <button type="button" class="chip-btn" @click="insertWeeklyLoopTemplate('action_plan')">Action Plan</button>
+            <button type="button" class="chip-btn" @click="insertWeeklyLoopTemplate('follow_up')">Follow-up</button>
+            <span class="section-note">Loop score: {{ weeklyLoopScore }}/100</span>
+          </div>
+        </section>
+
         <section class="trade-form-section">
           <p class="trade-section-title">Notes</p>
+          <p class="section-note">Use the loop templates to keep weekly review consistent.</p>
           <BaseInput
             v-model="form.notes"
             label="Execution Notes"

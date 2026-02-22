@@ -8,7 +8,7 @@ const { toasts } = storeToRefs(uiStore)
 </script>
 
 <template>
-  <div class="pointer-events-none fixed right-4 top-4 z-[70] flex w-full max-w-sm flex-col gap-2">
+  <div class="toast-center pointer-events-none fixed right-4 top-4 flex w-full max-w-sm flex-col gap-2">
     <TransitionGroup name="toast">
       <div
         v-for="item in toasts"

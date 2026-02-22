@@ -10,9 +10,19 @@ test.describe('UI visual states', () => {
     await expect(page.locator('[data-testid="visual-form"]')).toHaveScreenshot('form-baseline.png')
   })
 
+  test('form validation state', async ({ page }) => {
+    await page.getByTestId('toggle-errors').click()
+    await expect(page.locator('[data-testid="visual-form"]')).toHaveScreenshot('form-errors.png')
+  })
+
   test('select popover state', async ({ page }) => {
     await page.locator('[data-testid="visual-direction"] .select-trigger').click()
     await expect(page.locator('[data-testid="visual-form"]')).toHaveScreenshot('select-open.png')
+  })
+
+  test('date popover state', async ({ page }) => {
+    await page.locator('[data-testid="visual-date"] .date-trigger').click()
+    await expect(page.locator('[data-testid="visual-form"]')).toHaveScreenshot('date-open.png')
   })
 
   test('confirm modal overlay state', async ({ page }) => {

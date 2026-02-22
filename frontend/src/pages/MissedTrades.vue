@@ -1,8 +1,25 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
-import { useRouter } from 'vue-router'
-import { CalendarDays, CalendarX2, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Eye, ImageOff, Images, Pencil, Plus, Trash2, X } from 'lucide-vue-next'
+import { useRoute, useRouter } from 'vue-router'
+import {
+  AlertCircle,
+  CalendarDays,
+  CalendarX2,
+  CheckCircle2,
+  ChevronDown,
+  ChevronLeft,
+  ChevronRight,
+  ChevronUp,
+  Eye,
+  ImageOff,
+  Images,
+  MessageSquare,
+  Pencil,
+  Plus,
+  Trash2,
+  X,
+} from 'lucide-vue-next'
 import GlassPanel from '@/components/layout/GlassPanel.vue'
 import SkeletonBlock from '@/components/layout/SkeletonBlock.vue'
 import EmptyState from '@/components/layout/EmptyState.vue'
@@ -15,6 +32,7 @@ import type { MissedTrade, MissedTradeImage } from '@/types/trade'
 import { asDate } from '@/utils/format'
 
 const router = useRouter()
+const route = useRoute()
 const missedTradeStore = useMissedTradeStore()
 const uiStore = useUiStore()
 const { missedTrades, pagination, filters, loading, hasFilters } = storeToRefs(missedTradeStore)
@@ -25,52 +43,9 @@ const detailsImages = ref<MissedTradeImage[]>([])
 const detailImageIndex = ref(0)
 const activeDetailImage = computed(() => detailsImages.value[detailImageIndex.value] ?? null)
 const filtersExpanded = ref(false)
-
-const mostMissedModel = computed(() => {
-  if (missedTrades.value.length === 0) return '-'
-
-  const counter = new Map<string, number>()
-  for (const item of missedTrades.value) {
-    counter.set(item.model, (counter.get(item.model) ?? 0) + 1)
-  }
-
-  let topModel = '-'
-  let maxCount = -1
-  for (const [model, count] of counter.entries()) {
-    if (count > maxCount) {
-      maxCount = count
-      topModel = model
-    }
-  }
-
-  return topModel
-})
-
-const mostMissedSession = computed(() => {
-  const counter = new Map<string, number>()
-
-  for (const item of missedTrades.value) {
-    const tags = parseTags(item.reason)
-    const sessionTag = tags.find((tag) => tag.startsWith('session:'))
-    if (!sessionTag) continue
-
-    const session = sessionTag.replace('session:', '')
-    counter.set(session, (counter.get(session) ?? 0) + 1)
-  }
-
-  if (counter.size === 0) return '-'
-
-  let topSession = '-'
-  let maxCount = -1
-  for (const [session, count] of counter.entries()) {
-    if (count > maxCount) {
-      maxCount = count
-      topSession = session
-    }
-  }
-
-  return topSession
-})
+type MissedQuickFocus = 'all' | 'action_required' | 'no_notes' | 'no_screenshot' | 'low_tags'
+const quickFocus = ref<MissedQuickFocus>('all')
+const focusOptions: MissedQuickFocus[] = ['all', 'action_required', 'no_notes', 'no_screenshot', 'low_tags']
 
 const activeFilterPills = computed(() => {
   const pills: string[] = []
@@ -90,11 +65,135 @@ const activeFilterPills = computed(() => {
   return pills
 })
 
+const actionRequiredCount = computed(() => missedTrades.value.filter((item) => needsRecoveryAction(item)).length)
+const noNotesCount = computed(() => missedTrades.value.filter((item) => hasThinRecoveryNotes(item)).length)
+const noScreenshotCount = computed(() => missedTrades.value.filter((item) => missedImageCount(item) === 0).length)
+const lowTagCount = computed(() => missedTrades.value.filter((item) => tagCount(item) < 2).length)
+const averageRecoveryScore = computed(() => {
+  if (missedTrades.value.length === 0) return 0
+  const total = missedTrades.value.reduce((sum, item) => sum + recoveryScore(item), 0)
+  return total / missedTrades.value.length
+})
+
+const visibleMissedTrades = computed(() => {
+  if (quickFocus.value === 'action_required') {
+    return missedTrades.value.filter((item) => needsRecoveryAction(item))
+  }
+  if (quickFocus.value === 'no_notes') {
+    return missedTrades.value.filter((item) => hasThinRecoveryNotes(item))
+  }
+  if (quickFocus.value === 'no_screenshot') {
+    return missedTrades.value.filter((item) => missedImageCount(item) === 0)
+  }
+  if (quickFocus.value === 'low_tags') {
+    return missedTrades.value.filter((item) => tagCount(item) < 2)
+  }
+  return missedTrades.value
+})
+
+const detailRecoveryScore = computed(() => {
+  if (!detailsEntry.value) return 0
+  const score = recoveryScore(detailsEntry.value)
+  return detailsImages.value.length > 0 ? Math.min(100, score + 10) : score
+})
+
+const detailRecoveryChecklist = computed(() => {
+  if (!detailsEntry.value) return []
+  const notesLength = (detailsEntry.value.notes ?? '').trim().length
+  return [
+    { label: 'Setup tags captured', done: parseTags(detailsEntry.value.reason).length >= 2 },
+    { label: 'Screenshot evidence attached', done: detailsImages.value.length > 0 },
+    { label: 'Recovery notes are specific', done: notesLength >= 20 },
+    { label: 'Model is recorded', done: modelLabel(detailsEntry.value.model) !== 'No model' },
+  ]
+})
+
+const detailRecoveryAction = computed(() => {
+  if (!detailsEntry.value) return ''
+  if (parseTags(detailsEntry.value.reason).length < 2) return 'Add at least two reason tags (context + trigger).'
+  if (detailsImages.value.length === 0) return 'Attach the missed chart to preserve market context.'
+  if ((detailsEntry.value.notes ?? '').trim().length < 20) return 'Write a concrete execution plan for next occurrence.'
+  return 'Setup is documented and ready for playbook review.'
+})
+
 function parseTags(reason: string): string[] {
   return reason
     .split(',')
     .map((tag) => tag.trim())
     .filter(Boolean)
+}
+
+function tagCount(item: MissedTrade) {
+  return parseTags(item.reason).length
+}
+
+function missedImageCount(item: MissedTrade) {
+  return Number(item.images_count ?? item.images?.length ?? 0)
+}
+
+function hasThinRecoveryNotes(item: MissedTrade) {
+  return (item.notes ?? '').trim().length < 20
+}
+
+function needsRecoveryAction(item: MissedTrade) {
+  return (
+    missedImageCount(item) === 0
+    || hasThinRecoveryNotes(item)
+    || tagCount(item) < 2
+  )
+}
+
+function recoveryPriority(item: MissedTrade): 'high' | 'medium' | 'low' {
+  if (missedImageCount(item) === 0 && hasThinRecoveryNotes(item)) return 'high'
+  if (needsRecoveryAction(item)) return 'medium'
+  return 'low'
+}
+
+function recoveryPriorityLabel(item: MissedTrade) {
+  const priority = recoveryPriority(item)
+  if (priority === 'high') return 'Action now'
+  if (priority === 'medium') return 'Action soon'
+  return 'Action set'
+}
+
+function recoveryScore(item: MissedTrade) {
+  let score = 100
+  if (tagCount(item) < 2) score -= 30
+  if (missedImageCount(item) === 0) score -= 30
+  if (hasThinRecoveryNotes(item)) score -= 25
+  if (modelLabel(item.model) === 'No model') score -= 10
+  return Math.max(0, Math.min(100, score))
+}
+
+function scoreTier(score: number) {
+  if (score >= 85) return 'A'
+  if (score >= 70) return 'B'
+  if (score >= 55) return 'C'
+  return 'D'
+}
+
+function cardDate(value: string) {
+  const parsed = new Date(value)
+  if (Number.isNaN(parsed.getTime())) return '-'
+  return parsed.toLocaleDateString('en-US', {
+    month: 'short',
+    day: '2-digit',
+    year: 'numeric',
+  })
+}
+
+function modelLabel(value: string | null | undefined) {
+  const text = `${value ?? ''}`.trim()
+  return text || 'No model'
+}
+
+function normalizeQuickFocus(value: unknown): MissedQuickFocus {
+  const normalized = `${value ?? ''}`.trim().toLowerCase()
+  return focusOptions.includes(normalized as MissedQuickFocus) ? (normalized as MissedQuickFocus) : 'all'
+}
+
+function applyQuickFocusFromRoute() {
+  quickFocus.value = normalizeQuickFocus(route.query.focus)
 }
 
 function primaryImage(item: MissedTrade): MissedTradeImage | null {
@@ -258,6 +357,7 @@ onMounted(async () => {
   try {
     await missedTradeStore.fetchMissedTrades()
     filtersExpanded.value = hasFilters.value
+    applyQuickFocusFromRoute()
   } catch {
     uiStore.toast({
       type: 'error',
@@ -266,24 +366,61 @@ onMounted(async () => {
     })
   }
 })
+
+watch(
+  () => route.query.focus,
+  () => {
+    applyQuickFocusFromRoute()
+  }
+)
+
+watch(quickFocus, (value) => {
+  const current = normalizeQuickFocus(route.query.focus)
+  if (value === current) return
+
+  const query = { ...route.query }
+  if (value === 'all') {
+    delete query.focus
+  } else {
+    query.focus = value
+  }
+
+  void router.replace({ query })
+})
 </script>
 
 <template>
   <div class="space-y-5 missed-list-minimal">
-    <section class="grid grid-premium md:grid-cols-3 missed-summary-strip">
-      <GlassPanel class="metric-card metric-card-minimal">
-        <p class="kicker-label">Total Missed</p>
-        <p class="metric-value value-display">
-          <AnimatedNumber :value="pagination.total" />
+    <section class="trade-review-strip grid grid-premium md:grid-cols-5 missed-summary-strip">
+      <GlassPanel class="trade-review-kpi">
+        <p class="kicker-label">Action Required</p>
+        <p class="trade-review-kpi-value value-display negative">
+          <AnimatedNumber :value="actionRequiredCount" />
         </p>
       </GlassPanel>
-      <GlassPanel class="metric-card metric-card-minimal">
-        <p class="kicker-label">Most Missed Strategy</p>
-        <p class="metric-value positive">{{ mostMissedModel }}</p>
+      <GlassPanel class="trade-review-kpi">
+        <p class="kicker-label">No Notes</p>
+        <p class="trade-review-kpi-value value-display negative">
+          <AnimatedNumber :value="noNotesCount" />
+        </p>
       </GlassPanel>
-      <GlassPanel class="metric-card metric-card-minimal">
-        <p class="kicker-label">Most Missed Session</p>
-        <p class="metric-value">{{ mostMissedSession }}</p>
+      <GlassPanel class="trade-review-kpi">
+        <p class="kicker-label">No Screenshot</p>
+        <p class="trade-review-kpi-value value-display">
+          <AnimatedNumber :value="noScreenshotCount" />
+        </p>
+      </GlassPanel>
+      <GlassPanel class="trade-review-kpi">
+        <p class="kicker-label">Low Tag Quality</p>
+        <p class="trade-review-kpi-value value-display">
+          <AnimatedNumber :value="lowTagCount" />
+        </p>
+      </GlassPanel>
+      <GlassPanel class="trade-review-kpi">
+        <p class="kicker-label">Avg Recovery Score</p>
+        <p class="trade-review-kpi-value value-display">
+          <AnimatedNumber :value="averageRecoveryScore" :decimals="0" />
+        </p>
       </GlassPanel>
     </section>
 
@@ -339,12 +476,42 @@ onMounted(async () => {
       </Transition>
     </GlassPanel>
 
+    <GlassPanel class="trade-focus-shell">
+      <div class="trade-focus-row">
+        <span class="section-note">Recovery focus</span>
+        <div class="trade-focus-actions">
+          <button type="button" class="chip-btn" :class="{ 'is-active': quickFocus === 'all' }" @click="quickFocus = 'all'">All</button>
+          <button
+            type="button"
+            class="chip-btn"
+            :class="{ 'is-active': quickFocus === 'action_required' }"
+            @click="quickFocus = 'action_required'"
+          >
+            Action Required
+          </button>
+          <button type="button" class="chip-btn" :class="{ 'is-active': quickFocus === 'no_notes' }" @click="quickFocus = 'no_notes'">No Notes</button>
+          <button
+            type="button"
+            class="chip-btn"
+            :class="{ 'is-active': quickFocus === 'no_screenshot' }"
+            @click="quickFocus = 'no_screenshot'"
+          >
+            No Screenshot
+          </button>
+          <button type="button" class="chip-btn" :class="{ 'is-active': quickFocus === 'low_tags' }" @click="quickFocus = 'low_tags'">Low Tags</button>
+        </div>
+      </div>
+    </GlassPanel>
+
     <section class="missed-db-shell panel p-4 md:p-5">
       <div class="section-head">
         <h2 class="section-title">Missed Setup Log</h2>
         <p class="section-note">
           <span v-if="loading">Loading...</span>
-          <span v-else><AnimatedNumber :value="pagination.total" /> entries</span>
+          <span v-else>
+            <AnimatedNumber :value="visibleMissedTrades.length" /> shown
+            <template v-if="quickFocus !== 'all'"> of <AnimatedNumber :value="pagination.total" /></template>
+          </span>
         </p>
       </div>
 
@@ -353,17 +520,19 @@ onMounted(async () => {
       </div>
 
       <EmptyState
-        v-else-if="missedTrades.length === 0"
-        title="No missed setups yet"
-        description="Capture missed setups with tags to improve execution."
+        v-else-if="visibleMissedTrades.length === 0"
+        :title="quickFocus === 'all' ? 'No missed setups yet' : 'No setups in this focus'"
+        :description="quickFocus === 'all'
+          ? 'Capture missed setups with tags to improve execution.'
+          : 'Switch focus or widen filters to continue recovery review.'"
         :icon="CalendarX2"
         cta-text="Quick Add"
         @cta="openQuickAddPage"
       />
 
       <div v-else class="missed-db-grid">
-        <article v-for="item in missedTrades" :key="item.id" class="trade-db-card missed-log-row">
-          <button type="button" class="trade-db-media" @click="openDetails(item)">
+        <article v-for="item in visibleMissedTrades" :key="item.id" class="trade-db-card trade-card-reference missed-card-reference">
+          <button type="button" class="trade-db-media trade-card-reference-media" @click="openDetails(item)">
             <img
               v-if="primaryImage(item)"
               :src="primaryImage(item)?.thumbnail_url || primaryImage(item)?.image_url"
@@ -372,56 +541,62 @@ onMounted(async () => {
               class="trade-db-image"
               @error="setImageFallback($event, primaryImage(item)?.image_url)"
             />
-            <div v-else class="trade-db-empty-chart">
-              <ImageOff class="h-7 w-7" />
+            <div v-else class="trade-db-empty-chart trade-card-reference-empty">
+              <ImageOff class="h-6 w-6" />
               <span>No screenshot</span>
             </div>
-            <span class="pill trade-log-image-count">
-              <Images class="h-3.5 w-3.5" />
-              {{ item.images_count ?? item.images?.length ?? 0 }}
-            </span>
           </button>
 
-          <div class="missed-log-row-content">
-            <div class="missed-log-row-head">
-              <div class="missed-log-row-id">
+          <div class="trade-card-reference-body">
+            <div class="trade-card-reference-head">
+              <div class="trade-card-reference-id">
                 <h3>{{ item.pair }}</h3>
                 <span class="pill missed-status-pill">Missed</span>
+                <span class="trade-card-priority" :class="`is-${recoveryPriority(item)}`">{{ recoveryPriorityLabel(item) }}</span>
               </div>
-              <span class="missed-log-row-date">
-                <CalendarDays class="h-3.5 w-3.5" />
-                {{ asDate(item.date) }}
+              <p class="trade-card-reference-side value-display">{{ tagCount(item) }} tags</p>
+            </div>
+
+            <div class="trade-card-reference-meta">
+              <span>{{ cardDate(item.date) }}</span>
+              <span class="trade-card-reference-dot">&middot;</span>
+              <span class="trade-card-reference-model">{{ modelLabel(item.model) }}</span>
+              <span class="trade-card-reference-dot">&middot;</span>
+              <span class="trade-card-reference-images">
+                <Images class="h-3.5 w-3.5" />
+                {{ item.images_count ?? item.images?.length ?? 0 }}
               </span>
             </div>
 
-            <div class="missed-db-meta">
-              <span>{{ item.model }}</span>
+            <div class="trade-card-score-row">
+              <span class="section-note">Recovery Score</span>
+              <span class="trade-card-score-pill value-display" :class="`tier-${scoreTier(recoveryScore(item)).toLowerCase()}`">
+                {{ scoreTier(recoveryScore(item)) }} - {{ recoveryScore(item) }}
+              </span>
             </div>
 
-            <div class="missed-log-row-metrics">
-              <article class="trade-log-metric">
-                <p class="kicker-label">Tags</p>
-                <strong class="value-display">{{ parseTags(item.reason).length }}</strong>
-              </article>
-              <article class="trade-log-metric">
-                <p class="kicker-label">Images</p>
-                <strong class="value-display">{{ item.images_count ?? item.images?.length ?? 0 }}</strong>
-              </article>
-            </div>
+            <div class="trade-card-reference-footer">
+              <button type="button" class="trade-card-reference-review" @click="openDetails(item)">
+                <MessageSquare class="h-4 w-4" />
+                Review
+              </button>
 
-            <div class="trade-db-actions">
-              <button class="btn btn-ghost px-3 py-1.5 text-xs" @click="openDetails(item)">
-                <Eye class="h-3.5 w-3.5" />
-                View
-              </button>
-              <button class="btn btn-ghost px-3 py-1.5 text-xs" @click="openEditPage(item)">
-                <Pencil class="h-3.5 w-3.5" />
-                Edit
-              </button>
-              <button class="btn btn-secondary px-3 py-1.5 text-xs" @click="remove(item.id)">
-                <Trash2 class="h-3.5 w-3.5" />
-                Delete
-              </button>
+              <div class="trade-card-reference-actions">
+                <button type="button" class="trade-card-reference-icon-btn" @click="openDetails(item)" aria-label="View missed trade">
+                  <Eye class="h-4 w-4" />
+                </button>
+                <button type="button" class="trade-card-reference-icon-btn" @click="openEditPage(item)" aria-label="Edit missed trade">
+                  <Pencil class="h-4 w-4" />
+                </button>
+                <button
+                  type="button"
+                  class="trade-card-reference-icon-btn is-danger"
+                  @click="remove(item.id)"
+                  aria-label="Delete missed trade"
+                >
+                  <Trash2 class="h-4 w-4" />
+                </button>
+              </div>
             </div>
           </div>
         </article>
@@ -444,7 +619,7 @@ onMounted(async () => {
 
     <Transition name="fade">
       <div v-if="detailsOpen" class="trade-details-modal-backdrop" @click.self="closeDetails">
-        <div class="trade-details-modal panel p-5">
+        <div class="trade-details-modal panel p-4">
           <div class="section-head">
             <h3 class="section-title">Missed Setup Details</h3>
             <button type="button" class="btn btn-ghost p-2" @click="closeDetails">
@@ -457,59 +632,91 @@ onMounted(async () => {
           </div>
 
           <div v-else-if="detailsEntry" class="trade-simple-detail">
-            <div class="trade-simple-image-shell">
-              <img
-                v-if="activeDetailImage"
-                :src="activeDetailImage.image_url"
-                alt="Missed setup screenshot"
-                class="trade-simple-image"
-                @error="setImageFallback($event, activeDetailImage.image_url)"
-              />
-              <div v-else class="trade-simple-image-empty">
-                <ImageOff class="h-8 w-8" />
-                <span>No screenshot uploaded</span>
+            <section class="trade-modal-summary">
+              <div class="trade-modal-summary-main">
+                <h4>{{ detailsEntry.pair }}</h4>
+                <span class="pill missed-status-pill">Missed</span>
               </div>
 
-              <button
-                v-if="detailsImages.length > 1"
-                type="button"
-                class="trade-simple-nav left"
-                @click="previousDetailImage"
-              >
-                <ChevronLeft class="h-4 w-4" />
-              </button>
-              <button
-                v-if="detailsImages.length > 1"
-                type="button"
-                class="trade-simple-nav right"
-                @click="nextDetailImage"
-              >
-                <ChevronRight class="h-4 w-4" />
-              </button>
+              <div class="trade-modal-summary-meta">
+                <span class="trade-modal-summary-date">
+                  <CalendarDays class="h-3.5 w-3.5" />
+                  {{ asDate(detailsEntry.date) }}
+                </span>
+                <span class="trade-modal-summary-stat value-display">{{ parseTags(detailsEntry.reason).length }} tags</span>
+              </div>
+            </section>
+
+            <div class="trade-simple-layout">
+              <div class="trade-simple-image-shell">
+                <img
+                  v-if="activeDetailImage"
+                  :src="activeDetailImage.image_url"
+                  alt="Missed setup screenshot"
+                  class="trade-simple-image"
+                  @error="setImageFallback($event, activeDetailImage.image_url)"
+                />
+                <div v-else class="trade-simple-image-empty">
+                  <ImageOff class="h-6 w-6" />
+                  <span>No screenshot</span>
+                </div>
+
+                <button
+                  v-if="detailsImages.length > 1"
+                  type="button"
+                  class="trade-simple-nav left"
+                  @click="previousDetailImage"
+                >
+                  <ChevronLeft class="h-4 w-4" />
+                </button>
+                <button
+                  v-if="detailsImages.length > 1"
+                  type="button"
+                  class="trade-simple-nav right"
+                  @click="nextDetailImage"
+                >
+                  <ChevronRight class="h-4 w-4" />
+                </button>
+              </div>
+
+              <div class="trade-simple-metrics">
+                <article>
+                  <span>Model</span>
+                  <strong>{{ detailsEntry.model }}</strong>
+                </article>
+                <article>
+                  <span>Images</span>
+                  <strong class="value-display">{{ detailsImages.length }}</strong>
+                </article>
+                <article class="trade-simple-note">
+                  <span>Tags</span>
+                  <strong>{{ parseTags(detailsEntry.reason).join(', ') || '-' }}</strong>
+                </article>
+                <article class="trade-simple-note">
+                  <span>Notes</span>
+                  <strong>{{ detailsEntry.notes || '-' }}</strong>
+                </article>
+              </div>
             </div>
 
-            <div class="trade-simple-metrics">
-              <article>
-                <span>Pair</span>
-                <strong>{{ detailsEntry.pair }}</strong>
-              </article>
-              <article>
-                <span>Model</span>
-                <strong>{{ detailsEntry.model }}</strong>
-              </article>
-              <article>
-                <span>Date</span>
-                <strong>{{ asDate(detailsEntry.date) }}</strong>
-              </article>
-              <article>
-                <span>Tags</span>
-                <strong>{{ parseTags(detailsEntry.reason).join(', ') || '-' }}</strong>
-              </article>
-              <article class="trade-simple-note">
-                <span>Notes</span>
-                <strong>{{ detailsEntry.notes || '-' }}</strong>
-              </article>
-            </div>
+            <section class="trade-review-checklist panel">
+              <div class="trade-review-checklist-head">
+                <p class="kicker-label">Recovery Checklist</p>
+                <span class="trade-card-score-pill value-display" :class="`tier-${scoreTier(detailRecoveryScore).toLowerCase()}`">
+                  {{ scoreTier(detailRecoveryScore) }} - {{ detailRecoveryScore }}
+                </span>
+              </div>
+
+              <div class="trade-review-checklist-list">
+                <p v-for="item in detailRecoveryChecklist" :key="item.label" :class="item.done ? 'is-done' : 'is-pending'">
+                  <CheckCircle2 v-if="item.done" class="h-4 w-4" />
+                  <AlertCircle v-else class="h-4 w-4" />
+                  <span>{{ item.label }}</span>
+                </p>
+              </div>
+
+              <p class="section-note">{{ detailRecoveryAction }}</p>
+            </section>
           </div>
         </div>
       </div>

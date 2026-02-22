@@ -1,10 +1,12 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import {
+  AlertCircle,
   BarChart3,
   CalendarDays,
+  CheckCircle2,
   ChevronDown,
   ChevronUp,
   ChevronLeft,
@@ -12,6 +14,7 @@ import {
   Eye,
   ImageOff,
   Images,
+  MessageSquare,
   Pencil,
   Plus,
   Trash2,
@@ -30,6 +33,7 @@ import { asDate, asSignedCurrency } from '@/utils/format'
 import type { Trade, TradeImage } from '@/types/trade'
 
 const router = useRouter()
+const route = useRoute()
 const tradeStore = useTradeStore()
 const uiStore = useUiStore()
 const { trades, pagination, filters, loading, hasFilters } = storeToRefs(tradeStore)
@@ -41,6 +45,9 @@ const detailsImages = ref<TradeImage[]>([])
 const detailImageIndex = ref(0)
 const activeDetailImage = computed(() => detailsImages.value[detailImageIndex.value] ?? null)
 const filtersExpanded = ref(false)
+type TradeQuickFocus = 'all' | 'needs_review' | 'rule_breaks' | 'losers' | 'no_screenshot'
+const quickFocus = ref<TradeQuickFocus>('all')
+const focusOptions: TradeQuickFocus[] = ['all', 'needs_review', 'rule_breaks', 'losers', 'no_screenshot']
 
 const filterDirectionOptions = [
   { label: 'All', value: '' },
@@ -64,6 +71,57 @@ const activeFilterPills = computed(() => {
   else if (to) pills.push(`To: ${to}`)
 
   return pills
+})
+
+const needsReviewCount = computed(() => trades.value.filter((trade) => needsReview(trade)).length)
+const ruleBreakCount = computed(() => trades.value.filter((trade) => !trade.followed_rules).length)
+const losersCount = computed(() => trades.value.filter((trade) => Number(trade.profit_loss) < 0).length)
+const noScreenshotCount = computed(() => trades.value.filter((trade) => imageCount(trade) === 0).length)
+const averageReviewScore = computed(() => {
+  if (trades.value.length === 0) return 0
+  const total = trades.value.reduce((sum, trade) => sum + reviewQualityScore(trade), 0)
+  return total / trades.value.length
+})
+
+const visibleTrades = computed(() => {
+  if (quickFocus.value === 'needs_review') {
+    return trades.value.filter((trade) => needsReview(trade))
+  }
+  if (quickFocus.value === 'rule_breaks') {
+    return trades.value.filter((trade) => !trade.followed_rules)
+  }
+  if (quickFocus.value === 'losers') {
+    return trades.value.filter((trade) => Number(trade.profit_loss) < 0)
+  }
+  if (quickFocus.value === 'no_screenshot') {
+    return trades.value.filter((trade) => imageCount(trade) === 0)
+  }
+  return trades.value
+})
+
+const detailReviewScore = computed(() => {
+  if (!detailsTrade.value) return 0
+  const score = reviewQualityScore(detailsTrade.value)
+  return detailsImages.value.length > 0 ? Math.min(100, score + 10) : score
+})
+
+const detailChecklist = computed(() => {
+  if (!detailsTrade.value) return []
+  const noteLength = (detailsTrade.value.notes ?? '').trim().length
+  return [
+    { label: 'Screenshot captured', done: detailsImages.value.length > 0 },
+    { label: 'Execution note is specific', done: noteLength >= 25 },
+    { label: 'Rule adherence marked', done: detailsTrade.value.followed_rules },
+    { label: 'Emotion tagged', done: detailsTrade.value.emotion !== 'neutral' },
+  ]
+})
+
+const detailNextAction = computed(() => {
+  if (!detailsTrade.value) return ''
+  if (detailsImages.value.length === 0) return 'Attach a chart screenshot before weekly review.'
+  if ((detailsTrade.value.notes ?? '').trim().length < 25) return 'Add why entry and exit decisions were made.'
+  if (!detailsTrade.value.followed_rules) return 'Document the rule break and prevention plan.'
+  return 'Execution is review-ready for weekly process scoring.'
 })
 
 function toLocalDateString(value: Date) {
@@ -188,6 +246,82 @@ function rMultipleLabel(trade: Trade) {
   return `${sign}${value.toFixed(2)}R`
 }
 
+function imageCount(trade: Trade) {
+  return Number(trade.images_count ?? trade.images?.length ?? 0)
+}
+
+function hasThinNotes(trade: Trade) {
+  return (trade.notes ?? '').trim().length < 25
+}
+
+function needsReview(trade: Trade) {
+  return (
+    imageCount(trade) === 0
+    || hasThinNotes(trade)
+    || !trade.followed_rules
+    || Number(trade.profit_loss) < 0
+  )
+}
+
+function reviewPriority(trade: Trade): 'high' | 'medium' | 'low' {
+  const negativePnl = Number(trade.profit_loss) < 0
+  if ((!trade.followed_rules && negativePnl) || (imageCount(trade) === 0 && hasThinNotes(trade))) {
+    return 'high'
+  }
+  if (needsReview(trade)) {
+    return 'medium'
+  }
+  return 'low'
+}
+
+function reviewQualityScore(trade: Trade) {
+  let score = 100
+  if (imageCount(trade) === 0) score -= 35
+  if (hasThinNotes(trade)) score -= 25
+  if (!trade.followed_rules) score -= 20
+  if (trade.emotion === 'neutral') score -= 10
+  if (Number(trade.profit_loss) >= 0 && trade.followed_rules) score += 5
+  return Math.max(0, Math.min(100, score))
+}
+
+function reviewTier(score: number) {
+  if (score >= 85) return 'A'
+  if (score >= 70) return 'B'
+  if (score >= 55) return 'C'
+  return 'D'
+}
+
+function priorityLabel(trade: Trade) {
+  const priority = reviewPriority(trade)
+  if (priority === 'high') return 'Review first'
+  if (priority === 'medium') return 'Review soon'
+  return 'Review done'
+}
+
+function cardDate(value: string) {
+  const parsed = new Date(value)
+  if (Number.isNaN(parsed.getTime())) return '-'
+  return parsed.toLocaleDateString('en-US', {
+    month: 'short',
+    day: '2-digit',
+    year: 'numeric',
+  })
+}
+
+function modelLabel(value: string | null | undefined) {
+  const text = `${value ?? ''}`.trim()
+  return text || 'No model'
+}
+
+function normalizeQuickFocus(value: unknown): TradeQuickFocus {
+  const normalized = `${value ?? ''}`.trim().toLowerCase()
+  return focusOptions.includes(normalized as TradeQuickFocus) ? (normalized as TradeQuickFocus) : 'all'
+}
+
+function applyQuickFocusFromRoute() {
+  quickFocus.value = normalizeQuickFocus(route.query.focus)
+}
+
 async function removeTrade(id: number) {
   const confirmed = await uiStore.askConfirmation({
     title: 'Delete execution entry?',
@@ -242,6 +376,7 @@ onMounted(async () => {
   try {
     await tradeStore.fetchTrades()
     filtersExpanded.value = hasFilters.value
+    applyQuickFocusFromRoute()
   } catch {
     uiStore.toast({
       type: 'error',
@@ -249,6 +384,27 @@ onMounted(async () => {
       message: 'Please refresh and try again.',
     })
   }
+})
+
+watch(
+  () => route.query.focus,
+  () => {
+    applyQuickFocusFromRoute()
+  }
+)
+
+watch(quickFocus, (value) => {
+  const current = normalizeQuickFocus(route.query.focus)
+  if (value === current) return
+
+  const query = { ...route.query }
+  if (value === 'all') {
+    delete query.focus
+  } else {
+    query.focus = value
+  }
+
+  void router.replace({ query })
 })
 </script>
 
@@ -316,12 +472,82 @@ onMounted(async () => {
       </Transition>
     </GlassPanel>
 
+    <section class="trade-review-strip grid grid-premium md:grid-cols-5">
+      <GlassPanel class="trade-review-kpi">
+        <p class="kicker-label">Needs Review</p>
+        <p class="trade-review-kpi-value value-display negative">
+          <AnimatedNumber :value="needsReviewCount" />
+        </p>
+      </GlassPanel>
+      <GlassPanel class="trade-review-kpi">
+        <p class="kicker-label">Rule Breaks</p>
+        <p class="trade-review-kpi-value value-display negative">
+          <AnimatedNumber :value="ruleBreakCount" />
+        </p>
+      </GlassPanel>
+      <GlassPanel class="trade-review-kpi">
+        <p class="kicker-label">Losing Trades</p>
+        <p class="trade-review-kpi-value value-display negative">
+          <AnimatedNumber :value="losersCount" />
+        </p>
+      </GlassPanel>
+      <GlassPanel class="trade-review-kpi">
+        <p class="kicker-label">No Screenshot</p>
+        <p class="trade-review-kpi-value value-display">
+          <AnimatedNumber :value="noScreenshotCount" />
+        </p>
+      </GlassPanel>
+      <GlassPanel class="trade-review-kpi">
+        <p class="kicker-label">Avg Review Score</p>
+        <p class="trade-review-kpi-value value-display">
+          <AnimatedNumber :value="averageReviewScore" :decimals="0" />
+        </p>
+      </GlassPanel>
+    </section>
+
+    <GlassPanel class="trade-focus-shell">
+      <div class="trade-focus-row">
+        <span class="section-note">Review focus</span>
+        <div class="trade-focus-actions">
+          <button type="button" class="chip-btn" :class="{ 'is-active': quickFocus === 'all' }" @click="quickFocus = 'all'">All</button>
+          <button
+            type="button"
+            class="chip-btn"
+            :class="{ 'is-active': quickFocus === 'needs_review' }"
+            @click="quickFocus = 'needs_review'"
+          >
+            Needs Review
+          </button>
+          <button
+            type="button"
+            class="chip-btn"
+            :class="{ 'is-active': quickFocus === 'rule_breaks' }"
+            @click="quickFocus = 'rule_breaks'"
+          >
+            Rule Breaks
+          </button>
+          <button type="button" class="chip-btn" :class="{ 'is-active': quickFocus === 'losers' }" @click="quickFocus = 'losers'">Losers</button>
+          <button
+            type="button"
+            class="chip-btn"
+            :class="{ 'is-active': quickFocus === 'no_screenshot' }"
+            @click="quickFocus = 'no_screenshot'"
+          >
+            No Screenshot
+          </button>
+        </div>
+      </div>
+    </GlassPanel>
+
     <section class="trade-db-shell panel p-4 md:p-5">
       <div class="section-head">
         <h2 class="section-title">Trade Log</h2>
         <p class="section-note">
           <span v-if="loading">Loading...</span>
-          <span v-else><AnimatedNumber :value="pagination.total" /> trades</span>
+          <span v-else>
+            <AnimatedNumber :value="visibleTrades.length" /> shown
+            <template v-if="quickFocus !== 'all'"> of <AnimatedNumber :value="pagination.total" /></template>
+          </span>
         </p>
       </div>
 
@@ -330,17 +556,19 @@ onMounted(async () => {
       </div>
 
       <EmptyState
-        v-else-if="trades.length === 0"
-        title="No executions found"
-        description="Log your first execution or adjust filters to see results."
+        v-else-if="visibleTrades.length === 0"
+        :title="quickFocus === 'all' ? 'No executions found' : 'No trades in this focus'"
+        :description="quickFocus === 'all'
+          ? 'Log your first execution or adjust filters to see results.'
+          : 'Switch focus or broaden filters to keep review moving.'"
         :icon="BarChart3"
         cta-text="Quick Add"
         @cta="openQuickAddPage"
       />
 
       <div v-else class="trade-db-grid">
-        <article v-for="trade in trades" :key="trade.id" class="trade-db-card trade-log-row">
-          <button type="button" class="trade-db-media" @click="openDetails(trade)">
+        <article v-for="trade in visibleTrades" :key="trade.id" class="trade-db-card trade-card-reference">
+          <button type="button" class="trade-db-media trade-card-reference-media" @click="openDetails(trade)">
             <img
               v-if="primaryTradeImage(trade)"
               :src="primaryTradeImage(trade)?.thumbnail_url || primaryTradeImage(trade)?.image_url"
@@ -349,54 +577,64 @@ onMounted(async () => {
               class="trade-db-image"
               @error="setImageFallback($event, primaryTradeImage(trade)?.image_url)"
             />
-            <div v-else class="trade-db-empty-chart">
-              <ImageOff class="h-8 w-8" />
-              <span>No chart uploaded</span>
+            <div v-else class="trade-db-empty-chart trade-card-reference-empty">
+              <ImageOff class="h-6 w-6" />
+              <span>No screenshot</span>
             </div>
-            <span class="pill trade-log-image-count">
-              <Images class="h-3.5 w-3.5" />
-              {{ trade.images_count ?? trade.images?.length ?? 0 }}
-            </span>
           </button>
 
-          <div class="trade-log-row-content">
-            <div class="trade-log-row-head">
-              <div class="trade-log-row-id">
+          <div class="trade-card-reference-body">
+            <div class="trade-card-reference-head">
+              <div class="trade-card-reference-id">
                 <h3>{{ trade.pair }}</h3>
                 <span :class="directionClass(trade)">{{ directionLabel(trade) }}</span>
+                <span class="trade-card-priority" :class="`is-${reviewPriority(trade)}`">{{ priorityLabel(trade) }}</span>
               </div>
-              <span class="trade-log-row-date">
-                <CalendarDays class="h-3.5 w-3.5" />
-                {{ asDate(trade.date) }}
+              <p class="trade-card-reference-pnl value-display" :class="Number(trade.profit_loss) >= 0 ? 'positive' : 'negative'">
+                {{ asSignedCurrency(trade.profit_loss) }}
+              </p>
+            </div>
+
+            <div class="trade-card-reference-meta">
+              <span>{{ cardDate(trade.date) }}</span>
+              <span class="trade-card-reference-dot">&middot;</span>
+              <span class="trade-card-reference-model">{{ modelLabel(trade.model) }}</span>
+              <span class="trade-card-reference-dot">&middot;</span>
+              <span class="trade-card-reference-images">
+                <Images class="h-3.5 w-3.5" />
+                {{ imageCount(trade) }}
               </span>
             </div>
 
-            <div class="trade-log-row-metrics">
-              <article class="trade-log-metric">
-                <p class="kicker-label">P/L</p>
-                <strong class="trade-db-pnl" :class="Number(trade.profit_loss) >= 0 ? 'positive' : 'negative'">
-                  {{ asSignedCurrency(trade.profit_loss) }}
-                </strong>
-              </article>
-              <article class="trade-log-metric">
-                <p class="kicker-label">R</p>
-                <strong class="value-display">{{ rMultipleLabel(trade) }}</strong>
-              </article>
+            <div class="trade-card-score-row">
+              <span class="section-note">Review Score</span>
+              <span class="trade-card-score-pill value-display" :class="`tier-${reviewTier(reviewQualityScore(trade)).toLowerCase()}`">
+                {{ reviewTier(reviewQualityScore(trade)) }} - {{ reviewQualityScore(trade) }}
+              </span>
             </div>
 
-            <div class="trade-db-actions">
-              <button type="button" class="btn btn-ghost px-3 py-1.5 text-xs" @click="openDetails(trade)">
-                <Eye class="h-3.5 w-3.5" />
-                View
+            <div class="trade-card-reference-footer">
+              <button type="button" class="trade-card-reference-review" @click="openDetails(trade)">
+                <MessageSquare class="h-4 w-4" />
+                Review
               </button>
-              <button type="button" class="btn btn-ghost px-3 py-1.5 text-xs" @click="openEditPage(trade)">
-                <Pencil class="h-3.5 w-3.5" />
-                Edit
-              </button>
-              <button type="button" class="btn btn-secondary px-3 py-1.5 text-xs" @click="removeTrade(trade.id)">
-                <Trash2 class="h-3.5 w-3.5" />
-                Delete
-              </button>
+
+              <div class="trade-card-reference-actions">
+                <button type="button" class="trade-card-reference-icon-btn" @click="openDetails(trade)" aria-label="View trade">
+                  <Eye class="h-4 w-4" />
+                </button>
+                <button type="button" class="trade-card-reference-icon-btn" @click="openEditPage(trade)" aria-label="Edit trade">
+                  <Pencil class="h-4 w-4" />
+                </button>
+                <button
+                  type="button"
+                  class="trade-card-reference-icon-btn is-danger"
+                  @click="removeTrade(trade.id)"
+                  aria-label="Delete trade"
+                >
+                  <Trash2 class="h-4 w-4" />
+                </button>
+              </div>
             </div>
           </div>
         </article>
@@ -415,7 +653,7 @@ onMounted(async () => {
 
     <Transition name="fade">
       <div v-if="detailsOpen" class="trade-details-modal-backdrop" @click.self="closeDetails">
-        <div class="trade-details-modal panel p-5">
+        <div class="trade-details-modal panel p-4">
           <div class="section-head">
             <h3 class="section-title">Execution Details</h3>
             <button type="button" class="btn btn-ghost p-2" @click="closeDetails">
@@ -428,61 +666,98 @@ onMounted(async () => {
           </div>
 
           <div v-else-if="detailsTrade" class="trade-simple-detail">
-            <div class="trade-simple-image-shell">
-              <img
-                v-if="activeDetailImage"
-                :src="activeDetailImage.image_url"
-                alt="Execution screenshot"
-                class="trade-simple-image"
-                @error="setImageFallback($event, activeDetailImage.image_url)"
-              />
-              <div v-else class="trade-simple-image-empty">
-                <ImageOff class="h-8 w-8" />
-                <span>No screenshot uploaded</span>
+            <section class="trade-modal-summary">
+              <div class="trade-modal-summary-main">
+                <h4>{{ detailsTrade.pair }}</h4>
+                <span :class="directionClass(detailsTrade)">{{ directionLabel(detailsTrade) }}</span>
               </div>
 
-              <button
-                v-if="detailsImages.length > 1"
-                type="button"
-                class="trade-simple-nav left"
-                @click="previousDetailImage"
-              >
-                <ChevronLeft class="h-4 w-4" />
-              </button>
-              <button
-                v-if="detailsImages.length > 1"
-                type="button"
-                class="trade-simple-nav right"
-                @click="nextDetailImage"
-              >
-                <ChevronRight class="h-4 w-4" />
-              </button>
+              <div class="trade-modal-summary-meta">
+                <span class="trade-modal-summary-date">
+                  <CalendarDays class="h-3.5 w-3.5" />
+                  {{ asDate(detailsTrade.date) }}
+                </span>
+                <span class="trade-modal-summary-stat" :class="Number(detailsTrade.profit_loss) >= 0 ? 'positive' : 'negative'">
+                  {{ asSignedCurrency(detailsTrade.profit_loss) }}
+                </span>
+                <span class="trade-modal-summary-stat value-display">{{ rMultipleLabel(detailsTrade) }}</span>
+              </div>
+            </section>
+
+            <div class="trade-simple-layout">
+              <div class="trade-simple-image-shell">
+                <img
+                  v-if="activeDetailImage"
+                  :src="activeDetailImage.image_url"
+                  alt="Execution screenshot"
+                  class="trade-simple-image"
+                  @error="setImageFallback($event, activeDetailImage.image_url)"
+                />
+                <div v-else class="trade-simple-image-empty">
+                  <ImageOff class="h-6 w-6" />
+                  <span>No screenshot</span>
+                </div>
+
+                <button
+                  v-if="detailsImages.length > 1"
+                  type="button"
+                  class="trade-simple-nav left"
+                  @click="previousDetailImage"
+                >
+                  <ChevronLeft class="h-4 w-4" />
+                </button>
+                <button
+                  v-if="detailsImages.length > 1"
+                  type="button"
+                  class="trade-simple-nav right"
+                  @click="nextDetailImage"
+                >
+                  <ChevronRight class="h-4 w-4" />
+                </button>
+              </div>
+
+              <div class="trade-simple-metrics">
+                <article>
+                  <span>Session</span>
+                  <strong>{{ detailsTrade.session || '-' }}</strong>
+                </article>
+                <article>
+                  <span>Model</span>
+                  <strong>{{ detailsTrade.model || '-' }}</strong>
+                </article>
+                <article>
+                  <span>Emotion</span>
+                  <strong>{{ detailsTrade.emotion || '-' }}</strong>
+                </article>
+                <article>
+                  <span>Images</span>
+                  <strong class="value-display">{{ detailsImages.length }}</strong>
+                </article>
+                <article class="trade-simple-note">
+                  <span>Notes</span>
+                  <strong>{{ detailsTrade.notes || '-' }}</strong>
+                </article>
+              </div>
             </div>
 
-            <div class="trade-simple-metrics">
-              <article>
-                <span>Symbol</span>
-                <strong>{{ detailsTrade.pair }}</strong>
-              </article>
-              <article>
-                <span>Direction</span>
-                <strong>{{ directionLabel(detailsTrade) }}</strong>
-              </article>
-              <article>
-                <span>Date</span>
-                <strong>{{ asDate(detailsTrade.date) }}</strong>
-              </article>
-              <article>
-                <span>Total P/L</span>
-                <strong :class="Number(detailsTrade.profit_loss) >= 0 ? 'positive' : 'negative'">
-                  {{ asSignedCurrency(detailsTrade.profit_loss) }}
-                </strong>
-              </article>
-              <article>
-                <span>R</span>
-                <strong class="value-display">{{ rMultipleLabel(detailsTrade) }}</strong>
-              </article>
-            </div>
+            <section class="trade-review-checklist panel">
+              <div class="trade-review-checklist-head">
+                <p class="kicker-label">Review Checklist</p>
+                <span class="trade-card-score-pill value-display" :class="`tier-${reviewTier(detailReviewScore).toLowerCase()}`">
+                  {{ reviewTier(detailReviewScore) }} - {{ detailReviewScore }}
+                </span>
+              </div>
+
+              <div class="trade-review-checklist-list">
+                <p v-for="item in detailChecklist" :key="item.label" :class="item.done ? 'is-done' : 'is-pending'">
+                  <CheckCircle2 v-if="item.done" class="h-4 w-4" />
+                  <AlertCircle v-else class="h-4 w-4" />
+                  <span>{{ item.label }}</span>
+                </p>
+              </div>
+
+              <p class="section-note">{{ detailNextAction }}</p>
+            </section>
           </div>
         </div>
       </div>

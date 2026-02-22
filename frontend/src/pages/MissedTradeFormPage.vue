@@ -78,6 +78,54 @@ const isEditMode = computed(() => missedTradeId.value !== null)
 const pageTitle = computed(() => (isEditMode.value ? 'Edit Missed Setup' : 'Log Missed Setup'))
 const missedSetupFormId = 'missed-setup-form'
 
+type WeeklyLoopStage = 'capture' | 'triage' | 'action_plan' | 'follow_up'
+
+const notesLength = computed(() => form.notes.trim().length)
+const captureComplete = computed(() => {
+  return form.pair.trim().length > 0
+    && form.model.trim().length > 0
+    && form.tags.length > 0
+})
+const triageComplete = computed(() => form.tags.length >= 2 || notesLength.value >= 24)
+const actionPlanComplete = computed(() => /action plan|next time|i will|prevent|if setup repeats/i.test(form.notes))
+const followUpComplete = computed(() => /follow[\s-]?up|revisit|check back/i.test(form.notes))
+const weeklyLoopScore = computed(() => {
+  const checks = [captureComplete.value, triageComplete.value, actionPlanComplete.value, followUpComplete.value]
+  return checks.filter(Boolean).length * 25
+})
+const suggestedFollowUpDate = computed(() => {
+  const tradeDate = parseLocalDateTime(form.date)
+  const anchor = tradeDate === null ? new Date() : new Date(tradeDate)
+  anchor.setDate(anchor.getDate() + 7)
+  return anchor.toISOString().slice(0, 10)
+})
+const weeklyLoopSteps = computed(() => ([
+  {
+    id: 'capture',
+    title: 'Capture',
+    helper: 'Record setup, model, and base reason.',
+    done: captureComplete.value,
+  },
+  {
+    id: 'triage',
+    title: 'Triage',
+    helper: 'Break down why the setup was missed.',
+    done: triageComplete.value,
+  },
+  {
+    id: 'action_plan',
+    title: 'Action Plan',
+    helper: 'Define trigger and execution response.',
+    done: actionPlanComplete.value,
+  },
+  {
+    id: 'follow_up',
+    title: 'Follow-up',
+    helper: `Set review date (${suggestedFollowUpDate.value}).`,
+    done: followUpComplete.value,
+  },
+]))
+
 const formErrors = computed<Record<string, string>>(() => {
   const errors: Record<string, string> = {}
 
@@ -136,6 +184,56 @@ function parseLocalDateTime(value: string): number | null {
   if (!value) return null
   const timestamp = new Date(value).getTime()
   return Number.isNaN(timestamp) ? null : timestamp
+}
+
+function appendNotesBlock(title: string, lines: string[]) {
+  if (form.notes.includes(`${title}:`)) {
+    uiStore.toast({
+      type: 'info',
+      title: `${title} already added`,
+      message: 'Update the existing section instead of duplicating it.',
+    })
+    return
+  }
+
+  const block = `${title}:\n${lines.join('\n')}`
+  const current = form.notes.trim()
+  form.notes = current ? `${current}\n\n${block}` : block
+}
+
+function insertWeeklyLoopTemplate(stage: WeeklyLoopStage) {
+  if (stage === 'capture') {
+    appendNotesBlock('Capture', [
+      '- Setup context:',
+      '- Miss trigger:',
+      '- What happened in real-time:',
+    ])
+    return
+  }
+
+  if (stage === 'triage') {
+    appendNotesBlock('Triage', [
+      '- Primary reason:',
+      '- Controllable vs uncontrollable:',
+      '- Confidence to execute next time (1-5):',
+    ])
+    return
+  }
+
+  if (stage === 'action_plan') {
+    appendNotesBlock('Action Plan', [
+      '- Trigger checklist:',
+      '- Alert or pre-session prep:',
+      '- Execution rule for next occurrence:',
+    ])
+    return
+  }
+
+  appendNotesBlock('Follow-up', [
+    `- Review date: ${suggestedFollowUpDate.value}`,
+    '- Did I execute when setup repeated?:',
+    '- Adjustment:',
+  ])
 }
 
 function toggleTag(tag: string) {
@@ -621,8 +719,32 @@ async function loadImage(file: File): Promise<HTMLImageElement> {
           </div>
         </section>
 
+        <section class="trade-form-section trade-workflow-loop">
+          <div class="section-head">
+            <p class="trade-section-title">Weekly Review Loop</p>
+            <span class="section-note">Capture -> Triage -> Action Plan -> Follow-up</span>
+          </div>
+
+          <div class="trade-loop-grid">
+            <article v-for="step in weeklyLoopSteps" :key="step.id" class="trade-loop-step" :class="{ 'is-done': step.done }">
+              <p class="trade-loop-step-title">{{ step.title }}</p>
+              <p class="section-note">{{ step.helper }}</p>
+              <span class="trade-loop-step-status">{{ step.done ? 'Ready' : 'Pending' }}</span>
+            </article>
+          </div>
+
+          <div class="trade-loop-actions">
+            <button type="button" class="chip-btn" @click="insertWeeklyLoopTemplate('capture')">Capture</button>
+            <button type="button" class="chip-btn" @click="insertWeeklyLoopTemplate('triage')">Triage</button>
+            <button type="button" class="chip-btn" @click="insertWeeklyLoopTemplate('action_plan')">Action Plan</button>
+            <button type="button" class="chip-btn" @click="insertWeeklyLoopTemplate('follow_up')">Follow-up</button>
+            <span class="section-note">Loop score: {{ weeklyLoopScore }}/100</span>
+          </div>
+        </section>
+
         <section class="trade-form-section">
           <p class="trade-section-title">Notes</p>
+          <p class="section-note">Use the loop templates to keep missed-setup review actionable.</p>
           <BaseInput v-model="form.notes" label="Notes" multiline :rows="4" />
         </section>
 
@@ -649,7 +771,7 @@ async function loadImage(file: File): Promise<HTMLImageElement> {
           <button
             v-if="isEditMode"
             type="button"
-            class="btn btn-secondary inline-flex items-center gap-2 px-4 py-2 text-sm"
+            class="btn btn-ghost is-danger inline-flex items-center gap-2 px-4 py-2 text-sm"
             @click="deleteEntry"
           >
             <Trash2 class="h-4 w-4" />

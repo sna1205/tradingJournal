@@ -111,7 +111,7 @@ class TradeController extends Controller
 
     public function update(Request $request, Trade $trade)
     {
-        $payload = $this->validatePayload($request, true);
+        $payload = $this->validatePayload($request, true, $trade);
         $payload = $this->applyDefaults($payload, true);
 
         if (array_key_exists('pair', $payload)) {
@@ -152,7 +152,7 @@ class TradeController extends Controller
     /**
      * @throws ValidationException
      */
-    private function validatePayload(Request $request, bool $isUpdate = false): array
+    private function validatePayload(Request $request, bool $isUpdate = false, ?Trade $existingTrade = null): array
     {
         $input = $this->normalizedInput($request->all());
         $request->replace($input);
@@ -161,7 +161,7 @@ class TradeController extends Controller
 
         $validator = Validator::make($input, [
             'account_id' => [$required, 'integer', 'exists:accounts,id'],
-            'pair' => [$required, 'string', 'max:30'],
+            'pair' => [$required, 'string', 'max:30', 'regex:/^[A-Z0-9._\/-]+$/i'],
             'direction' => [$required, 'in:buy,sell'],
             'entry_price' => [$required, 'numeric', 'gt:0'],
             'stop_loss' => [$required, 'numeric', 'gt:0'],
@@ -172,7 +172,7 @@ class TradeController extends Controller
             'emotion' => [$required, Rule::in(self::EMOTION_VALUES)],
             'session' => ['sometimes', 'string', 'max:60'],
             'model' => ['sometimes', 'string', 'max:120'],
-            'date' => ['sometimes', 'date'],
+            'date' => [$required, 'date'],
             'notes' => ['nullable', 'string', 'max:5000'],
 
             // Calculated fields must come from server-side engine only.
@@ -188,16 +188,42 @@ class TradeController extends Controller
             'account_balance_after_trade' => ['prohibited'],
         ]);
 
-        $validator->after(function ($validator) use ($input, $isUpdate): void {
-            $hasEntry = array_key_exists('entry_price', $input);
-            $hasStop = array_key_exists('stop_loss', $input);
-            $hasTake = array_key_exists('take_profit', $input);
+        $validator->after(function ($validator) use ($input, $isUpdate, $existingTrade): void {
+            $entryPrice = $this->readFloatFromInputOrTrade($input, 'entry_price', $existingTrade);
+            $stopLoss = $this->readFloatFromInputOrTrade($input, 'stop_loss', $existingTrade);
+            $takeProfit = $this->readFloatFromInputOrTrade($input, 'take_profit', $existingTrade);
+            $direction = (string) ($input['direction'] ?? ($existingTrade?->direction ?? ''));
 
-            if ($hasEntry && $hasStop && (float) $input['entry_price'] === (float) $input['stop_loss']) {
+            if ($entryPrice !== null && $stopLoss !== null && $entryPrice === $stopLoss) {
                 $validator->errors()->add('stop_loss', 'Stop loss must differ from entry price.');
             }
-            if ($hasEntry && $hasTake && (float) $input['entry_price'] === (float) $input['take_profit']) {
+            if ($entryPrice !== null && $takeProfit !== null && $entryPrice === $takeProfit) {
                 $validator->errors()->add('take_profit', 'Take profit must differ from entry price.');
+            }
+
+            if ($entryPrice !== null && $stopLoss !== null && $takeProfit !== null && in_array($direction, ['buy', 'sell'], true)) {
+                if ($direction === 'buy') {
+                    if ($stopLoss >= $entryPrice) {
+                        $validator->errors()->add('stop_loss', 'For buy trades, stop loss must be below entry.');
+                    }
+                    if ($takeProfit <= $entryPrice) {
+                        $validator->errors()->add('take_profit', 'For buy trades, take profit must be above entry.');
+                    }
+                } else {
+                    if ($stopLoss <= $entryPrice) {
+                        $validator->errors()->add('stop_loss', 'For sell trades, stop loss must be above entry.');
+                    }
+                    if ($takeProfit >= $entryPrice) {
+                        $validator->errors()->add('take_profit', 'For sell trades, take profit must be below entry.');
+                    }
+                }
+            }
+
+            if (array_key_exists('date', $input)) {
+                $timestamp = strtotime((string) $input['date']);
+                if ($timestamp !== false && $timestamp > now()->addMinute()->getTimestamp()) {
+                    $validator->errors()->add('date', 'Close date cannot be in the future.');
+                }
             }
 
             if (!$isUpdate && !array_key_exists('pair', $input)) {
@@ -226,6 +252,19 @@ class TradeController extends Controller
         unset($input['symbol'], $input['position_size'], $input['strategy_model'], $input['close_date']);
 
         return $input;
+    }
+
+    private function readFloatFromInputOrTrade(array $input, string $field, ?Trade $trade): ?float
+    {
+        if (array_key_exists($field, $input) && is_numeric($input[$field])) {
+            return (float) $input[$field];
+        }
+
+        if ($trade !== null && isset($trade->{$field}) && is_numeric((string) $trade->{$field})) {
+            return (float) $trade->{$field};
+        }
+
+        return null;
     }
 
     private function normalizedFilterInputs(array $input): array

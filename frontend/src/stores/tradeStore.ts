@@ -13,6 +13,7 @@ import {
 } from '@/services/localFallback'
 import { useAnalyticsStore } from '@/stores/analyticsStore'
 import { useAccountStore } from '@/stores/accountStore'
+import { useSyncStatusStore } from '@/stores/syncStatusStore'
 import type { Paginated, Trade, TradeDetailsResponse, TradeEmotion, TradeImage } from '@/types/trade'
 
 interface TradeFilters {
@@ -51,6 +52,7 @@ const defaultFilters: TradeFilters = {
 export const useTradeStore = defineStore('trades', () => {
   const analyticsStore = useAnalyticsStore()
   const accountStore = useAccountStore()
+  const syncStatusStore = useSyncStatusStore()
   const trades = ref<Trade[]>([])
   const pagination = ref({
     current_page: 1,
@@ -77,6 +79,7 @@ export const useTradeStore = defineStore('trades', () => {
           ...filters.value,
         },
       })
+      syncStatusStore.markServerHealthy()
 
       trades.value = data.data
       pagination.value.current_page = data.current_page
@@ -88,6 +91,7 @@ export const useTradeStore = defineStore('trades', () => {
         error.value = 'Failed to load trades.'
         throw err
       }
+      syncStatusStore.markLocalFallback('trades')
 
       const local = queryLocalTrades({
         page,
@@ -124,6 +128,7 @@ export const useTradeStore = defineStore('trades', () => {
 
     try {
       const { data } = await api.post<Trade>('/trades', payload)
+      syncStatusStore.markServerHealthy()
 
       if (shouldOptimisticallyInsert) {
         const index = trades.value.findIndex((trade) => trade.id === tempId)
@@ -141,6 +146,7 @@ export const useTradeStore = defineStore('trades', () => {
       return data
     } catch (err) {
       if (shouldUseLocalFallback(err)) {
+        syncStatusStore.markLocalFallback('trades')
         const local = createLocalTrade(payload)
         if (shouldOptimisticallyInsert) {
           const index = trades.value.findIndex((trade) => trade.id === tempId)
@@ -203,6 +209,7 @@ export const useTradeStore = defineStore('trades', () => {
 
     try {
       const { data } = await api.put<Trade>(`/trades/${id}`, payload)
+      syncStatusStore.markServerHealthy()
       if (index >= 0) {
         trades.value[index] = data
       } else {
@@ -214,6 +221,7 @@ export const useTradeStore = defineStore('trades', () => {
       return data
     } catch (err) {
       if (shouldUseLocalFallback(err)) {
+        syncStatusStore.markLocalFallback('trades')
         const data = updateLocalTrade(id, payload)
         if (index >= 0) {
           trades.value[index] = data
@@ -245,6 +253,7 @@ export const useTradeStore = defineStore('trades', () => {
 
     try {
       await api.delete(`/trades/${id}`)
+      syncStatusStore.markServerHealthy()
 
       if (trades.value.length === 0 && pagination.value.current_page > 1) {
         await fetchTrades(pagination.value.current_page - 1)
@@ -254,6 +263,7 @@ export const useTradeStore = defineStore('trades', () => {
       void accountStore.fetchAccounts().catch(() => undefined)
     } catch (err) {
       if (shouldUseLocalFallback(err)) {
+        syncStatusStore.markLocalFallback('trades')
         deleteLocalTrade(id)
         await fetchTrades(Math.max(1, pagination.value.current_page))
         void analyticsStore.fetchAnalytics().catch(() => undefined)
@@ -272,11 +282,13 @@ export const useTradeStore = defineStore('trades', () => {
   async function fetchTradeDetails(id: number): Promise<TradeDetailsResponse> {
     try {
       const { data } = await api.get<TradeDetailsResponse>(`/trades/${id}`)
+      syncStatusStore.markServerHealthy()
       return data
     } catch (error) {
       if (!shouldUseLocalFallback(error)) {
         throw error
       }
+      syncStatusStore.markLocalFallback('trade-details')
       return fetchLocalTradeDetails(id)
     }
   }
@@ -306,12 +318,14 @@ export const useTradeStore = defineStore('trades', () => {
           onProgress(Math.max(0, Math.min(100, value)))
         },
       })
+      syncStatusStore.markServerHealthy()
 
       return data
     } catch (error) {
       if (!shouldUseLocalFallback(error)) {
         throw error
       }
+      syncStatusStore.markLocalFallback('trade-images')
 
       onProgress?.(100)
       return await uploadLocalTradeImage(tradeId, file, sortOrder)
@@ -321,10 +335,12 @@ export const useTradeStore = defineStore('trades', () => {
   async function deleteTradeImage(imageId: number) {
     try {
       await api.delete(`/trade-images/${imageId}`)
+      syncStatusStore.markServerHealthy()
     } catch (error) {
       if (!shouldUseLocalFallback(error)) {
         throw error
       }
+      syncStatusStore.markLocalFallback('trade-images')
       deleteLocalTradeImage(imageId)
     }
   }

@@ -10,6 +10,7 @@ import {
   shouldUseLocalFallback,
   updateLocalAccount,
 } from '@/services/localFallback'
+import { useSyncStatusStore } from '@/stores/syncStatusStore'
 import type { Account, AccountAnalyticsPayload, AccountEquityPayload, AccountType } from '@/types/account'
 
 export interface AccountPayload {
@@ -25,6 +26,7 @@ export interface AccountPayload {
 const SELECTED_ACCOUNT_KEY = 'analytics_selected_account_id'
 
 export const useAccountStore = defineStore('accounts', () => {
+  const syncStatusStore = useSyncStatusStore()
   const accounts = ref<Account[]>([])
   const loading = ref(false)
   const saving = ref(false)
@@ -51,6 +53,7 @@ export const useAccountStore = defineStore('accounts', () => {
       const { data } = await api.get<unknown>('/accounts', {
         params,
       })
+      syncStatusStore.markServerHealthy()
       accounts.value = Array.isArray(data) ? (data as Account[]) : []
 
       if (selectedAccountId.value !== null) {
@@ -64,6 +67,7 @@ export const useAccountStore = defineStore('accounts', () => {
         throw error
       }
 
+      syncStatusStore.markLocalFallback('accounts')
       accounts.value = fetchLocalAccounts(params)
       if (selectedAccountId.value !== null) {
         const exists = accounts.value.some((account) => account.id === selectedAccountId.value)
@@ -80,6 +84,7 @@ export const useAccountStore = defineStore('accounts', () => {
     saving.value = true
     try {
       const { data } = await api.post<Account>('/accounts', payload)
+      syncStatusStore.markServerHealthy()
       accounts.value = [data, ...accounts.value]
       return data
     } catch (error) {
@@ -87,6 +92,7 @@ export const useAccountStore = defineStore('accounts', () => {
         throw error
       }
 
+      syncStatusStore.markLocalFallback('accounts')
       const data = createLocalAccount(payload)
       accounts.value = fetchLocalAccounts()
       return data
@@ -99,6 +105,7 @@ export const useAccountStore = defineStore('accounts', () => {
     saving.value = true
     try {
       const { data } = await api.put<Account>(`/accounts/${id}`, payload)
+      syncStatusStore.markServerHealthy()
       const index = accounts.value.findIndex((account) => account.id === id)
       if (index >= 0) {
         accounts.value[index] = data
@@ -111,6 +118,7 @@ export const useAccountStore = defineStore('accounts', () => {
         throw error
       }
 
+      syncStatusStore.markLocalFallback('accounts')
       const data = updateLocalAccount(id, payload)
       accounts.value = fetchLocalAccounts()
       return data
@@ -123,6 +131,7 @@ export const useAccountStore = defineStore('accounts', () => {
     saving.value = true
     try {
       await api.delete(`/accounts/${id}`)
+      syncStatusStore.markServerHealthy()
       accounts.value = accounts.value.filter((account) => account.id !== id)
       if (selectedAccountId.value === id) {
         setSelectedAccountId(null)
@@ -132,6 +141,7 @@ export const useAccountStore = defineStore('accounts', () => {
         throw error
       }
 
+      syncStatusStore.markLocalFallback('accounts')
       deleteLocalAccount(id)
       accounts.value = fetchLocalAccounts()
       if (selectedAccountId.value === id) {
@@ -145,11 +155,13 @@ export const useAccountStore = defineStore('accounts', () => {
   async function fetchAccountEquity(id: number) {
     try {
       const { data } = await api.get<AccountEquityPayload>(`/accounts/${id}/equity`)
+      syncStatusStore.markServerHealthy()
       return data
     } catch (error) {
       if (!shouldUseLocalFallback(error)) {
         throw error
       }
+      syncStatusStore.markLocalFallback('account-equity')
       return fetchLocalAccountEquity(id)
     }
   }
@@ -157,11 +169,13 @@ export const useAccountStore = defineStore('accounts', () => {
   async function fetchAccountAnalytics(id: number) {
     try {
       const { data } = await api.get<AccountAnalyticsPayload>(`/accounts/${id}/analytics`)
+      syncStatusStore.markServerHealthy()
       return data
     } catch (error) {
       if (!shouldUseLocalFallback(error)) {
         throw error
       }
+      syncStatusStore.markLocalFallback('account-analytics')
       return fetchLocalAccountAnalytics(id)
     }
   }

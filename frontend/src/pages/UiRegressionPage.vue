@@ -11,6 +11,7 @@ const pair = ref('EURUSD')
 const direction = ref('buy')
 const timestamp = ref('2026-02-22T10:35')
 const notes = ref('Example execution notes')
+const showErrors = ref(false)
 const directionOptions = [
   { label: 'Long', value: 'buy' },
   { label: 'Short', value: 'sell' },
@@ -24,6 +25,10 @@ function openConfirmation() {
     danger: true,
   })
 }
+
+function toggleErrors() {
+  showErrors.value = !showErrors.value
+}
 </script>
 
 <template>
@@ -34,7 +39,7 @@ function openConfirmation() {
         <p class="section-note">Used only for UI screenshot tests.</p>
       </div>
       <div class="grid grid-premium md:grid-cols-2">
-        <div data-testid="visual-pair"><BaseInput v-model="pair" label="Pair" /></div>
+        <div data-testid="visual-pair"><BaseInput v-model="pair" label="Pair" :error="showErrors ? 'Pair is required.' : ''" /></div>
         <div data-testid="visual-direction">
           <BaseSelect
             v-model="direction"
@@ -42,13 +47,17 @@ function openConfirmation() {
             searchable
             :options="directionOptions"
             search-placeholder="Search direction..."
+            :error="showErrors ? 'Direction is required.' : ''"
           />
         </div>
-        <div data-testid="visual-date"><BaseDateTime v-model="timestamp" label="Date" /></div>
+        <div data-testid="visual-date"><BaseDateTime v-model="timestamp" label="Date" :error="showErrors ? 'Date is required.' : ''" /></div>
         <div data-testid="visual-notes"><BaseInput v-model="notes" label="Notes" multiline :rows="3" /></div>
       </div>
       <div class="mt-4 flex items-center gap-2">
         <button type="button" class="btn btn-primary px-4 py-2 text-sm">Save</button>
+        <button type="button" class="btn btn-ghost px-4 py-2 text-sm" data-testid="toggle-errors" @click="toggleErrors">
+          {{ showErrors ? 'Hide Errors' : 'Show Errors' }}
+        </button>
         <button type="button" class="btn btn-secondary px-4 py-2 text-sm" data-testid="open-confirm" @click="openConfirmation">
           Open Confirm Modal
         </button>

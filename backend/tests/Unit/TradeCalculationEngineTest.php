@@ -26,7 +26,7 @@ class TradeCalculationEngineTest extends TestCase
         $this->assertSame(0.02, $result['monetary_risk']);
         $this->assertSame(0.06, $result['monetary_reward']);
         $this->assertSame(0.04, $result['profit_loss']);
-        $this->assertSame(2.0, $result['rr']);
+        $this->assertSame(3.0, $result['rr']);
         $this->assertSame(2.0, $result['r_multiple']);
         $this->assertSame(0.0004, $result['risk_percent']);
         $this->assertSame(5000.04, $result['account_balance_after_trade']);
@@ -51,7 +51,7 @@ class TradeCalculationEngineTest extends TestCase
         $this->assertSame(15.0, $result['monetary_risk']);
         $this->assertSame(45.0, $result['monetary_reward']);
         $this->assertSame(-12.0, $result['profit_loss']);
-        $this->assertSame(-0.8, $result['rr']);
+        $this->assertSame(3.0, $result['rr']);
         $this->assertSame(-0.8, $result['r_multiple']);
         $this->assertSame(0.15, $result['risk_percent']);
         $this->assertSame(9988.0, $result['account_balance_after_trade']);

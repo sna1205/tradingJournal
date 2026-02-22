@@ -11,6 +11,7 @@ import {
   updateLocalMissedTrade,
   uploadLocalMissedTradeImage,
 } from '@/services/localFallback'
+import { useSyncStatusStore } from '@/stores/syncStatusStore'
 import type { MissedTrade, MissedTradeImage, Paginated } from '@/types/trade'
 
 interface MissedTradeFilters {
@@ -38,6 +39,7 @@ const defaultFilters: MissedTradeFilters = {
 }
 
 export const useMissedTradeStore = defineStore('missed-trades', () => {
+  const syncStatusStore = useSyncStatusStore()
   const missedTrades = ref<MissedTrade[]>([])
   const pagination = ref({
     current_page: 1,
@@ -63,6 +65,7 @@ export const useMissedTradeStore = defineStore('missed-trades', () => {
           ...filters.value,
         },
       })
+      syncStatusStore.markServerHealthy()
 
       missedTrades.value = data.data
       pagination.value.current_page = data.current_page
@@ -74,6 +77,7 @@ export const useMissedTradeStore = defineStore('missed-trades', () => {
         error.value = 'Failed to load missed trades.'
         throw err
       }
+      syncStatusStore.markLocalFallback('missed-trades')
 
       const local = queryLocalMissedTrades({
         page,
@@ -99,12 +103,14 @@ export const useMissedTradeStore = defineStore('missed-trades', () => {
     saving.value = true
     try {
       const { data } = await api.post<MissedTrade>('/missed-trades', payload)
+      syncStatusStore.markServerHealthy()
       await fetchMissedTrades(1)
       return data
     } catch (error) {
       if (!shouldUseLocalFallback(error)) {
         throw error
       }
+      syncStatusStore.markLocalFallback('missed-trades')
 
       const data = createLocalMissedTrade(payload)
       await fetchMissedTrades(1)
@@ -118,12 +124,14 @@ export const useMissedTradeStore = defineStore('missed-trades', () => {
     saving.value = true
     try {
       const { data } = await api.put<MissedTrade>(`/missed-trades/${id}`, payload)
+      syncStatusStore.markServerHealthy()
       await fetchMissedTrades(pagination.value.current_page)
       return data
     } catch (error) {
       if (!shouldUseLocalFallback(error)) {
         throw error
       }
+      syncStatusStore.markLocalFallback('missed-trades')
 
       const data = updateLocalMissedTrade(id, payload)
       await fetchMissedTrades(pagination.value.current_page)
@@ -136,10 +144,12 @@ export const useMissedTradeStore = defineStore('missed-trades', () => {
   async function deleteMissedTrade(id: number) {
     try {
       await api.delete(`/missed-trades/${id}`)
+      syncStatusStore.markServerHealthy()
     } catch (error) {
       if (!shouldUseLocalFallback(error)) {
         throw error
       }
+      syncStatusStore.markLocalFallback('missed-trades')
       deleteLocalMissedTrade(id)
     }
     await fetchMissedTrades(pagination.value.current_page)
@@ -148,11 +158,13 @@ export const useMissedTradeStore = defineStore('missed-trades', () => {
   async function fetchMissedTrade(id: number) {
     try {
       const { data } = await api.get<MissedTrade>(`/missed-trades/${id}`)
+      syncStatusStore.markServerHealthy()
       return data
     } catch (error) {
       if (!shouldUseLocalFallback(error)) {
         throw error
       }
+      syncStatusStore.markLocalFallback('missed-trade-details')
       return fetchLocalMissedTrade(id)
     }
   }
@@ -182,12 +194,14 @@ export const useMissedTradeStore = defineStore('missed-trades', () => {
           onProgress(Math.max(0, Math.min(100, value)))
         },
       })
+      syncStatusStore.markServerHealthy()
 
       return data
     } catch (error) {
       if (!shouldUseLocalFallback(error)) {
         throw error
       }
+      syncStatusStore.markLocalFallback('missed-trade-images')
       onProgress?.(100)
       return await uploadLocalMissedTradeImage(missedTradeId, file, sortOrder)
     }
@@ -196,10 +210,12 @@ export const useMissedTradeStore = defineStore('missed-trades', () => {
   async function deleteMissedTradeImage(imageId: number) {
     try {
       await api.delete(`/missed-trade-images/${imageId}`)
+      syncStatusStore.markServerHealthy()
     } catch (error) {
       if (!shouldUseLocalFallback(error)) {
         throw error
       }
+      syncStatusStore.markLocalFallback('missed-trade-images')
       deleteLocalMissedTradeImage(imageId)
     }
   }

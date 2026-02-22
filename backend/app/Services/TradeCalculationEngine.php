@@ -28,7 +28,7 @@ class TradeCalculationEngine
      */
     public function calculate(array $input): array
     {
-        $direction = (string) $input['direction'];
+        $direction = strtolower((string) $input['direction']);
         $entryPrice = (float) $input['entry_price'];
         $stopLoss = (float) $input['stop_loss'];
         $takeProfit = (float) $input['take_profit'];
@@ -46,6 +46,9 @@ class TradeCalculationEngine
             : ($actualExitPrice - $entryPrice);
         $profitLoss = $profitPerUnit * $positionSize;
 
+        $rr = $monetaryRisk > 0
+            ? $monetaryReward / $monetaryRisk
+            : 0.0;
         $rMultiple = $monetaryRisk > 0
             ? $profitLoss / $monetaryRisk
             : 0.0;
@@ -60,7 +63,7 @@ class TradeCalculationEngine
             'monetary_risk' => round($monetaryRisk, 6),
             'monetary_reward' => round($monetaryReward, 6),
             'profit_loss' => round($profitLoss, 2),
-            'rr' => round($rMultiple, 2),
+            'rr' => round($rr, 2),
             'r_multiple' => round($rMultiple, 4),
             'risk_percent' => round($riskPercent, 4),
             'account_balance_after_trade' => round($accountBalanceAfterTrade, 2),

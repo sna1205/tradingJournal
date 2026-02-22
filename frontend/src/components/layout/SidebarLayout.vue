@@ -12,13 +12,17 @@ import {
   Sun,
   WalletCards,
   ChevronRight,
+  WifiOff,
 } from 'lucide-vue-next'
 import { storeToRefs } from 'pinia'
 import { useUiStore } from '@/stores/uiStore'
+import { useSyncStatusStore } from '@/stores/syncStatusStore'
 
 const route = useRoute()
 const uiStore = useUiStore()
+const syncStatusStore = useSyncStatusStore()
 const { theme } = storeToRefs(uiStore)
+const { isFallbackMode, lastFallbackContext } = storeToRefs(syncStatusStore)
 
 interface NavItem {
   label: string
@@ -155,6 +159,11 @@ const useCompactHero = computed(() => compactHeroRoutes.has(route.path))
           </div>
 
           <div class="topbar-actions">
+            <span v-if="isFallbackMode" class="topbar-fallback-indicator" title="Using local fallback data">
+              <WifiOff class="h-3.5 w-3.5" />
+              Local mode
+              <small v-if="lastFallbackContext">{{ lastFallbackContext }}</small>
+            </span>
             <button class="btn btn-ghost inline-flex items-center gap-2 px-3 py-2 text-sm" @click="uiStore.toggleTheme()">
               <Sun v-if="theme === 'dark'" class="h-4 w-4" />
               <Moon v-else class="h-4 w-4" />

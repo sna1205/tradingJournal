@@ -1,78 +1,112 @@
 :root {
+  --font-display: 'Space Grotesk', 'Segoe UI', sans-serif;
+  --font-body: 'Manrope', 'Segoe UI', sans-serif;
+
+  --fs-12: 0.75rem;
+  --fs-13: 0.8125rem;
+  --fs-14: 0.875rem;
+  --fs-16: 1rem;
+  --fs-20: 1.25rem;
+  --fs-28: 1.75rem;
+  --fs-32: 2rem;
+
+  --fw-500: 500;
+  --fw-600: 600;
+  --fw-700: 700;
+
+  --lh-tight: 1.15;
+  --lh-snug: 1.25;
+  --lh-meta: 1.35;
+  --lh-body: 1.45;
+
+  --tracking-display: -0.01em;
+  --tracking-body: 0;
+
   --layout-max-width: 1600px;
-  --layout-gutter: 1.25rem;
-  --layout-gap: 1.1rem;
+  --layout-gutter: 1.5rem;
+  --layout-gap: 1rem;
   --layout-sidebar-width: clamp(16rem, 17.5vw, 18rem);
 
-  --bg: #f6f7f8;
-  --bg-soft: #f2f4f6;
-  --panel: #ffffff;
-  --panel-soft: #f8fafc;
-  --panel-strong: #f1f5f9;
-  --border: #dbe3eb;
-  --text: #0f172a;
-  --muted: #64748b;
-  --primary: #0f766e;
-  --primary-soft: #e2f4f2;
-  --danger: #dc2626;
-  --danger-soft: #fee2e2;
-  --warning: #b45309;
-  --warning-soft: #fef3c7;
+  --space-0: 0;
+  --space-1: 0.5rem;
+  --space-2: 1rem;
+  --space-3: 1.5rem;
+  --space-4: 2rem;
+  --space-5: 2.5rem;
+  --space-6: 3rem;
+  --space-7: 4rem;
+  --space-8: 5rem;
 
-  --chart-grid: rgba(100, 116, 105, 0.2);
-  --chart-axis-line: rgba(100, 116, 105, 0.28);
-  --chart-positive: #179a56;
-  --chart-positive-soft: rgba(23, 154, 86, 0.34);
-  --chart-positive-fade: rgba(23, 154, 86, 0.08);
-  --chart-negative: #d94646;
-  --chart-negative-soft: rgba(217, 70, 70, 0.28);
-  --chart-negative-fade: rgba(217, 70, 70, 0.06);
+  --bg: #f3f4f6;
+  --bg-soft: #f3f4f6;
+  --panel: #ffffff;
+  --panel-soft: #ffffff;
+  --panel-strong: #ffffff;
+  --border: #d6dbe4;
+  --text: #111827;
+  --muted: #6b7280;
+  --primary: #0f766e;
+  --primary-soft: rgba(15, 118, 110, 0.12);
+  --danger: #dc2626;
+  --danger-soft: rgba(220, 38, 38, 0.12);
+  --warning: #b45309;
+  --warning-soft: rgba(180, 83, 9, 0.14);
+
+  --chart-grid: rgba(107, 114, 128, 0.18);
+  --chart-axis-line: rgba(107, 114, 128, 0.26);
+  --chart-positive: var(--primary);
+  --chart-positive-soft: rgba(15, 118, 110, 0.34);
+  --chart-positive-fade: rgba(15, 118, 110, 0.07);
+  --chart-negative: var(--danger);
+  --chart-negative-soft: rgba(220, 38, 38, 0.28);
+  --chart-negative-fade: rgba(220, 38, 38, 0.06);
   --chart-cyan: #0284c7;
   --chart-cyan-soft: rgba(2, 132, 199, 0.26);
-  --chart-cyan-fade: rgba(2, 132, 199, 0.03);
-  --chart-radar-split-a: rgba(255, 255, 255, 0.44);
-  --chart-radar-split-b: rgba(232, 237, 229, 0.58);
+  --chart-cyan-fade: rgba(2, 132, 199, 0.05);
+  --chart-radar-split-a: rgba(255, 255, 255, 0.46);
+  --chart-radar-split-b: rgba(229, 231, 235, 0.56);
 
-  --shadow-soft: 0 10px 30px rgba(15, 23, 42, 0.06);
-  --shadow-hover: 0 12px 32px rgba(15, 23, 42, 0.1);
+  --shadow-soft: 0 6px 18px rgba(17, 24, 39, 0.06);
+  --shadow-hover: 0 10px 24px rgba(17, 24, 39, 0.08);
 
-  --radius-sm: 0.6rem;
+  --radius-sm: 0.5rem;
   --radius-md: 0.75rem;
-  --radius-lg: 0.9rem;
-  --radius-xl: 1rem;
-  --radius-2xl: 1.25rem;
-  --radius-panel: 0.9rem;
-  --radius-control: 0.7rem;
+  --radius-lg: 0.75rem;
+  --radius-xl: 0.75rem;
+  --radius-2xl: 0.75rem;
+  --radius-panel: 0.75rem;
+  --radius-control: 0.5rem;
 
   --panel-padding: 1rem;
-  --panel-padding-sm: 0.82rem;
+  --panel-padding-sm: 1rem;
   --control-height: 2.5rem;
-  --control-height-sm: 2.15rem;
-  --control-padding-x: 0.72rem;
-  --control-font-size: 0.9rem;
+  --control-height-sm: 2rem;
+  --control-padding-x: 0.75rem;
+  --control-font-size: 0.875rem;
 
   --ease-standard: cubic-bezier(0.22, 1, 0.36, 1);
-  --transition-fast: 190ms var(--ease-standard);
-  --transition-medium: 300ms var(--ease-standard);
+  --transition-fast: 160ms var(--ease-standard);
+  --transition-medium: 240ms var(--ease-standard);
 
+  /* z-index contract: base < raised < sticky < dropdown < overlay < modal < toast */
   --z-base: 1;
   --z-raised: 20;
   --z-sticky: 120;
-  --z-dropdown: 500;
-  --z-overlay: 700;
-  --z-modal: 800;
-  --z-toast: 900;
+  --z-dropdown: 400;
+  --z-overlay: 600;
+  --z-modal: 700;
+  --z-toast: 800;
 }
 
 [data-theme='dark'] {
   --bg: #0b1220;
-  --bg-soft: #0f172a;
-  --panel: #111b2d;
-  --panel-soft: #172338;
-  --panel-strong: #1d2b43;
-  --border: #26354d;
+  --bg-soft: #0b1220;
+  --panel: #111827;
+  --panel-soft: #111827;
+  --panel-strong: #111827;
+  --border: #273244;
   --text: #e5e7eb;
-  --muted: #9aa9bd;
+  --muted: #9ca3af;
   --primary: #22c1b4;
   --primary-soft: rgba(34, 193, 180, 0.14);
   --danger: #f87171;
@@ -80,20 +114,20 @@
   --warning: #f59e0b;
   --warning-soft: rgba(245, 158, 11, 0.18);
 
-  --chart-grid: rgba(132, 145, 159, 0.14);
-  --chart-axis-line: rgba(132, 145, 159, 0.24);
-  --chart-positive: #16c47f;
-  --chart-positive-soft: rgba(22, 196, 127, 0.34);
-  --chart-positive-fade: rgba(22, 196, 127, 0.08);
-  --chart-negative: #ef4444;
-  --chart-negative-soft: rgba(239, 68, 68, 0.28);
-  --chart-negative-fade: rgba(239, 68, 68, 0.06);
+  --chart-grid: rgba(156, 163, 175, 0.14);
+  --chart-axis-line: rgba(156, 163, 175, 0.24);
+  --chart-positive: var(--primary);
+  --chart-positive-soft: rgba(34, 193, 180, 0.32);
+  --chart-positive-fade: rgba(34, 193, 180, 0.08);
+  --chart-negative: var(--danger);
+  --chart-negative-soft: rgba(248, 113, 113, 0.28);
+  --chart-negative-fade: rgba(248, 113, 113, 0.06);
   --chart-cyan: #22d3ee;
-  --chart-cyan-soft: rgba(34, 211, 238, 0.45);
-  --chart-cyan-fade: rgba(34, 211, 238, 0.02);
+  --chart-cyan-soft: rgba(34, 211, 238, 0.35);
+  --chart-cyan-fade: rgba(34, 211, 238, 0.03);
   --chart-radar-split-a: rgba(255, 255, 255, 0.12);
-  --chart-radar-split-b: rgba(26, 42, 33, 0.65);
+  --chart-radar-split-b: rgba(31, 41, 55, 0.62);
 
-  --shadow-soft: 0 14px 36px rgba(2, 6, 23, 0.42);
-  --shadow-hover: 0 18px 40px rgba(2, 6, 23, 0.5);
+  --shadow-soft: 0 10px 24px rgba(2, 6, 23, 0.36);
+  --shadow-hover: 0 12px 28px rgba(2, 6, 23, 0.46);
 }
