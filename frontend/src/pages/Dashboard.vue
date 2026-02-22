@@ -58,6 +58,11 @@ const { accounts, selectedAccount, selectedAccountId } = storeToRefs(accountStor
 
 const activeTab = ref<DashboardTab>('overview')
 const dashboardMode = ref<DashboardMode>('live')
+const tabMounted = ref<Record<DashboardTab, boolean>>({
+  overview: true,
+  chart: false,
+  calendar: false,
+})
 const rangePreset = ref<RangePreset>('30d')
 const initialRangeEnd = getTodayIso()
 const calendarMonthKey = ref(monthKeyFromDate(new Date()))
@@ -297,6 +302,13 @@ watch(
   ],
   async () => {
     await refreshDashboardData()
+  }
+)
+
+watch(
+  () => activeTab.value,
+  (tab) => {
+    tabMounted.value[tab] = true
   }
 )
 
@@ -643,7 +655,7 @@ function shortDate(value: string): string {
 </script>
 
 <template>
-  <Transition name="account-switch" mode="out-in">
+  <Transition name="account-switch">
     <div :key="selectedAccountId === null ? 'portfolio' : `account-${selectedAccountId}`" class="space-y-4 dashboard-overview-shell dashboard-minimal">
       <section class="overview-top-row">
         <div class="overview-heading-block">
@@ -795,7 +807,7 @@ function shortDate(value: string): string {
         />
       </section>
 
-      <template v-if="activeTab === 'overview'">
+      <div v-if="tabMounted.overview" v-show="activeTab === 'overview'">
         <section v-if="loading && !summary" class="grid grid-premium lg:grid-cols-4">
           <SkeletonBlock v-for="index in 4" :key="`dashboard-kpi-skeleton-${index}`" height-class="h-52" rounded-class="rounded-2xl" />
         </section>
@@ -1076,9 +1088,9 @@ function shortDate(value: string): string {
             </div>
           </GlassPanel>
         </section>
-      </template>
+      </div>
 
-      <template v-else-if="activeTab === 'chart'">
+      <div v-if="tabMounted.chart" v-show="activeTab === 'chart'">
         <section v-if="!hasChartData" class="grid grid-premium xl:grid-cols-2">
           <GlassPanel>
             <EmptyState title="No emotion data" description="Log trades with emotion tags to populate this chart." :icon="BarChartHorizontalBig" />
@@ -1103,9 +1115,9 @@ function shortDate(value: string): string {
             <SessionPerformanceBarChart :rows="chartSessionRows" />
           </GlassPanel>
         </section>
-      </template>
+      </div>
 
-      <template v-else>
+      <div v-if="tabMounted.calendar" v-show="activeTab === 'calendar'">
         <section class="overview-calendar-grid">
           <GlassPanel class="overview-calendar-panel">
             <div class="section-head">
@@ -1182,7 +1194,7 @@ function shortDate(value: string): string {
             <Plus class="h-7 w-7" />
           </RouterLink>
         </section>
-      </template>
+      </div>
     </div>
   </Transition>
 </template>

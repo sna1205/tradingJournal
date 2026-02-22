@@ -1988,16 +1988,14 @@ input[type='time'] {
 .account-switch-enter-active,
 .account-switch-leave-active {
   transition:
-    opacity 220ms var(--ease-standard),
-    transform 220ms var(--ease-standard),
-    filter 220ms var(--ease-standard);
+    opacity 120ms var(--ease-standard),
+    transform 120ms var(--ease-standard);
 }
 
 .account-switch-enter-from,
 .account-switch-leave-to {
   opacity: 0;
-  transform: translateY(10px);
-  filter: blur(2px);
+  transform: translateY(6px);
 }
 
 .toast-enter-active,
