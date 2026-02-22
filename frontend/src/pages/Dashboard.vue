@@ -839,7 +839,7 @@ function setDashboardMode(mode: DashboardMode) {
         />
       </section>
 
-      <div v-if="tabMounted.overview" v-show="activeTab === 'overview'">
+      <div v-if="tabMounted.overview" v-show="activeTab === 'overview'" class="overview-sections-stack">
         <section v-if="loading && !summary" class="grid grid-premium lg:grid-cols-4">
           <SkeletonBlock v-for="index in 4" :key="`dashboard-kpi-skeleton-${index}`" height-class="h-52" rounded-class="rounded-2xl" />
         </section>
@@ -955,7 +955,7 @@ function setDashboardMode(mode: DashboardMode) {
         </section>
 
         <section class="grid grid-premium">
-          <GlassPanel class="weekly-loop-panel">
+          <GlassPanel class="weekly-loop-panel overview-section-card">
             <div class="section-head">
               <div>
                 <h2 class="section-title">Weekly Review Loop</h2>
@@ -1020,7 +1020,7 @@ function setDashboardMode(mode: DashboardMode) {
         </section>
 
         <section class="grid grid-premium">
-          <GlassPanel>
+          <GlassPanel class="overview-section-card">
             <div class="section-head">
               <h2 class="section-title">Cumulative P&amp;L</h2>
               <p class="section-note">Your equity curve - is your edge compounding over time?</p>
@@ -1034,7 +1034,7 @@ function setDashboardMode(mode: DashboardMode) {
         </section>
 
         <section class="grid grid-premium xl:grid-cols-2">
-          <GlassPanel>
+          <GlassPanel class="overview-section-card">
             <div class="section-head">
               <h2 class="section-title">Discipline Impact</h2>
             </div>
@@ -1059,7 +1059,7 @@ function setDashboardMode(mode: DashboardMode) {
             </div>
           </GlassPanel>
 
-          <GlassPanel>
+          <GlassPanel class="overview-section-card">
             <div class="section-head">
               <h2 class="section-title">Risk Summary</h2>
             </div>
@@ -1084,7 +1084,7 @@ function setDashboardMode(mode: DashboardMode) {
         </section>
 
         <section class="grid grid-premium">
-          <GlassPanel>
+          <GlassPanel class="overview-section-card">
             <div class="section-head">
               <h2 class="section-title">Strategy Leaderboard</h2>
               <p class="section-note">Ranked by expectancy</p>
