@@ -16,11 +16,17 @@ import { useAccountStore } from '@/stores/accountStore'
 import { useSyncStatusStore } from '@/stores/syncStatusStore'
 import type {
   Instrument,
+  KillzoneItem,
   Paginated,
+  SessionEnum,
+  SessionOption,
+  TaxonomyItem,
   Trade,
   TradeDetailsResponse,
   TradeEmotion,
   TradeLeg,
+  TradePsychology,
+  TradeTag,
   TradeImage,
 } from '@/types/trade'
 
@@ -28,6 +34,11 @@ interface TradeFilters {
   pair: string
   direction: '' | 'buy' | 'sell'
   model: string
+  strategy_model_id: string
+  setup_id: string
+  killzone_id: string
+  session_enum: string
+  tag_ids: string
   date_from: string
   date_to: string
 }
@@ -47,6 +58,11 @@ export interface TradePayload {
   spread_cost?: number
   slippage_cost?: number
   legs?: TradeLegPayload[]
+  strategy_model_id?: number | null
+  setup_id?: number | null
+  killzone_id?: number | null
+  session_enum?: SessionEnum | null
+  tag_ids?: number[]
   risk_override_reason?: string | null
   followed_rules: boolean
   emotion: TradeEmotion
@@ -113,6 +129,11 @@ const defaultFilters: TradeFilters = {
   pair: '',
   direction: '',
   model: '',
+  strategy_model_id: '',
+  setup_id: '',
+  killzone_id: '',
+  session_enum: '',
+  tag_ids: '',
   date_from: '',
   date_to: '',
 }
@@ -133,6 +154,11 @@ export const useTradeStore = defineStore('trades', () => {
   const saving = ref(false)
   const error = ref<string | null>(null)
   const instruments = ref<Instrument[]>([])
+  const strategyModels = ref<TaxonomyItem[]>([])
+  const setups = ref<TaxonomyItem[]>([])
+  const killzones = ref<KillzoneItem[]>([])
+  const tradeTags = ref<TradeTag[]>([])
+  const sessionOptions = ref<SessionOption[]>([])
 
   const hasFilters = computed(() => Object.values(filters.value).some((value) => value !== ''))
   const hasActiveFilters = computed(() => hasFilters.value)
@@ -259,6 +285,11 @@ export const useTradeStore = defineStore('trades', () => {
         ...current,
         account_id: payload.account_id ?? current.account_id,
         instrument_id: payload.instrument_id ?? current.instrument_id,
+        strategy_model_id: payload.strategy_model_id ?? current.strategy_model_id,
+        setup_id: payload.setup_id ?? current.setup_id,
+        killzone_id: payload.killzone_id ?? current.killzone_id,
+        session_enum: payload.session_enum ?? current.session_enum,
+        tag_ids: payload.tag_ids ?? current.tag_ids,
         pair: payload.symbol ? payload.symbol.toUpperCase() : current.pair,
         direction: payload.direction ?? current.direction,
         entry_price: payload.entry_price !== undefined ? String(payload.entry_price) : current.entry_price,
@@ -435,6 +466,54 @@ export const useTradeStore = defineStore('trades', () => {
     }
   }
 
+  async function fetchDictionaries() {
+    try {
+      const [strategyRes, setupRes, killzoneRes, tagRes, sessionRes] = await Promise.all([
+        api.get<TaxonomyItem[]>('/dictionaries/strategy-models'),
+        api.get<TaxonomyItem[]>('/dictionaries/setups'),
+        api.get<KillzoneItem[]>('/dictionaries/killzones'),
+        api.get<TradeTag[]>('/dictionaries/trade-tags'),
+        api.get<SessionOption[]>('/dictionaries/sessions'),
+      ])
+      syncStatusStore.markServerHealthy()
+
+      strategyModels.value = Array.isArray(strategyRes.data) ? strategyRes.data : []
+      setups.value = Array.isArray(setupRes.data) ? setupRes.data : []
+      killzones.value = Array.isArray(killzoneRes.data) ? killzoneRes.data : []
+      tradeTags.value = Array.isArray(tagRes.data) ? tagRes.data : []
+      sessionOptions.value = Array.isArray(sessionRes.data) ? sessionRes.data : []
+    } catch (error) {
+      if (!shouldUseLocalFallback(error)) {
+        throw error
+      }
+      syncStatusStore.markLocalFallback('dictionaries')
+      strategyModels.value = [{ id: 1, name: 'General', slug: 'general', description: null, is_active: true }]
+      setups.value = [{ id: 1, name: 'Breakout', slug: 'breakout', description: null, is_active: true }]
+      killzones.value = [{ id: 1, name: 'London Open', slug: 'london-open', session_enum: 'london', description: null, is_active: true }]
+      tradeTags.value = []
+      sessionOptions.value = [
+        { value: 'asia', label: 'Asia' },
+        { value: 'london', label: 'London' },
+        { value: 'new_york', label: 'New York' },
+        { value: 'overlap', label: 'London/NY Overlap' },
+        { value: 'off_session', label: 'Off Session' },
+      ]
+    }
+  }
+
+  async function fetchTradePsychology(tradeId: number): Promise<TradePsychology> {
+    const { data } = await api.get<TradePsychology>(`/trades/${tradeId}/psychology`)
+    syncStatusStore.markServerHealthy()
+    return data
+  }
+
+  async function upsertTradePsychology(tradeId: number, payload: Partial<TradePsychology>): Promise<TradePsychology> {
+    const { data } = await api.put<TradePsychology>(`/trades/${tradeId}/psychology`, payload)
+    syncStatusStore.markServerHealthy()
+    void analyticsStore.fetchAnalytics().catch(() => undefined)
+    return data
+  }
+
   async function precheckTrade(payload: TradePayload, tradeId?: number): Promise<TradePrecheckResult> {
     try {
       const body: Record<string, unknown> = {
@@ -495,12 +574,26 @@ export const useTradeStore = defineStore('trades', () => {
     tradeId: number,
     file: File,
     sortOrder?: number,
+    metadata?: {
+      context_tag?: string | null
+      timeframe?: string | null
+      annotation_notes?: string | null
+    },
     onProgress?: (percent: number) => void
   ): Promise<TradeImage> {
     const formData = new FormData()
     formData.append('image', file)
     if (typeof sortOrder === 'number') {
       formData.append('sort_order', String(sortOrder))
+    }
+    if (metadata?.context_tag) {
+      formData.append('context_tag', metadata.context_tag)
+    }
+    if (metadata?.timeframe) {
+      formData.append('timeframe', metadata.timeframe)
+    }
+    if (metadata?.annotation_notes) {
+      formData.append('annotation_notes', metadata.annotation_notes)
     }
 
     try {
@@ -543,6 +636,20 @@ export const useTradeStore = defineStore('trades', () => {
     }
   }
 
+  async function updateTradeImageMetadata(
+    imageId: number,
+    payload: {
+      context_tag?: string | null
+      timeframe?: string | null
+      annotation_notes?: string | null
+      sort_order?: number
+    }
+  ): Promise<TradeImage> {
+    const { data } = await api.put<TradeImage>(`/trade-images/${imageId}`, payload)
+    syncStatusStore.markServerHealthy()
+    return data
+  }
+
   function resetFilters() {
     filters.value = { ...defaultFilters }
   }
@@ -550,6 +657,11 @@ export const useTradeStore = defineStore('trades', () => {
   return {
     trades,
     instruments,
+    strategyModels,
+    setups,
+    killzones,
+    tradeTags,
+    sessionOptions,
     pagination,
     filters,
     loading,
@@ -558,6 +670,9 @@ export const useTradeStore = defineStore('trades', () => {
     hasFilters,
     fetchTrades,
     fetchInstruments,
+    fetchDictionaries,
+    fetchTradePsychology,
+    upsertTradePsychology,
     precheckTrade,
     addTrade,
     createTrade,
@@ -569,6 +684,7 @@ export const useTradeStore = defineStore('trades', () => {
     updateTradeLeg,
     deleteTradeLeg,
     uploadTradeImage,
+    updateTradeImageMetadata,
     deleteTradeImage,
     resetFilters,
   }
@@ -580,6 +696,11 @@ function toOptimisticTrade(payload: TradePayload, tempId: number): Trade {
     pair: payload.symbol.toUpperCase(),
     account_id: payload.account_id,
     instrument_id: payload.instrument_id,
+    strategy_model_id: payload.strategy_model_id ?? null,
+    setup_id: payload.setup_id ?? null,
+    killzone_id: payload.killzone_id ?? null,
+    session_enum: payload.session_enum ?? null,
+    tag_ids: payload.tag_ids ?? [],
     direction: payload.direction,
     entry_price: String(payload.entry_price),
     avg_entry_price: String(payload.entry_price),

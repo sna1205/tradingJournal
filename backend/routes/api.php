@@ -2,12 +2,15 @@
 
 use App\Http\Controllers\Api\AnalyticsController;
 use App\Http\Controllers\Api\AccountController;
+use App\Http\Controllers\Api\DictionaryController;
 use App\Http\Controllers\Api\InstrumentController;
 use App\Http\Controllers\Api\MissedTradeController;
 use App\Http\Controllers\Api\MissedTradeImageController;
+use App\Http\Controllers\Api\ReportController;
 use App\Http\Controllers\Api\TradeController;
 use App\Http\Controllers\Api\TradeLegController;
 use App\Http\Controllers\Api\TradeImageController;
+use App\Http\Controllers\Api\TradePsychologyController;
 use Illuminate\Support\Facades\Route;
 
 Route::get('health', fn () => response()->json([
@@ -24,14 +27,28 @@ Route::get('accounts/{account}/challenge', [AccountController::class, 'challenge
 Route::put('accounts/{account}/challenge', [AccountController::class, 'upsertChallenge']);
 Route::get('accounts/{account}/challenge-status', [AccountController::class, 'challengeStatus']);
 Route::get('instruments', [InstrumentController::class, 'index']);
+Route::prefix('dictionaries')->group(function () {
+    Route::get('strategy-models', [DictionaryController::class, 'strategyModels']);
+    Route::get('setups', [DictionaryController::class, 'setups']);
+    Route::get('killzones', [DictionaryController::class, 'killzones']);
+    Route::get('trade-tags', [DictionaryController::class, 'tradeTags']);
+    Route::get('sessions', [DictionaryController::class, 'sessions']);
+});
 Route::post('trades/precheck', [TradeController::class, 'precheck']);
 Route::apiResource('trades', TradeController::class);
 Route::get('trades/{trade}/legs', [TradeLegController::class, 'index']);
 Route::post('trades/{trade}/legs', [TradeLegController::class, 'store']);
+Route::get('trades/{trade}/psychology', [TradePsychologyController::class, 'show']);
+Route::put('trades/{trade}/psychology', [TradePsychologyController::class, 'upsert']);
 Route::put('trade-legs/{tradeLeg}', [TradeLegController::class, 'update']);
 Route::delete('trade-legs/{tradeLeg}', [TradeLegController::class, 'destroy']);
 Route::post('trades/{trade}/images', [TradeImageController::class, 'store']);
+Route::put('trade-images/{tradeImage}', [TradeImageController::class, 'update']);
 Route::delete('trade-images/{tradeImage}', [TradeImageController::class, 'destroy']);
+Route::get('reports/export.csv', [ReportController::class, 'exportCsvFromQuery']);
+Route::get('reports/{report}/run', [ReportController::class, 'run']);
+Route::get('reports/{report}/export.csv', [ReportController::class, 'exportCsv']);
+Route::apiResource('reports', ReportController::class);
 Route::apiResource('missed-trades', MissedTradeController::class);
 Route::post('missed-trades/{missedTrade}/images', [MissedTradeImageController::class, 'store']);
 Route::delete('missed-trade-images/{missedTradeImage}', [MissedTradeImageController::class, 'destroy']);

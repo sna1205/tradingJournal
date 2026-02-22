@@ -89,6 +89,8 @@ export interface MetricsPayload {
 
 export interface RankingRow {
   session?: string
+  killzone?: string
+  setup?: string
   strategy_model?: string
   symbol?: string
   total_trades: number
@@ -101,6 +103,8 @@ export interface RankingRow {
 
 export interface RankingsPayload {
   sessions: RankingRow[]
+  killzones: RankingRow[]
+  setups: RankingRow[]
   strategy_models: RankingRow[]
   symbols: RankingRow[]
 }
@@ -151,6 +155,30 @@ export interface BehavioralPayload {
     breakdown: Array<Record<string, number | string | null>>
     most_costly_emotion: string | null
     most_profitable_mindset: string | null
+  }
+  psychology_correlations: {
+    confidence_buckets: Array<{
+      bucket: string
+      total_trades: number
+      expectancy_money: number
+      expectancy_r: number
+      win_rate: number
+      rule_break_rate: number
+    }>
+    stress_buckets: Array<{
+      bucket: string
+      total_trades: number
+      expectancy_money: number
+      expectancy_r: number
+      win_rate: number
+      rule_break_rate: number
+    }>
+    flags: Record<string, {
+      total_trades: number
+      expectancy_money: number
+      expectancy_r: number
+      rule_break_rate: number
+    }>
   }
 }
 
@@ -425,6 +453,24 @@ export const useAnalyticsStore = defineStore('analytics', () => {
           total_pnl: Number(row.total_pnl || 0),
           avg_r: Number(row.avg_r || 0),
         })),
+        killzones: (rankingsRes.data.killzones || []).map((row) => ({
+          ...row,
+          total_trades: Number(row.total_trades || 0),
+          win_rate: Number(row.win_rate || 0),
+          profit_factor: row.profit_factor === null ? null : Number(row.profit_factor),
+          expectancy: Number(row.expectancy || 0),
+          total_pnl: Number(row.total_pnl || 0),
+          avg_r: Number(row.avg_r || 0),
+        })),
+        setups: (rankingsRes.data.setups || []).map((row) => ({
+          ...row,
+          total_trades: Number(row.total_trades || 0),
+          win_rate: Number(row.win_rate || 0),
+          profit_factor: row.profit_factor === null ? null : Number(row.profit_factor),
+          expectancy: Number(row.expectancy || 0),
+          total_pnl: Number(row.total_pnl || 0),
+          avg_r: Number(row.avg_r || 0),
+        })),
         strategy_models: (rankingsRes.data.strategy_models || []).map((row) => ({
           ...row,
           total_trades: Number(row.total_trades || 0),
@@ -593,6 +639,8 @@ function applyLocalAnalyticsFallback(args: {
 
   const dayMap = new Map<string, { total_trades: number; profit_loss: number; wins: number; rTotal: number }>()
   const sessionMap = new Map<string, Trade[]>()
+  const killzoneMap = new Map<string, Trade[]>()
+  const setupMap = new Map<string, Trade[]>()
   const modelMap = new Map<string, Trade[]>()
   const symbolMap = new Map<string, Trade[]>()
   const emotionMap = new Map<string, { total_trades: number; total_profit: number }>()
@@ -619,9 +667,13 @@ function applyLocalAnalyticsFallback(args: {
     dayMap.set(day, bucket)
 
     const session = trade.session || 'N/A'
+    const killzone = trade.killzone?.name || 'Legacy/Unmapped'
+    const setup = trade.setup?.name || 'Legacy/Unmapped'
     const model = trade.model || 'General'
     const symbol = trade.pair || 'Unknown'
     sessionMap.set(session, [...(sessionMap.get(session) ?? []), trade])
+    killzoneMap.set(killzone, [...(killzoneMap.get(killzone) ?? []), trade])
+    setupMap.set(setup, [...(setupMap.get(setup) ?? []), trade])
     modelMap.set(model, [...(modelMap.get(model) ?? []), trade])
     symbolMap.set(symbol, [...(symbolMap.get(symbol) ?? []), trade])
 
@@ -738,6 +790,8 @@ function applyLocalAnalyticsFallback(args: {
   }
   args.rankings.value = {
     sessions: buildRankingRows(sessionMap, 'session'),
+    killzones: buildRankingRows(killzoneMap, 'killzone'),
+    setups: buildRankingRows(setupMap, 'setup'),
     strategy_models: buildRankingRows(modelMap, 'strategy_model'),
     symbols: buildRankingRows(symbolMap, 'symbol'),
   }
@@ -764,6 +818,11 @@ function applyLocalAnalyticsFallback(args: {
       most_costly_emotion: emotionBreakdown.slice().sort((a, b) => Number(a.total_profit) - Number(b.total_profit))[0]?.emotion ?? null,
       most_profitable_mindset: emotionBreakdown.slice().sort((a, b) => Number(b.total_profit) - Number(a.total_profit))[0]?.emotion ?? null,
     },
+    psychology_correlations: {
+      confidence_buckets: [],
+      stress_buckets: [],
+      flags: {},
+    },
   }
   args.riskStatus.value = {
     risk_percent_warning: false,
@@ -779,7 +838,10 @@ function applyLocalAnalyticsFallback(args: {
   }
 }
 
-function buildRankingRows(map: Map<string, Trade[]>, kind: 'session' | 'strategy_model' | 'symbol'): RankingRow[] {
+function buildRankingRows(
+  map: Map<string, Trade[]>,
+  kind: 'session' | 'killzone' | 'setup' | 'strategy_model' | 'symbol'
+): RankingRow[] {
   return [...map.entries()]
     .map(([name, rows]) => {
       const totalTrades = rows.length
@@ -800,6 +862,8 @@ function buildRankingRows(map: Map<string, Trade[]>, kind: 'session' | 'strategy
         avg_r: totalTrades > 0 ? Number((rows.reduce((sum, row) => sum + Number(row.r_multiple ?? 0), 0) / totalTrades).toFixed(3)) : 0,
       }
       if (kind === 'session') result.session = name
+      if (kind === 'killzone') result.killzone = name
+      if (kind === 'setup') result.setup = name
       if (kind === 'strategy_model') result.strategy_model = name
       if (kind === 'symbol') result.symbol = name
       return result
@@ -927,6 +991,8 @@ function applyEmptyAnalyticsState(args: {
   }
   args.rankings.value = {
     sessions: [],
+    killzones: [],
+    setups: [],
     strategy_models: [],
     symbols: [],
   }
@@ -947,6 +1013,11 @@ function applyEmptyAnalyticsState(args: {
       breakdown: [],
       most_costly_emotion: null,
       most_profitable_mindset: null,
+    },
+    psychology_correlations: {
+      confidence_buckets: [],
+      stress_buckets: [],
+      flags: {},
     },
   }
   args.riskStatus.value = {

@@ -1,12 +1,17 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import { GripVertical, ImagePlus, Loader2, Trash2, UploadCloud } from 'lucide-vue-next'
-import type { TradeImage } from '@/types/trade'
+import BaseInput from '@/components/form/BaseInput.vue'
+import BaseSelect from '@/components/form/BaseSelect.vue'
+import type { ImageContextTag, TradeImage } from '@/types/trade'
 
 export interface PendingTradeImage {
   id: string
   file: File
   preview_url: string
+  context_tag: ImageContextTag
+  timeframe: string
+  annotation_notes: string
 }
 
 const props = withDefaults(
@@ -20,6 +25,7 @@ const props = withDefaults(
     error?: string
     title?: string
     uploadHint?: string
+    contextOptions?: Array<{ label: string; value: ImageContextTag }>
   }>(),
   {
     uploading: false,
@@ -29,6 +35,13 @@ const props = withDefaults(
     error: '',
     title: 'Execution Screenshots',
     uploadHint: 'Max 5 images - jpg, jpeg, png, webp - 5MB each',
+    contextOptions: () => [
+      { label: 'Pre Entry', value: 'pre_entry' },
+      { label: 'Entry', value: 'entry' },
+      { label: 'Management', value: 'management' },
+      { label: 'Exit', value: 'exit' },
+      { label: 'Post Review', value: 'post_review' },
+    ],
   }
 )
 
@@ -37,6 +50,8 @@ const emit = defineEmits<{
   (event: 'remove-pending', id: string): void
   (event: 'remove-existing', id: number): void
   (event: 'reorder-pending', payload: { from: number; to: number }): void
+  (event: 'update-pending-metadata', payload: { id: string; context_tag?: ImageContextTag; timeframe?: string; annotation_notes?: string }): void
+  (event: 'update-existing-metadata', payload: { id: number; context_tag?: ImageContextTag | null; timeframe?: string | null; annotation_notes?: string | null }): void
 }>()
 
 const inputRef = ref<HTMLInputElement | null>(null)
@@ -103,6 +118,73 @@ function onPendingDrop(index: number) {
 function isDeleting(imageId: number) {
   return props.deletingImageIds.includes(imageId)
 }
+
+function contextLabel(value: string | null | undefined): string {
+  const matched = props.contextOptions.find((option) => option.value === (value ?? ''))
+  return matched?.label ?? 'Unlabeled'
+}
+
+function normalizeTextValue(value: string | number): string {
+  return String(value ?? '')
+}
+
+function isContextTag(value: string): value is ImageContextTag {
+  return value === 'pre_entry'
+    || value === 'entry'
+    || value === 'management'
+    || value === 'exit'
+    || value === 'post_review'
+}
+
+function normalizeContextTag(value: string | number): ImageContextTag | undefined {
+  const text = String(value ?? '').trim()
+  return isContextTag(text) ? text : undefined
+}
+
+function onExistingContextUpdate(imageId: number, value: string | number) {
+  emit('update-existing-metadata', {
+    id: imageId,
+    context_tag: normalizeContextTag(value) ?? null,
+  })
+}
+
+function onExistingTimeframeUpdate(imageId: number, value: string | number) {
+  emit('update-existing-metadata', {
+    id: imageId,
+    timeframe: normalizeTextValue(value),
+  })
+}
+
+function onExistingNotesUpdate(imageId: number, value: string | number) {
+  emit('update-existing-metadata', {
+    id: imageId,
+    annotation_notes: normalizeTextValue(value),
+  })
+}
+
+function onPendingContextUpdate(imageId: string, value: string | number) {
+  const tag = normalizeContextTag(value)
+  if (!tag) return
+
+  emit('update-pending-metadata', {
+    id: imageId,
+    context_tag: tag,
+  })
+}
+
+function onPendingTimeframeUpdate(imageId: string, value: string | number) {
+  emit('update-pending-metadata', {
+    id: imageId,
+    timeframe: normalizeTextValue(value),
+  })
+}
+
+function onPendingNotesUpdate(imageId: string, value: string | number) {
+  emit('update-pending-metadata', {
+    id: imageId,
+    annotation_notes: normalizeTextValue(value),
+  })
+}
 </script>
 
 <template>
@@ -153,7 +235,7 @@ function isDeleting(imageId: number) {
           class="trade-image-thumb"
         />
         <div class="trade-image-card-top">
-          <span class="pill">Saved</span>
+          <span class="pill">{{ contextLabel(image.context_tag ?? null) }}</span>
           <button
             type="button"
             class="btn btn-ghost is-danger p-1.5"
@@ -163,6 +245,29 @@ function isDeleting(imageId: number) {
             <Loader2 v-if="isDeleting(image.id)" class="h-3.5 w-3.5 animate-spin" />
             <Trash2 v-else class="h-3.5 w-3.5" />
           </button>
+        </div>
+        <div class="mt-2 grid gap-2">
+          <BaseSelect
+            :model-value="image.context_tag ?? ''"
+            label="Context"
+            size="sm"
+            :options="contextOptions"
+            @update:model-value="(value) => onExistingContextUpdate(image.id, value)"
+          />
+          <BaseInput
+            :model-value="image.timeframe ?? ''"
+            label="Timeframe"
+            size="sm"
+            placeholder="M5 / H1"
+            @update:model-value="(value) => onExistingTimeframeUpdate(image.id, value)"
+          />
+          <BaseInput
+            :model-value="image.annotation_notes ?? ''"
+            label="Replay Note"
+            size="sm"
+            placeholder="What happened in this step..."
+            @update:model-value="(value) => onExistingNotesUpdate(image.id, value)"
+          />
         </div>
       </article>
 
@@ -194,6 +299,29 @@ function isDeleting(imageId: number) {
           >
             <Trash2 class="h-3.5 w-3.5" />
           </button>
+        </div>
+        <div class="mt-2 grid gap-2">
+          <BaseSelect
+            :model-value="image.context_tag"
+            label="Context"
+            size="sm"
+            :options="contextOptions"
+            @update:model-value="(value) => onPendingContextUpdate(image.id, value)"
+          />
+          <BaseInput
+            :model-value="image.timeframe"
+            label="Timeframe"
+            size="sm"
+            placeholder="M5 / H1"
+            @update:model-value="(value) => onPendingTimeframeUpdate(image.id, value)"
+          />
+          <BaseInput
+            :model-value="image.annotation_notes"
+            label="Replay Note"
+            size="sm"
+            placeholder="What happened in this step..."
+            @update:model-value="(value) => onPendingNotesUpdate(image.id, value)"
+          />
         </div>
 
         <div v-if="uploading" class="trade-image-progress">

@@ -27,44 +27,82 @@ import AnimatedNumber from '@/components/layout/AnimatedNumber.vue'
 import BaseInput from '@/components/form/BaseInput.vue'
 import BaseSelect from '@/components/form/BaseSelect.vue'
 import BaseDateInput from '@/components/form/BaseDateInput.vue'
+import { useReportStore } from '@/stores/reportStore'
 import { useTradeStore } from '@/stores/tradeStore'
 import { useUiStore } from '@/stores/uiStore'
 import { asDate, asSignedCurrency } from '@/utils/format'
-import type { Trade, TradeImage } from '@/types/trade'
+import type { Trade, TradeImage, TradePsychology } from '@/types/trade'
 
 const router = useRouter()
 const route = useRoute()
 const tradeStore = useTradeStore()
+const reportStore = useReportStore()
 const uiStore = useUiStore()
-const { trades, pagination, filters, loading, hasFilters } = storeToRefs(tradeStore)
+const { trades, pagination, filters, loading, hasFilters, strategyModels, setups, killzones, tradeTags, sessionOptions } = storeToRefs(tradeStore)
+const { reports } = storeToRefs(reportStore)
 
 const detailsOpen = ref(false)
 const detailsLoading = ref(false)
 const detailsTrade = ref<Trade | null>(null)
 const detailsImages = ref<TradeImage[]>([])
+const detailsPsychology = ref<TradePsychology | null>(null)
 const detailImageIndex = ref(0)
 const activeDetailImage = computed(() => detailsImages.value[detailImageIndex.value] ?? null)
 const filtersExpanded = ref(false)
+const selectedSavedReportId = ref('')
 type TradeQuickFocus = 'all' | 'needs_review' | 'rule_breaks' | 'losers' | 'no_screenshot'
 const quickFocus = ref<TradeQuickFocus>('all')
 const focusOptions: TradeQuickFocus[] = ['all', 'needs_review', 'rule_breaks', 'losers', 'no_screenshot']
+const savedViewOptions = computed(() => [
+  { label: 'No saved view', value: '' },
+  ...reports.value
+    .filter((report) => report.scope === 'trades')
+    .map((report) => ({ label: report.name, value: String(report.id) })),
+])
 
 const filterDirectionOptions = [
   { label: 'All', value: '' },
   { label: 'Buy', value: 'buy' },
   { label: 'Sell', value: 'sell' },
 ]
+const strategyFilterOptions = computed(() => [
+  { label: 'All', value: '' },
+  ...strategyModels.value.map((item) => ({ label: item.name, value: String(item.id) })),
+])
+const setupFilterOptions = computed(() => [
+  { label: 'All', value: '' },
+  ...setups.value.map((item) => ({ label: item.name, value: String(item.id) })),
+])
+const killzoneFilterOptions = computed(() => [
+  { label: 'All', value: '' },
+  ...killzones.value.map((item) => ({ label: item.name, value: String(item.id) })),
+])
+const sessionFilterOptions = computed(() => [
+  { label: 'All', value: '' },
+  ...sessionOptions.value.map((item) => ({ label: item.label, value: item.value })),
+])
+const tagFilterOptions = computed(() => tradeTags.value)
 
 const activeFilterPills = computed(() => {
   const pills: string[] = []
   const pair = filters.value.pair.trim()
   const model = filters.value.model.trim()
+  const strategyModelId = filters.value.strategy_model_id
+  const setupId = filters.value.setup_id
+  const killzoneId = filters.value.killzone_id
+  const sessionEnum = filters.value.session_enum
+  const tagIds = filters.value.tag_ids
   const direction = filters.value.direction
   const from = filters.value.date_from
   const to = filters.value.date_to
 
   if (pair) pills.push(`Symbol: ${pair.toUpperCase()}`)
   if (model) pills.push(`Model: ${model}`)
+  if (strategyModelId) pills.push(`Strategy: ${strategyModels.value.find((item) => String(item.id) === strategyModelId)?.name ?? strategyModelId}`)
+  if (setupId) pills.push(`Setup: ${setups.value.find((item) => String(item.id) === setupId)?.name ?? setupId}`)
+  if (killzoneId) pills.push(`Killzone: ${killzones.value.find((item) => String(item.id) === killzoneId)?.name ?? killzoneId}`)
+  if (sessionEnum) pills.push(`Session: ${sessionOptions.value.find((item) => item.value === sessionEnum)?.label ?? sessionEnum}`)
+  if (tagIds) pills.push(`Tags: ${tagIds}`)
   if (direction) pills.push(`Direction: ${direction === 'buy' ? 'Long' : 'Short'}`)
   if (from && to) pills.push(`${from} to ${to}`)
   else if (from) pills.push(`From: ${from}`)
@@ -124,6 +162,25 @@ const detailNextAction = computed(() => {
   return 'Execution is review-ready for weekly process scoring.'
 })
 
+const selectedTagFilterIds = computed(() => {
+  const values = `${filters.value.tag_ids ?? ''}`
+    .split(',')
+    .map((value) => Number(value.trim()))
+    .filter((value) => Number.isInteger(value) && value > 0)
+  return new Set(values)
+})
+
+function toggleTagFilter(tagId: number) {
+  const next = new Set(selectedTagFilterIds.value)
+  if (next.has(tagId)) {
+    next.delete(tagId)
+  } else {
+    next.add(tagId)
+  }
+
+  filters.value.tag_ids = [...next].join(',')
+}
+
 function toLocalDateString(value: Date) {
   const offset = value.getTimezoneOffset() * 60000
   return new Date(value.getTime() - offset).toISOString().slice(0, 10)
@@ -178,11 +235,13 @@ async function openDetails(trade: Trade) {
   detailsLoading.value = true
   detailsTrade.value = null
   detailsImages.value = []
+  detailsPsychology.value = null
   detailImageIndex.value = 0
 
   try {
     const details = await tradeStore.fetchTradeDetails(trade.id)
     detailsTrade.value = details.trade
+    detailsPsychology.value = details.psychology ?? details.trade.psychology ?? null
     detailsImages.value = (details.images ?? [])
       .slice()
       .sort((a, b) => a.sort_order - b.sort_order || a.id - b.id)
@@ -313,6 +372,18 @@ function modelLabel(value: string | null | undefined) {
   return text || 'No model'
 }
 
+function imageContextLabel(value: string | null | undefined) {
+  if (!value) return 'Unlabeled'
+  if (value === 'pre_entry') return 'Pre Entry'
+  if (value === 'post_review') return 'Post Review'
+  return value.replace('_', ' ').replace(/\b\w/g, (char) => char.toUpperCase())
+}
+
+function selectDetailImage(index: number) {
+  if (index < 0 || index >= detailsImages.value.length) return
+  detailImageIndex.value = index
+}
+
 function normalizeQuickFocus(value: unknown): TradeQuickFocus {
   const normalized = `${value ?? ''}`.trim().toLowerCase()
   return focusOptions.includes(normalized as TradeQuickFocus) ? (normalized as TradeQuickFocus) : 'all'
@@ -372,9 +443,67 @@ async function changePage(delta: number) {
   await tradeStore.fetchTrades(next)
 }
 
+async function loadSavedViews() {
+  try {
+    await reportStore.fetchReports('trades')
+  } catch {
+    // Ignore saved view loading failures; core trade log can still work.
+  }
+}
+
+async function saveCurrentView() {
+  const name = window.prompt('Saved view name')
+  if (!name || !name.trim()) return
+
+  try {
+    const report = await reportStore.createReport({
+      name: name.trim(),
+      scope: 'trades',
+      filters_json: { ...filters.value },
+      columns_json: null,
+      is_default: false,
+    })
+    selectedSavedReportId.value = String(report.id)
+    await loadSavedViews()
+    uiStore.toast({ type: 'success', title: 'Saved view created' })
+  } catch {
+    uiStore.toast({ type: 'error', title: 'Failed to save view' })
+  }
+}
+
+async function applySavedView(reportId: string) {
+  selectedSavedReportId.value = reportId
+  if (!reportId) return
+  const report = reports.value.find((item) => String(item.id) === reportId)
+  if (!report) return
+  const savedFilters = (report.filters_json ?? {}) as Record<string, unknown>
+
+  filters.value.pair = String(savedFilters.pair ?? '')
+  filters.value.direction = (String(savedFilters.direction ?? '') as '' | 'buy' | 'sell')
+  filters.value.model = String(savedFilters.model ?? '')
+  filters.value.strategy_model_id = String(savedFilters.strategy_model_id ?? '')
+  filters.value.setup_id = String(savedFilters.setup_id ?? '')
+  filters.value.killzone_id = String(savedFilters.killzone_id ?? '')
+  filters.value.session_enum = String(savedFilters.session_enum ?? '')
+  filters.value.tag_ids = String(savedFilters.tag_ids ?? '')
+  filters.value.date_from = String(savedFilters.date_from ?? '')
+  filters.value.date_to = String(savedFilters.date_to ?? '')
+  await applyFilters()
+}
+
+function exportCurrentCsv() {
+  reportStore.exportAdHocCsv({
+    scope: 'trades',
+    name: 'trade-log-view',
+    ...filters.value,
+  })
+}
+
 onMounted(async () => {
   try {
+    await tradeStore.fetchDictionaries()
     await tradeStore.fetchTrades()
+    await loadSavedViews()
     filtersExpanded.value = hasFilters.value
     applyQuickFocusFromRoute()
   } catch {
@@ -420,6 +549,17 @@ watch(quickFocus, (value) => {
           </div>
         </div>
         <div class="command-filter-right">
+          <div class="min-w-[220px]">
+            <BaseSelect
+              v-model="selectedSavedReportId"
+              label="Saved View"
+              size="sm"
+              :options="savedViewOptions"
+              @update:model-value="applySavedView"
+            />
+          </div>
+          <button class="btn btn-ghost px-3 py-2 text-sm" @click="saveCurrentView">Save View</button>
+          <button class="btn btn-ghost px-3 py-2 text-sm" @click="exportCurrentCsv">Export CSV</button>
           <button class="btn btn-secondary inline-flex items-center gap-2 px-3 py-2 text-sm" @click="openQuickAddPage">
             <Plus class="h-4 w-4" />
             Quick Add
@@ -435,10 +575,31 @@ watch(quickFocus, (value) => {
 
       <Transition name="drawer">
         <div v-if="filtersExpanded" class="filter-drawer">
-          <div class="form-block grid grid-premium md:grid-cols-2 xl:grid-cols-3">
+          <div class="form-block grid grid-premium md:grid-cols-2 xl:grid-cols-4">
             <BaseInput v-model="filters.pair" label="Symbol" placeholder="EURUSD" size="sm" />
             <BaseInput v-model="filters.model" label="Strategy Model" placeholder="Breakout" size="sm" />
             <BaseSelect v-model="filters.direction" label="Direction" :options="filterDirectionOptions" size="sm" />
+            <BaseSelect v-model="filters.strategy_model_id" label="Strategy Taxonomy" :options="strategyFilterOptions" size="sm" />
+            <BaseSelect v-model="filters.setup_id" label="Setup" :options="setupFilterOptions" size="sm" />
+            <BaseSelect v-model="filters.killzone_id" label="Killzone" :options="killzoneFilterOptions" size="sm" />
+            <BaseSelect v-model="filters.session_enum" label="Session" :options="sessionFilterOptions" size="sm" />
+          </div>
+
+          <div class="panel p-3">
+            <p class="kicker-label">Tag Filter</p>
+            <div class="mt-2 flex flex-wrap gap-2">
+              <button
+                v-for="tag in tagFilterOptions"
+                :key="`filter-tag-${tag.id}`"
+                type="button"
+                class="chip-btn"
+                :class="{ 'is-active': selectedTagFilterIds.has(tag.id) }"
+                @click="toggleTagFilter(tag.id)"
+              >
+                {{ tag.name }}
+              </button>
+              <span v-if="tagFilterOptions.length === 0" class="section-note">No tags configured</span>
+            </div>
           </div>
 
           <div class="filter-drawer-row">
@@ -714,6 +875,25 @@ watch(quickFocus, (value) => {
                 >
                   <ChevronRight class="h-4 w-4" />
                 </button>
+
+                <div v-if="activeDetailImage" class="trade-simple-image-meta">
+                  <p><strong>Context:</strong> {{ imageContextLabel(activeDetailImage.context_tag) }}</p>
+                  <p><strong>Timeframe:</strong> {{ activeDetailImage.timeframe || '-' }}</p>
+                  <p><strong>Replay Note:</strong> {{ activeDetailImage.annotation_notes || '-' }}</p>
+                </div>
+
+                <div v-if="detailsImages.length > 1" class="trade-simple-replay-seq">
+                  <button
+                    v-for="(image, index) in detailsImages"
+                    :key="`replay-${image.id}`"
+                    type="button"
+                    class="chip-btn"
+                    :class="{ 'is-active': index === detailImageIndex }"
+                    @click="selectDetailImage(index)"
+                  >
+                    {{ index + 1 }}. {{ imageContextLabel(image.context_tag) }}
+                  </button>
+                </div>
               </div>
 
               <div class="trade-simple-metrics">
@@ -733,9 +913,33 @@ watch(quickFocus, (value) => {
                   <span>Images</span>
                   <strong class="value-display">{{ detailsImages.length }}</strong>
                 </article>
+                <article>
+                  <span>Psychology Confidence</span>
+                  <strong>{{ detailsPsychology?.confidence_score ?? '-' }}</strong>
+                </article>
+                <article>
+                  <span>Psychology Stress</span>
+                  <strong>{{ detailsPsychology?.stress_score ?? '-' }}</strong>
+                </article>
+                <article>
+                  <span>Flags</span>
+                  <strong>
+                    {{
+                      [
+                        detailsPsychology?.impulse_flag ? 'Impulse' : '',
+                        detailsPsychology?.fomo_flag ? 'FOMO' : '',
+                        detailsPsychology?.revenge_flag ? 'Revenge' : '',
+                      ].filter(Boolean).join(', ') || '-'
+                    }}
+                  </strong>
+                </article>
                 <article class="trade-simple-note">
                   <span>Notes</span>
                   <strong>{{ detailsTrade.notes || '-' }}</strong>
+                </article>
+                <article class="trade-simple-note">
+                  <span>Psych Notes</span>
+                  <strong>{{ detailsPsychology?.notes || '-' }}</strong>
                 </article>
               </div>
             </div>

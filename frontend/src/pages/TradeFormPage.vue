@@ -16,7 +16,7 @@ import {
   type TradePrecheckResult,
 } from '@/stores/tradeStore'
 import { useUiStore } from '@/stores/uiStore'
-import type { Instrument, Trade, TradeEmotion, TradeImage, TradeLeg } from '@/types/trade'
+import type { ImageContextTag, Instrument, SessionEnum, Trade, TradeEmotion, TradeImage, TradeLeg, TradePsychology } from '@/types/trade'
 import { asCurrency, asSignedCurrency } from '@/utils/format'
 
 const router = useRouter()
@@ -25,7 +25,7 @@ const tradeStore = useTradeStore()
 const accountStore = useAccountStore()
 const uiStore = useUiStore()
 const { accounts } = storeToRefs(accountStore)
-const { instruments } = storeToRefs(tradeStore)
+const { instruments, strategyModels, setups, killzones, tradeTags, sessionOptions } = storeToRefs(tradeStore)
 
 const loadingTrade = ref(false)
 const submitAttempted = ref(false)
@@ -56,15 +56,56 @@ const instrumentSelectOptions = computed(() =>
     keywords: [instrument.asset_class, instrument.base_currency, instrument.quote_currency],
   }))
 )
+const strategyModelOptions = computed(() =>
+  strategyModels.value.map((item) => ({
+    label: item.name,
+    value: String(item.id),
+    subtitle: item.description ?? '',
+    keywords: [item.slug],
+  }))
+)
+const setupOptions = computed(() =>
+  setups.value.map((item) => ({
+    label: item.name,
+    value: String(item.id),
+    subtitle: item.description ?? '',
+    keywords: [item.slug],
+  }))
+)
+const killzoneOptions = computed(() =>
+  killzones.value.map((item) => ({
+    label: item.name,
+    value: String(item.id),
+    subtitle: item.session_enum,
+    keywords: [item.slug, item.session_enum],
+  }))
+)
+const sessionEnumOptions = computed(() =>
+  sessionOptions.value.map((item) => ({
+    label: item.label,
+    value: item.value,
+  }))
+)
+const selectedTagIds = computed(() => new Set(form.tag_ids))
+const filteredTagOptions = computed(() => {
+  const term = form.tag_search.trim().toLowerCase()
+  return tradeTags.value.filter((tag) => {
+    if (selectedTagIds.value.has(tag.id)) return false
+    if (!term) return true
+    return tag.name.toLowerCase().includes(term) || tag.slug.toLowerCase().includes(term)
+  })
+})
 
 const form = reactive({
   account_id: '',
   instrument_id: '',
+  strategy_model_id: '',
+  setup_id: '',
+  killzone_id: '',
+  session_enum: '' as '' | SessionEnum,
   symbol: '',
   direction: 'buy' as 'buy' | 'sell',
   date: '',
-  model: '',
-  session: '',
   entry_price: 0,
   stop_loss: 0,
   take_profit: 0,
@@ -76,6 +117,30 @@ const form = reactive({
   risk_override_reason: '',
   followed_rules: true,
   emotion: 'neutral' as TradeEmotion,
+  notes: '',
+  tag_ids: [] as number[],
+  tag_search: '',
+})
+
+const psychology = reactive<{
+  pre_emotion: string
+  post_emotion: string
+  confidence_score: number | null
+  stress_score: number | null
+  sleep_hours: number | null
+  impulse_flag: boolean
+  fomo_flag: boolean
+  revenge_flag: boolean
+  notes: string
+}>({
+  pre_emotion: '',
+  post_emotion: '',
+  confidence_score: null,
+  stress_score: null,
+  sleep_hours: null,
+  impulse_flag: false,
+  fomo_flag: false,
+  revenge_flag: false,
   notes: '',
 })
 
@@ -94,6 +159,9 @@ interface PendingTradeImage {
   id: string
   file: File
   preview_url: string
+  context_tag: ImageContextTag
+  timeframe: string
+  annotation_notes: string
 }
 
 const MAX_IMAGE_COUNT = 5
@@ -105,6 +173,13 @@ const allowedImageTypes = new Set([
   'image/png',
   'image/webp',
 ])
+const imageContextOptions: Array<{ label: string; value: ImageContextTag }> = [
+  { label: 'Pre Entry', value: 'pre_entry' },
+  { label: 'Entry', value: 'entry' },
+  { label: 'Management', value: 'management' },
+  { label: 'Exit', value: 'exit' },
+  { label: 'Post Review', value: 'post_review' },
+]
 
 const existingImages = ref<TradeImage[]>([])
 const pendingImages = ref<PendingTradeImage[]>([])
@@ -131,6 +206,16 @@ const selectedInstrument = computed<Instrument | null>(() => {
   const id = Number(form.instrument_id)
   if (!Number.isInteger(id) || id <= 0) return null
   return instruments.value.find((instrument) => instrument.id === id) ?? null
+})
+const selectedStrategyModel = computed(() => {
+  const id = Number(form.strategy_model_id)
+  if (!Number.isInteger(id) || id <= 0) return null
+  return strategyModels.value.find((item) => item.id === id) ?? null
+})
+const selectedSetup = computed(() => {
+  const id = Number(form.setup_id)
+  if (!Number.isInteger(id) || id <= 0) return null
+  return setups.value.find((item) => item.id === id) ?? null
 })
 const instrumentSymbol = computed(() => selectedInstrument.value?.symbol ?? form.symbol.trim().toUpperCase())
 const precheckLoading = ref(false)
@@ -358,6 +443,46 @@ function ensureDefaultExitLeg() {
   exitLegs.value = [makeExitLeg()]
 }
 
+function addTag(tagId: number) {
+  if (selectedTagIds.value.has(tagId)) return
+  form.tag_ids = [...form.tag_ids, tagId]
+  form.tag_search = ''
+}
+
+function removeTag(tagId: number) {
+  form.tag_ids = form.tag_ids.filter((value) => value !== tagId)
+}
+
+function isImageContextTag(value: string): value is ImageContextTag {
+  return value === 'pre_entry'
+    || value === 'entry'
+    || value === 'management'
+    || value === 'exit'
+    || value === 'post_review'
+}
+
+const selectedTags = computed(() =>
+  tradeTags.value.filter((tag) => selectedTagIds.value.has(tag.id))
+)
+
+function setPsychologyFromPayload(payload?: TradePsychology | null) {
+  psychology.pre_emotion = payload?.pre_emotion ?? ''
+  psychology.post_emotion = payload?.post_emotion ?? ''
+  psychology.confidence_score = payload?.confidence_score === null || payload?.confidence_score === undefined
+    ? null
+    : Number(payload.confidence_score)
+  psychology.stress_score = payload?.stress_score === null || payload?.stress_score === undefined
+    ? null
+    : Number(payload.stress_score)
+  psychology.sleep_hours = payload?.sleep_hours === null || payload?.sleep_hours === undefined
+    ? null
+    : Number(payload.sleep_hours)
+  psychology.impulse_flag = Boolean(payload?.impulse_flag)
+  psychology.fomo_flag = Boolean(payload?.fomo_flag)
+  psychology.revenge_flag = Boolean(payload?.revenge_flag)
+  psychology.notes = payload?.notes ?? ''
+}
+
 function appendNotesBlock(title: string, lines: string[]) {
   if (form.notes.includes(`${title}:`)) {
     uiStore.toast({
@@ -415,14 +540,16 @@ function parseLocalDateTime(value: string): number | null {
   return timestamp
 }
 
-function setFormFromTrade(trade: Trade, legs: TradeLeg[] = []) {
+function setFormFromTrade(trade: Trade, legs: TradeLeg[] = [], tradePsychology?: TradePsychology | null) {
   form.account_id = String(trade.account_id || '')
   form.instrument_id = trade.instrument_id ? String(trade.instrument_id) : ''
+  form.strategy_model_id = trade.strategy_model_id ? String(trade.strategy_model_id) : ''
+  form.setup_id = trade.setup_id ? String(trade.setup_id) : ''
+  form.killzone_id = trade.killzone_id ? String(trade.killzone_id) : ''
+  form.session_enum = (trade.session_enum ?? '') as '' | SessionEnum
   form.symbol = trade.pair
   form.direction = trade.direction
   form.date = toLocalDateTime(trade.date)
-  form.model = trade.model
-  form.session = trade.session
   form.entry_price = Number(trade.entry_price)
   form.stop_loss = Number(trade.stop_loss)
   form.take_profit = Number(trade.take_profit)
@@ -435,6 +562,8 @@ function setFormFromTrade(trade: Trade, legs: TradeLeg[] = []) {
   form.followed_rules = Boolean(trade.followed_rules)
   form.emotion = (trade.emotion ?? 'neutral') as TradeEmotion
   form.notes = trade.notes || ''
+  form.tag_ids = trade.tags?.map((tag) => Number(tag.id)) ?? (trade.tag_ids ?? [])
+  form.tag_search = ''
 
   const sourceLegs = (legs.length > 0 ? legs : (trade.legs ?? [])).map((leg) => ({
     ...leg,
@@ -462,10 +591,13 @@ function setFormFromTrade(trade: Trade, legs: TradeLeg[] = []) {
       executed_at: form.date,
     })]
   }
+  setPsychologyFromPayload(tradePsychology ?? trade.psychology ?? null)
 
   showAdvanced.value = Boolean(
-    form.session.trim()
-    || form.model.trim()
+    form.session_enum
+    || form.strategy_model_id
+    || form.setup_id
+    || form.killzone_id
     || form.emotion !== 'neutral'
     || form.followed_rules === false
   )
@@ -520,6 +652,18 @@ const formErrors = computed<Record<string, string>>(() => {
 
   if (!form.instrument_id) {
     errors.instrument_id = 'Instrument is required.'
+  }
+  if (!form.strategy_model_id) {
+    errors.strategy_model_id = 'Strategy model is required.'
+  }
+  if (!form.setup_id) {
+    errors.setup_id = 'Setup is required.'
+  }
+  if (!form.killzone_id) {
+    errors.killzone_id = 'Killzone is required.'
+  }
+  if (!form.session_enum) {
+    errors.session_enum = 'Session is required.'
   }
 
   if (closeDate === null) {
@@ -610,6 +754,27 @@ function buildPayload(): TradePayload {
   if (!Number.isInteger(instrumentId) || instrumentId <= 0) {
     throw new Error('Instrument is required.')
   }
+  const strategyModelId = Number(form.strategy_model_id)
+  const setupId = Number(form.setup_id)
+  const killzoneId = Number(form.killzone_id)
+  if (!Number.isInteger(strategyModelId) || strategyModelId <= 0) {
+    throw new Error('Strategy model is required.')
+  }
+  if (!Number.isInteger(setupId) || setupId <= 0) {
+    throw new Error('Setup is required.')
+  }
+  if (!Number.isInteger(killzoneId) || killzoneId <= 0) {
+    throw new Error('Killzone is required.')
+  }
+  if (!form.session_enum) {
+    throw new Error('Session is required.')
+  }
+
+  const selectedModel = selectedStrategyModel.value
+  const selectedSetupValue = selectedSetup.value
+  const sessionLabel = sessionEnumOptions.value.find((option) => option.value === form.session_enum)?.label ?? form.session_enum
+  const strategyModelLabel = selectedModel?.name ?? 'General'
+  const setupLabel = selectedSetupValue?.name ?? 'Setup'
 
   const entryExecutedAt = new Date(closeDate).toISOString()
   const legs = [
@@ -650,11 +815,16 @@ function buildPayload(): TradePayload {
   return {
     account_id: Number(form.account_id),
     instrument_id: instrumentId,
+    strategy_model_id: strategyModelId,
+    setup_id: setupId,
+    killzone_id: killzoneId,
+    session_enum: form.session_enum,
+    tag_ids: form.tag_ids.map((id) => Number(id)).filter((id) => Number.isInteger(id) && id > 0),
     symbol: instrumentSymbol.value,
     direction: form.direction,
     close_date: new Date(closeDate).toISOString(),
-    session: form.session.trim() || undefined,
-    strategy_model: form.model.trim() || undefined,
+    session: sessionLabel,
+    strategy_model: `${strategyModelLabel} - ${setupLabel}`,
     entry_price: Number(form.entry_price),
     stop_loss: Number(form.stop_loss),
     take_profit: Number(form.take_profit),
@@ -746,6 +916,53 @@ function reorderPendingImages(payload: { from: number; to: number }) {
   pendingImages.value = items
 }
 
+function updatePendingImageMetadata(payload: {
+  id: string
+  context_tag?: string
+  timeframe?: string
+  annotation_notes?: string
+}) {
+  pendingImages.value = pendingImages.value.map((image) => {
+    if (image.id !== payload.id) return image
+    const nextContextTag = payload.context_tag && isImageContextTag(payload.context_tag)
+      ? payload.context_tag
+      : image.context_tag
+
+    return {
+      ...image,
+      context_tag: nextContextTag,
+      timeframe: payload.timeframe ?? image.timeframe,
+      annotation_notes: payload.annotation_notes ?? image.annotation_notes,
+    }
+  })
+}
+
+async function updateExistingImageMetadata(payload: {
+  id: number
+  context_tag?: string | null
+  timeframe?: string | null
+  annotation_notes?: string | null
+}) {
+  const contextTag = payload.context_tag && isImageContextTag(payload.context_tag)
+    ? payload.context_tag
+    : null
+
+  try {
+    const updated = await tradeStore.updateTradeImageMetadata(payload.id, {
+      context_tag: contextTag,
+      timeframe: payload.timeframe ?? null,
+      annotation_notes: payload.annotation_notes ?? null,
+    })
+    existingImages.value = existingImages.value.map((image) => image.id === payload.id ? updated : image)
+  } catch (error) {
+    uiStore.toast({
+      type: 'error',
+      title: 'Failed to save screenshot metadata',
+      message: extractErrorMessage(error),
+    })
+  }
+}
+
 async function onSelectImageFiles(files: File[]) {
   imageUploadError.value = ''
   if (files.length === 0) return
@@ -781,6 +998,9 @@ async function onSelectImageFiles(files: File[]) {
       id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
       file: compressed,
       preview_url: previewUrl,
+      context_tag: 'entry',
+      timeframe: '',
+      annotation_notes: '',
     })
   }
 
@@ -819,6 +1039,11 @@ async function uploadPendingImages(trade: Trade) {
         trade.id,
         image.file,
         baseSort + index,
+        {
+          context_tag: image.context_tag,
+          timeframe: image.timeframe || null,
+          annotation_notes: image.annotation_notes || null,
+        },
         (progress) => {
           uploadProgressByPendingId.value = {
             ...uploadProgressByPendingId.value,
@@ -838,6 +1063,20 @@ async function uploadPendingImages(trade: Trade) {
     throw error
   } finally {
     uploadingImages.value = false
+  }
+}
+
+function buildPsychologyPayload() {
+  return {
+    pre_emotion: psychology.pre_emotion.trim() || null,
+    post_emotion: psychology.post_emotion.trim() || null,
+    confidence_score: psychology.confidence_score,
+    stress_score: psychology.stress_score,
+    sleep_hours: psychology.sleep_hours,
+    impulse_flag: psychology.impulse_flag,
+    fomo_flag: psychology.fomo_flag,
+    revenge_flag: psychology.revenge_flag,
+    notes: psychology.notes.trim() ? psychology.notes.trim() : null,
   }
 }
 
@@ -882,6 +1121,8 @@ async function submitForm() {
       savedTrade = await tradeStore.addTrade(payload)
     }
 
+    await tradeStore.upsertTradePsychology(savedTrade.id, buildPsychologyPayload())
+
     await uploadPendingImages(savedTrade)
 
     uiStore.toast({
@@ -906,6 +1147,7 @@ async function loadTradeIfNeeded() {
   if (!isEditMode.value || tradeId.value === null) {
     form.date = nowLocalDateTime()
     ensureDefaultExitLeg()
+    setPsychologyFromPayload(null)
     showAdvanced.value = false
     return
   }
@@ -913,7 +1155,7 @@ async function loadTradeIfNeeded() {
   loadingTrade.value = true
   try {
     const data = await tradeStore.fetchTradeDetails(tradeId.value)
-    setFormFromTrade(data.trade, data.legs ?? [])
+    setFormFromTrade(data.trade, data.legs ?? [], data.psychology ?? null)
     existingImages.value = (data.images ?? [])
       .slice()
       .sort((a, b) => a.sort_order - b.sort_order || a.id - b.id)
@@ -934,6 +1176,7 @@ onMounted(async () => {
     await Promise.all([
       accountStore.fetchAccounts(),
       tradeStore.fetchInstruments(),
+      tradeStore.fetchDictionaries(),
     ])
   } catch {
     uiStore.toast({
@@ -948,6 +1191,18 @@ onMounted(async () => {
   }
   if (!isEditMode.value && !form.instrument_id && instrumentSelectOptions.value.length > 0) {
     form.instrument_id = instrumentSelectOptions.value[0]?.value ?? ''
+  }
+  if (!isEditMode.value && !form.strategy_model_id && strategyModelOptions.value.length > 0) {
+    form.strategy_model_id = strategyModelOptions.value[0]?.value ?? ''
+  }
+  if (!isEditMode.value && !form.setup_id && setupOptions.value.length > 0) {
+    form.setup_id = setupOptions.value[0]?.value ?? ''
+  }
+  if (!isEditMode.value && !form.killzone_id && killzoneOptions.value.length > 0) {
+    form.killzone_id = killzoneOptions.value[0]?.value ?? ''
+  }
+  if (!isEditMode.value && !form.session_enum && sessionEnumOptions.value.length > 0) {
+    form.session_enum = (sessionEnumOptions.value[0]?.value as SessionEnum | undefined) ?? ''
   }
 
   applyQuickDefaultsFromQuery()
@@ -974,8 +1229,24 @@ watch(
 )
 
 watch(
+  () => form.killzone_id,
+  (value) => {
+    const id = Number(value)
+    const match = killzones.value.find((item) => item.id === id)
+    if (match?.session_enum) {
+      form.session_enum = match.session_enum
+    }
+    schedulePrecheck()
+  }
+)
+
+watch(
   () => [
     form.account_id,
+    form.strategy_model_id,
+    form.setup_id,
+    form.killzone_id,
+    form.session_enum,
     form.direction,
     form.date,
     form.entry_price,
@@ -999,6 +1270,13 @@ watch(
     schedulePrecheck()
   },
   { deep: true }
+)
+
+watch(
+  () => form.tag_ids.slice(),
+  () => {
+    schedulePrecheck()
+  }
 )
 
 onBeforeUnmount(() => {
@@ -1145,6 +1423,40 @@ async function loadImage(file: File): Promise<HTMLImageElement> {
               :options="instrumentSelectOptions"
               :error="fieldError('instrument_id')"
             />
+            <BaseSelect
+              v-model="form.strategy_model_id"
+              label="Strategy Model"
+              required
+              searchable
+              search-placeholder="Search strategy model..."
+              :options="strategyModelOptions"
+              :error="fieldError('strategy_model_id')"
+            />
+            <BaseSelect
+              v-model="form.setup_id"
+              label="Setup"
+              required
+              searchable
+              search-placeholder="Search setup..."
+              :options="setupOptions"
+              :error="fieldError('setup_id')"
+            />
+            <BaseSelect
+              v-model="form.killzone_id"
+              label="Killzone"
+              required
+              searchable
+              search-placeholder="Search killzone..."
+              :options="killzoneOptions"
+              :error="fieldError('killzone_id')"
+            />
+            <BaseSelect
+              v-model="form.session_enum"
+              label="Session"
+              required
+              :options="sessionEnumOptions"
+              :error="fieldError('session_enum')"
+            />
             <BaseInput
               :model-value="instrumentSymbol"
               label="Symbol"
@@ -1191,14 +1503,40 @@ async function loadImage(file: File): Promise<HTMLImageElement> {
           <Transition name="fade">
             <div v-if="showAdvanced" class="mt-3 grid grid-premium md:grid-cols-2 xl:grid-cols-3">
               <BaseSelect v-model="form.emotion" label="Emotion" :options="emotionSelectOptions" />
-              <BaseInput v-model="form.session" label="Session (Optional)" placeholder="London" />
-              <BaseInput v-model="form.model" label="Strategy Model (Optional)" placeholder="Liquidity Sweep" />
               <label class="trade-checkbox-label">
                 <input v-model="form.followed_rules" type="checkbox" class="h-4 w-4" />
                 Followed Rules
               </label>
             </div>
           </Transition>
+
+          <div class="panel mt-3 p-3">
+            <p class="kicker-label">Tags</p>
+            <div class="mt-2 flex flex-wrap gap-2">
+              <span v-for="tag in selectedTags" :key="`selected-tag-${tag.id}`" class="pill pill-positive inline-flex items-center gap-1">
+                {{ tag.name }}
+                <button type="button" class="btn btn-ghost p-0 text-xs" @click="removeTag(tag.id)">x</button>
+              </span>
+              <span v-if="selectedTags.length === 0" class="section-note">No tags selected</span>
+            </div>
+            <BaseInput
+              v-model="form.tag_search"
+              class="mt-2"
+              label="Search Tags"
+              placeholder="Type tag name..."
+            />
+            <div v-if="filteredTagOptions.length > 0" class="mt-2 flex flex-wrap gap-2">
+              <button
+                v-for="tag in filteredTagOptions.slice(0, 12)"
+                :key="`tag-option-${tag.id}`"
+                type="button"
+                class="chip-btn"
+                @click="addTag(tag.id)"
+              >
+                + {{ tag.name }}
+              </button>
+            </div>
+          </div>
         </section>
 
         <section class="trade-form-section">
@@ -1430,6 +1768,61 @@ async function loadImage(file: File): Promise<HTMLImageElement> {
           />
         </section>
 
+        <section class="trade-form-section">
+          <div class="section-head">
+            <p class="trade-section-title">Psychology (Pre/Post)</p>
+            <span class="section-note">Used for expectancy correlation analytics.</span>
+          </div>
+          <div class="grid grid-premium md:grid-cols-2 xl:grid-cols-4">
+            <BaseInput v-model="psychology.pre_emotion" label="Pre Emotion" placeholder="calm / anxious" />
+            <BaseInput v-model="psychology.post_emotion" label="Post Emotion" placeholder="confident / tilted" />
+            <BaseInput
+              v-model="psychology.confidence_score"
+              label="Confidence (1-10)"
+              type="number"
+              min="1"
+              max="10"
+              step="1"
+            />
+            <BaseInput
+              v-model="psychology.stress_score"
+              label="Stress (1-10)"
+              type="number"
+              min="1"
+              max="10"
+              step="1"
+            />
+            <BaseInput
+              v-model="psychology.sleep_hours"
+              label="Sleep Hours"
+              type="number"
+              min="0"
+              max="24"
+              step="0.25"
+            />
+            <label class="trade-checkbox-label">
+              <input v-model="psychology.impulse_flag" type="checkbox" class="h-4 w-4" />
+              Impulse Flag
+            </label>
+            <label class="trade-checkbox-label">
+              <input v-model="psychology.fomo_flag" type="checkbox" class="h-4 w-4" />
+              FOMO Flag
+            </label>
+            <label class="trade-checkbox-label">
+              <input v-model="psychology.revenge_flag" type="checkbox" class="h-4 w-4" />
+              Revenge Flag
+            </label>
+          </div>
+          <BaseInput
+            v-model="psychology.notes"
+            class="mt-3"
+            label="Psychology Notes"
+            multiline
+            :rows="2"
+            placeholder="State trigger, self-talk, discipline notes..."
+          />
+        </section>
+
         <section class="trade-form-section trade-workflow-loop">
           <div class="section-head">
             <p class="trade-section-title">Weekly Review Loop</p>
@@ -1472,11 +1865,14 @@ async function loadImage(file: File): Promise<HTMLImageElement> {
           :uploading="uploadingImages"
           :upload-progress="uploadProgressByPendingId"
           :deleting-image-ids="deletingImageIds"
+          :context-options="imageContextOptions"
           :error="imageUploadError"
           @select-files="onSelectImageFiles"
           @remove-pending="removePendingImage"
           @remove-existing="removeExistingImage"
           @reorder-pending="reorderPendingImages"
+          @update-pending-metadata="updatePendingImageMetadata"
+          @update-existing-metadata="updateExistingImageMetadata"
         />
 
         <div class="flex items-center justify-end gap-2 pt-2">

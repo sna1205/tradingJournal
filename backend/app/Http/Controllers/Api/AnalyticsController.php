@@ -167,6 +167,7 @@ class AnalyticsController extends Controller
     {
         $payload = $this->remember('behavioral', $request, function () use ($request): array {
             $trades = $this->chronologicalTrades($request);
+            $trades->load('psychology');
             $startingBalance = $this->startingBalance($request);
 
             return $this->behavioralAnalyticsEngine->calculate($trades, $startingBalance);
@@ -178,11 +179,37 @@ class AnalyticsController extends Controller
     public function rankings(Request $request)
     {
         $payload = $this->remember('rankings', $request, function () use ($request): array {
-            $trades = $this->chronologicalTrades($request);
+            $trades = $this->baseQuery($request)
+                ->with(['strategyModel', 'setup', 'killzone'])
+                ->orderBy('date')
+                ->orderBy('id')
+                ->get();
 
             return [
-                'sessions' => $this->groupMetricsBy($trades, 'session', 'session'),
-                'strategy_models' => $this->groupMetricsBy($trades, 'model', 'strategy_model'),
+                'sessions' => $this->groupMetricsByCallback(
+                    $trades,
+                    fn ($trade): string => (string) (data_get($trade, 'session_enum') ?: 'unclassified'),
+                    fn ($trade): string => (string) (data_get($trade, 'session_enum') ?: 'unclassified'),
+                    'session'
+                ),
+                'killzones' => $this->groupMetricsByCallback(
+                    $trades,
+                    fn ($trade): string => (string) (data_get($trade, 'killzone_id') ?: 'legacy'),
+                    fn ($trade): string => (string) (data_get($trade, 'killzone.name') ?: 'Legacy/Unmapped'),
+                    'killzone'
+                ),
+                'setups' => $this->groupMetricsByCallback(
+                    $trades,
+                    fn ($trade): string => (string) (data_get($trade, 'setup_id') ?: 'legacy'),
+                    fn ($trade): string => (string) (data_get($trade, 'setup.name') ?: 'Legacy/Unmapped'),
+                    'setup'
+                ),
+                'strategy_models' => $this->groupMetricsByCallback(
+                    $trades,
+                    fn ($trade): string => (string) (data_get($trade, 'strategy_model_id') ?: 'legacy'),
+                    fn ($trade): string => (string) (data_get($trade, 'strategyModel.name') ?: 'Legacy/Unmapped'),
+                    'strategy_model'
+                ),
                 'symbols' => $this->groupMetricsBy($trades, 'pair', 'symbol'),
             ];
         });
@@ -486,9 +513,17 @@ class AnalyticsController extends Controller
             'pair',
             'symbol',
             'direction',
+            'strategy_model_id',
+            'setup_id',
+            'killzone_id',
+            'tag_ids',
+            'tags',
+            'session_enum',
             'session',
             'model',
             'strategy_model',
+            'image_context_tag',
+            'image_timeframe',
             'emotion',
             'followed_rules',
             'date_from',
@@ -502,6 +537,9 @@ class AnalyticsController extends Controller
         }
         if (!($filters['model'] ?? null) && ($filters['strategy_model'] ?? null)) {
             $filters['model'] = $filters['strategy_model'];
+        }
+        if (!($filters['tag_ids'] ?? null) && ($filters['tags'] ?? null)) {
+            $filters['tag_ids'] = $filters['tags'];
         }
         if (!($filters['date_from'] ?? null) && ($filters['close_date_from'] ?? null)) {
             $filters['date_from'] = $filters['close_date_from'];
@@ -599,6 +637,41 @@ class AnalyticsController extends Controller
 
                 return [
                     $labelKey => $value,
+                    'total_trades' => (int) $metrics['total_trades'],
+                    'win_rate' => (float) $metrics['win_rate'],
+                    'profit_factor' => $metrics['profit_factor'],
+                    'expectancy' => (float) $metrics['expectancy'],
+                    'total_pnl' => (float) $metrics['net_profit'],
+                    'avg_r' => (float) $metrics['avg_r'],
+                ];
+            })
+            ->sortByDesc('expectancy')
+            ->values()
+            ->all();
+    }
+
+    /**
+     * @param Collection<int, Trade> $trades
+     * @param callable(Trade):string $groupResolver
+     * @param callable(Trade):string $labelResolver
+     * @return array<int, array<string, mixed>>
+     */
+    private function groupMetricsByCallback(
+        Collection $trades,
+        callable $groupResolver,
+        callable $labelResolver,
+        string $labelKey
+    ): array {
+        return $trades
+            ->groupBy(fn (Trade $trade): string => $groupResolver($trade) ?: 'unknown')
+            ->map(function (Collection $rows) use ($labelResolver, $labelKey): array {
+                /** @var Trade|null $sample */
+                $sample = $rows->first();
+                $label = $sample !== null ? $labelResolver($sample) : 'Unknown';
+                $metrics = $this->metricsEngine->calculate($rows->values());
+
+                return [
+                    $labelKey => $label !== '' ? $label : 'Unknown',
                     'total_trades' => (int) $metrics['total_trades'],
                     'win_rate' => (float) $metrics['win_rate'],
                     'profit_factor' => $metrics['profit_factor'],

@@ -20,6 +20,14 @@ use Illuminate\Validation\ValidationException;
 
 class TradeController extends Controller
 {
+    private const SESSION_ENUM_VALUES = [
+        'asia',
+        'london',
+        'new_york',
+        'overlap',
+        'off_session',
+    ];
+
     private const EMOTION_VALUES = [
         'neutral',
         'calm',
@@ -47,8 +55,12 @@ class TradeController extends Controller
             ->with([
                 'account',
                 'instrument',
+                'strategyModel',
+                'setup',
+                'killzone',
+                'tags',
                 'images' => fn ($query) => $query
-                    ->select(['id', 'trade_id', 'image_url', 'thumbnail_url', 'file_size', 'file_type', 'sort_order'])
+                    ->select(['id', 'trade_id', 'image_url', 'thumbnail_url', 'file_size', 'file_type', 'sort_order', 'context_tag', 'timeframe', 'annotation_notes'])
                     ->orderBy('sort_order')
                     ->orderBy('id'),
             ])
@@ -135,9 +147,10 @@ class TradeController extends Controller
             if (count($legs) > 0) {
                 $createdTrade->legs()->createMany($legs);
             }
+            $this->syncTradeTags($createdTrade, $this->extractTagIds($payloadWithMetrics));
             $this->accountBalanceService->rebuildAccountState((int) $account->id);
 
-            return $createdTrade->fresh(['account', 'instrument', 'legs']);
+            return $createdTrade->fresh(['account', 'instrument', 'strategyModel', 'setup', 'killzone', 'tags', 'legs']);
         });
 
         $this->touchAnalyticsCacheVersion();
@@ -150,6 +163,11 @@ class TradeController extends Controller
         $trade->load([
             'account',
             'instrument',
+            'strategyModel',
+            'setup',
+            'killzone',
+            'tags',
+            'psychology',
             'legs' => fn ($query) => $query->orderBy('executed_at')->orderBy('id'),
             'images' => fn ($query) => $query->orderBy('sort_order')->orderBy('id'),
         ]);
@@ -163,6 +181,7 @@ class TradeController extends Controller
         return response()->json([
             'trade' => $trade,
             'legs' => $trade->legs->values(),
+            'psychology' => $trade->psychology,
             'images' => $images,
         ]);
     }
@@ -195,10 +214,11 @@ class TradeController extends Controller
                     $trade->legs()->createMany($legs);
                 }
             }
+            $this->syncTradeTags($trade, $this->extractTagIds($payloadWithMetrics));
 
             $this->accountBalanceService->rebuildMany([$previousAccountId, (int) $trade->account_id]);
 
-            return $trade->fresh(['account', 'instrument', 'legs']);
+            return $trade->fresh(['account', 'instrument', 'strategyModel', 'setup', 'killzone', 'tags', 'legs']);
         });
 
         $this->touchAnalyticsCacheVersion();
@@ -232,6 +252,12 @@ class TradeController extends Controller
         $validator = Validator::make($input, [
             'account_id' => [$required, 'integer', 'exists:accounts,id'],
             'instrument_id' => [$required, 'integer', 'exists:instruments,id'],
+            'strategy_model_id' => ['sometimes', 'nullable', 'integer', 'exists:strategy_models,id'],
+            'setup_id' => ['sometimes', 'nullable', 'integer', 'exists:setups,id'],
+            'killzone_id' => ['sometimes', 'nullable', 'integer', 'exists:killzones,id'],
+            'session_enum' => ['sometimes', 'nullable', Rule::in(self::SESSION_ENUM_VALUES)],
+            'tag_ids' => ['sometimes', 'array'],
+            'tag_ids.*' => ['integer', 'exists:trade_tags,id'],
             'pair' => [$required, 'string', 'max:30', 'regex:/^[A-Z0-9._\/-]+$/i'],
             'direction' => [$required, 'in:buy,sell'],
             'entry_price' => [$required, 'numeric', 'gt:0'],
@@ -290,6 +316,7 @@ class TradeController extends Controller
             $takeProfit = $this->readFloatFromInputOrTrade($input, 'take_profit', $existingTrade);
             $direction = (string) ($input['direction'] ?? ($existingTrade?->direction ?? ''));
             $instrumentId = $this->readIntFromInputOrTrade($input, 'instrument_id', $existingTrade);
+            $killzoneId = $this->readIntFromInputOrTrade($input, 'killzone_id', $existingTrade);
             $pair = strtoupper((string) ($input['pair'] ?? ($existingTrade?->pair ?? '')));
 
             if ($entryPrice !== null && $stopLoss !== null && $entryPrice === $stopLoss) {
@@ -355,6 +382,16 @@ class TradeController extends Controller
                 $validator->errors()->add('instrument_id', 'Instrument is required.');
             }
 
+            if ($killzoneId !== null) {
+                $killzoneSessionEnum = (string) (DB::table('killzones')
+                    ->where('id', $killzoneId)
+                    ->value('session_enum') ?? '');
+                $sessionEnum = (string) ($input['session_enum'] ?? ($existingTrade?->session_enum ?? ''));
+                if ($killzoneSessionEnum !== '' && $sessionEnum !== '' && $killzoneSessionEnum !== $sessionEnum) {
+                    $validator->errors()->add('session_enum', 'Session enum must match selected killzone.');
+                }
+            }
+
             if (!$isUpdate && !array_key_exists('pair', $input)) {
                 $validator->errors()->add('pair', 'Symbol is required.');
             }
@@ -374,11 +411,20 @@ class TradeController extends Controller
         if (!array_key_exists('model', $input) && array_key_exists('strategy_model', $input)) {
             $input['model'] = $input['strategy_model'];
         }
+        if (!array_key_exists('strategy_model_id', $input) && array_key_exists('model_id', $input)) {
+            $input['strategy_model_id'] = $input['model_id'];
+        }
+        if (!array_key_exists('session_enum', $input) && array_key_exists('sessionEnum', $input)) {
+            $input['session_enum'] = $input['sessionEnum'];
+        }
+        if (!array_key_exists('tag_ids', $input) && array_key_exists('tags', $input)) {
+            $input['tag_ids'] = $input['tags'];
+        }
         if (!array_key_exists('date', $input) && array_key_exists('close_date', $input)) {
             $input['date'] = $input['close_date'];
         }
 
-        unset($input['symbol'], $input['position_size'], $input['strategy_model'], $input['close_date']);
+        unset($input['symbol'], $input['position_size'], $input['strategy_model'], $input['model_id'], $input['sessionEnum'], $input['tags'], $input['close_date']);
 
         return $input;
     }
@@ -417,6 +463,12 @@ class TradeController extends Controller
         if (!array_key_exists('model', $input) && array_key_exists('strategy_model', $input)) {
             $input['model'] = $input['strategy_model'];
         }
+        if (!array_key_exists('strategy_model_id', $input) && array_key_exists('model_id', $input)) {
+            $input['strategy_model_id'] = $input['model_id'];
+        }
+        if (!array_key_exists('tag_ids', $input) && array_key_exists('tags', $input)) {
+            $input['tag_ids'] = $input['tags'];
+        }
         if (!array_key_exists('date_from', $input) && array_key_exists('close_date_from', $input)) {
             $input['date_from'] = $input['close_date_from'];
         }
@@ -428,10 +480,17 @@ class TradeController extends Controller
             'account_id' => $input['account_id'] ?? null,
             'account_ids' => $input['account_ids'] ?? null,
             'instrument_id' => $input['instrument_id'] ?? null,
+            'strategy_model_id' => $input['strategy_model_id'] ?? null,
+            'setup_id' => $input['setup_id'] ?? null,
+            'killzone_id' => $input['killzone_id'] ?? null,
+            'tag_ids' => $input['tag_ids'] ?? null,
             'pair' => $input['pair'] ?? null,
             'direction' => $input['direction'] ?? null,
+            'session_enum' => $input['session_enum'] ?? null,
             'session' => $input['session'] ?? null,
             'model' => $input['model'] ?? null,
+            'image_context_tag' => $input['image_context_tag'] ?? null,
+            'image_timeframe' => $input['image_timeframe'] ?? null,
             'emotion' => $input['emotion'] ?? null,
             'followed_rules' => $input['followed_rules'] ?? null,
             'date_from' => $input['date_from'] ?? null,
@@ -446,7 +505,9 @@ class TradeController extends Controller
         }
 
         $payload['session'] = $payload['session'] ?? 'N/A';
+        $payload['session_enum'] = $payload['session_enum'] ?? null;
         $payload['model'] = $payload['model'] ?? 'General';
+        $payload['tag_ids'] = $payload['tag_ids'] ?? [];
         $payload['date'] = $payload['date'] ?? now()->toDateTimeString();
         $payload['commission'] = $payload['commission'] ?? 0;
         $payload['swap'] = $payload['swap'] ?? 0;
@@ -475,10 +536,20 @@ class TradeController extends Controller
                 'notes' => $leg->notes,
             ])
             ->all();
+        $existingTagIds = $existingTrade->tags()
+            ->pluck('trade_tags.id')
+            ->map(fn ($id): int => (int) $id)
+            ->values()
+            ->all();
 
         return [
             'account_id' => $payload['account_id'] ?? (int) $existingTrade->account_id,
             'instrument_id' => $payload['instrument_id'] ?? (int) $existingTrade->instrument_id,
+            'strategy_model_id' => $payload['strategy_model_id'] ?? ($existingTrade->strategy_model_id !== null ? (int) $existingTrade->strategy_model_id : null),
+            'setup_id' => $payload['setup_id'] ?? ($existingTrade->setup_id !== null ? (int) $existingTrade->setup_id : null),
+            'killzone_id' => $payload['killzone_id'] ?? ($existingTrade->killzone_id !== null ? (int) $existingTrade->killzone_id : null),
+            'session_enum' => $payload['session_enum'] ?? ($existingTrade->session_enum !== null ? (string) $existingTrade->session_enum : null),
+            'tag_ids' => $payload['tag_ids'] ?? $existingTagIds,
             'pair' => $payload['pair'] ?? (string) $existingTrade->pair,
             'direction' => $payload['direction'] ?? (string) $existingTrade->direction,
             'entry_price' => $payload['entry_price'] ?? (float) $existingTrade->entry_price,
@@ -529,7 +600,10 @@ class TradeController extends Controller
             'spread_cost' => (float) ($payload['spread_cost'] ?? 0),
             'slippage_cost' => (float) ($payload['slippage_cost'] ?? 0),
             'legs' => $normalizedLegs,
+            'tag_ids' => $this->extractTagIds($payload),
         ];
+
+        $prepared = $this->applyTaxonomyLabels($prepared);
 
         $calculated = $this->calculationEngine->calculate($prepared);
         $lotSizeFromLegs = $legSummary['entry_quantity'] > 0
@@ -702,10 +776,104 @@ class TradeController extends Controller
         return collect($payloadWithMetrics)
             ->except([
                 'legs',
+                'tag_ids',
                 'instrument_tick_size',
                 'instrument_tick_value',
             ])
             ->all();
+    }
+
+    /**
+     * @param array<string,mixed> $payload
+     * @return array<string,mixed>
+     */
+    private function applyTaxonomyLabels(array $payload): array
+    {
+        $strategyModelId = isset($payload['strategy_model_id']) && is_numeric($payload['strategy_model_id'])
+            ? (int) $payload['strategy_model_id']
+            : null;
+        $setupId = isset($payload['setup_id']) && is_numeric($payload['setup_id'])
+            ? (int) $payload['setup_id']
+            : null;
+        $killzoneId = isset($payload['killzone_id']) && is_numeric($payload['killzone_id'])
+            ? (int) $payload['killzone_id']
+            : null;
+
+        $strategyModelName = $strategyModelId !== null
+            ? (string) (DB::table('strategy_models')->where('id', $strategyModelId)->value('name') ?? '')
+            : '';
+        $setupName = $setupId !== null
+            ? (string) (DB::table('setups')->where('id', $setupId)->value('name') ?? '')
+            : '';
+        $killzoneSession = $killzoneId !== null
+            ? (string) (DB::table('killzones')->where('id', $killzoneId)->value('session_enum') ?? '')
+            : '';
+
+        $sessionEnum = (string) ($payload['session_enum'] ?? '');
+        if ($sessionEnum === '' && $killzoneSession !== '') {
+            $sessionEnum = $killzoneSession;
+        }
+
+        $sessionLabel = $this->sessionLabelFromEnum($sessionEnum);
+        if ($sessionLabel === '') {
+            $sessionLabel = (string) ($payload['session'] ?? 'N/A');
+        }
+
+        $modelLabel = $strategyModelName !== ''
+            ? $strategyModelName
+            : ((string) ($payload['model'] ?? 'General'));
+        if ($setupName !== '' && !str_contains(strtolower($modelLabel), strtolower($setupName))) {
+            $modelLabel = trim($modelLabel . ' - ' . $setupName);
+        }
+
+        return [
+            ...$payload,
+            'session_enum' => $sessionEnum !== '' ? $sessionEnum : null,
+            'session' => $sessionLabel,
+            'model' => $modelLabel,
+        ];
+    }
+
+    private function sessionLabelFromEnum(string $sessionEnum): string
+    {
+        return match ($sessionEnum) {
+            'asia' => 'Asia',
+            'london' => 'London',
+            'new_york' => 'New York',
+            'overlap' => 'London/NY Overlap',
+            'off_session' => 'Off Session',
+            default => '',
+        };
+    }
+
+    /**
+     * @param array<string,mixed> $payload
+     * @return array<int,int>
+     */
+    private function extractTagIds(array $payload): array
+    {
+        $raw = $payload['tag_ids'] ?? [];
+        if (is_string($raw)) {
+            $raw = explode(',', $raw);
+        }
+        if (!is_array($raw)) {
+            return [];
+        }
+
+        return collect($raw)
+            ->map(fn ($id): int => (int) $id)
+            ->filter(fn (int $id): bool => $id > 0)
+            ->unique()
+            ->values()
+            ->all();
+    }
+
+    /**
+     * @param array<int,int> $tagIds
+     */
+    private function syncTradeTags(Trade $trade, array $tagIds): void
+    {
+        $trade->tags()->sync($tagIds);
     }
 
     /**
@@ -796,7 +964,7 @@ class TradeController extends Controller
     }
 
     /**
-     * @return array{id:int,image_url:string,thumbnail_url:string,file_size:int,file_type:string,sort_order:int}
+     * @return array{id:int,image_url:string,thumbnail_url:string,file_size:int,file_type:string,sort_order:int,context_tag:?string,timeframe:?string,annotation_notes:?string}
      */
     private function serializeTradeImage(TradeImage $image, string $disk): array
     {
@@ -807,6 +975,9 @@ class TradeController extends Controller
             'file_size' => (int) $image->file_size,
             'file_type' => (string) $image->file_type,
             'sort_order' => (int) $image->sort_order,
+            'context_tag' => $image->context_tag !== null ? (string) $image->context_tag : null,
+            'timeframe' => $image->timeframe !== null ? (string) $image->timeframe : null,
+            'annotation_notes' => $image->annotation_notes !== null ? (string) $image->annotation_notes : null,
         ];
     }
 

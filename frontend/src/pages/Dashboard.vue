@@ -28,6 +28,7 @@ import { queryLocalMissedTrades, queryLocalTrades, shouldUseLocalFallback } from
 import { asCurrency, asSignedCurrency } from '@/utils/format'
 import { useAccountStore } from '@/stores/accountStore'
 import { useAnalyticsStore } from '@/stores/analyticsStore'
+import { useReportStore } from '@/stores/reportStore'
 import { useSyncStatusStore } from '@/stores/syncStatusStore'
 import {
   isLiveAccountType,
@@ -42,6 +43,7 @@ type DashboardMode = 'live' | 'prop'
 
 const analyticsStore = useAnalyticsStore()
 const accountStore = useAccountStore()
+const reportStore = useReportStore()
 const syncStatusStore = useSyncStatusStore()
 const {
   summary,
@@ -55,6 +57,7 @@ const {
   loading,
 } = storeToRefs(analyticsStore)
 const { accounts, selectedAccountId } = storeToRefs(accountStore)
+const { reports } = storeToRefs(reportStore)
 
 const activeTab = ref<DashboardTab>('overview')
 const dashboardMode = ref<DashboardMode>('live')
@@ -74,6 +77,7 @@ const recentTradesLoading = ref(false)
 const recentMissedTradesLoading = ref(false)
 const challengeStatus = ref<AccountChallengeStatusPayload | null>(null)
 const challengeStatusLoading = ref(false)
+const selectedDashboardReportId = ref('')
 let recentTradesRefreshHandle: number | null = null
 
 const propAccounts = computed(() => accounts.value.filter((account) => isPropAccountType(account.account_type)))
@@ -215,6 +219,8 @@ const emotionChartRows = computed(() =>
 )
 const chartEmotionRows = computed(() => emotionChartRows.value)
 const chartSessionRows = computed(() => sessionRows.value)
+const confidenceBuckets = computed(() => behavioral.value?.psychology_correlations?.confidence_buckets ?? [])
+const stressBuckets = computed(() => behavioral.value?.psychology_correlations?.stress_buckets ?? [])
 const hasChartData = computed(() => chartEmotionRows.value.length > 0 || chartSessionRows.value.length > 0)
 const challengeRiskStateLabel = computed(() => {
   if (!challengeStatus.value) return 'No status'
@@ -282,9 +288,16 @@ const weeklyFollowUpDoneCount = computed(() => {
 })
 const weeklyFollowUpPendingCount = computed(() => Math.max(weeklyActionPlanCount.value - weeklyFollowUpDoneCount.value, 0))
 const weeklyLoopLoading = computed(() => recentTradesLoading.value || recentMissedTradesLoading.value)
+const dashboardSavedViewOptions = computed(() => [
+  { label: 'No saved view', value: '' },
+  ...reports.value
+    .filter((report) => report.scope === 'dashboard')
+    .map((report) => ({ label: report.name, value: String(report.id) })),
+])
 
 onMounted(async () => {
   await accountStore.fetchAccounts()
+  await loadDashboardSavedViews()
   await refreshDashboardData()
   startRecentTradesAutoRefresh()
   window.addEventListener('focus', handleVisibilityOrFocus)
@@ -335,6 +348,92 @@ async function refreshDashboardData() {
     fetchRecentTrades(filters),
     fetchRecentMissedTrades(filters),
   ])
+}
+
+async function loadDashboardSavedViews() {
+  try {
+    await reportStore.fetchReports('dashboard')
+  } catch {
+    // Saved views are optional; dashboard should still render without them.
+  }
+}
+
+function serializedDashboardFilters() {
+  return {
+    mode: effectiveDashboardMode.value,
+    range_preset: rangePreset.value,
+    date_from: customDateFrom.value,
+    date_to: customDateTo.value,
+    account_id: scopedSelectedAccountId.value,
+    tab: activeTab.value,
+  }
+}
+
+async function saveDashboardView() {
+  const name = window.prompt('Saved view name')
+  if (!name || !name.trim()) return
+
+  try {
+    const report = await reportStore.createReport({
+      name: name.trim(),
+      scope: 'dashboard',
+      filters_json: serializedDashboardFilters(),
+      columns_json: null,
+      is_default: false,
+    })
+    selectedDashboardReportId.value = String(report.id)
+    await loadDashboardSavedViews()
+  } catch {
+    // Keep UI responsive even when report API is unavailable.
+  }
+}
+
+async function applyDashboardSavedView(reportId: string) {
+  selectedDashboardReportId.value = reportId
+  if (!reportId) return
+
+  const report = reports.value.find((item) => String(item.id) === reportId)
+  if (!report) return
+
+  const saved = (report.filters_json ?? {}) as Record<string, unknown>
+  const mode = String(saved.mode ?? '')
+  const range = String(saved.range_preset ?? '')
+  const savedDateFrom = String(saved.date_from ?? '')
+  const savedDateTo = String(saved.date_to ?? '')
+  const accountId = Number(saved.account_id ?? 0)
+  const tab = String(saved.tab ?? '')
+
+  if (mode === 'live' || mode === 'prop') {
+    dashboardMode.value = mode
+  }
+  if (range === '30d' || range === 'custom') {
+    rangePreset.value = range
+  }
+  if (savedDateFrom) {
+    customDateFrom.value = savedDateFrom
+  }
+  if (savedDateTo) {
+    customDateTo.value = savedDateTo
+  }
+  if (Number.isInteger(accountId) && accountId > 0) {
+    accountStore.setSelectedAccountId(accountId)
+  }
+  if (tab === 'overview' || tab === 'chart' || tab === 'calendar') {
+    activeTab.value = tab
+  }
+
+  await refreshDashboardData()
+}
+
+function exportDashboardCsv() {
+  reportStore.exportAdHocCsv({
+    scope: 'dashboard',
+    name: 'dashboard-view',
+    account_id: scopedSelectedAccountId.value ?? undefined,
+    mode: effectiveDashboardMode.value,
+    date_from: activeRangeFilters.value.date_from,
+    date_to: activeRangeFilters.value.date_to,
+  })
 }
 
 async function fetchChallengeStatus() {
@@ -693,6 +792,24 @@ function setDashboardMode(mode: DashboardMode) {
             <button class="btn overview-range-btn" :class="{ active: rangePreset === 'custom' }" @click="rangePreset = 'custom'">
               <LayoutGrid class="h-4 w-4" />
               Custom
+            </button>
+          </div>
+
+          <div class="overview-range-group">
+            <div class="min-w-[220px]">
+              <BaseSelect
+                v-model="selectedDashboardReportId"
+                label="Saved View"
+                size="sm"
+                :options="dashboardSavedViewOptions"
+                @update:model-value="applyDashboardSavedView"
+              />
+            </div>
+            <button class="btn overview-range-btn" @click="saveDashboardView">
+              Save View
+            </button>
+            <button class="btn overview-range-btn" @click="exportDashboardCsv">
+              Export CSV
             </button>
           </div>
         </div>
@@ -1086,6 +1203,82 @@ function setDashboardMode(mode: DashboardMode) {
                   <AnimatedNumber :value="currentDrawdownPct" :decimals="2" suffix="%" />
                 </p>
               </div>
+            </div>
+          </GlassPanel>
+        </section>
+
+        <section class="grid grid-premium xl:grid-cols-2">
+          <GlassPanel class="overview-section-card">
+            <div class="section-head">
+              <h2 class="section-title">Expectancy by Confidence</h2>
+            </div>
+            <div v-if="confidenceBuckets.length === 0">
+              <EmptyState
+                title="No confidence data"
+                description="Capture confidence score in trade psychology to rank expectancy buckets."
+                :icon="ListChecks"
+              />
+            </div>
+            <div v-else class="table-wrap">
+              <table class="table">
+                <thead>
+                  <tr>
+                    <th>Bucket</th>
+                    <th>Trades</th>
+                    <th>Expectancy</th>
+                    <th>Win Rate</th>
+                    <th>Rule Breaks</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="row in confidenceBuckets" :key="`confidence-${row.bucket}`">
+                    <td class="font-semibold">{{ row.bucket }}</td>
+                    <td>{{ row.total_trades }}</td>
+                    <td class="value-display" :class="Number(row.expectancy_money) >= 0 ? 'positive' : 'negative'">
+                      {{ asSignedCurrency(row.expectancy_money) }}
+                    </td>
+                    <td>{{ Number(row.win_rate).toFixed(2) }}%</td>
+                    <td>{{ Number(row.rule_break_rate).toFixed(2) }}%</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </GlassPanel>
+
+          <GlassPanel class="overview-section-card">
+            <div class="section-head">
+              <h2 class="section-title">Expectancy by Stress</h2>
+            </div>
+            <div v-if="stressBuckets.length === 0">
+              <EmptyState
+                title="No stress data"
+                description="Capture stress score in trade psychology to track deterioration zones."
+                :icon="ShieldAlert"
+              />
+            </div>
+            <div v-else class="table-wrap">
+              <table class="table">
+                <thead>
+                  <tr>
+                    <th>Bucket</th>
+                    <th>Trades</th>
+                    <th>Expectancy</th>
+                    <th>Win Rate</th>
+                    <th>Rule Breaks</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="row in stressBuckets" :key="`stress-${row.bucket}`">
+                    <td class="font-semibold">{{ row.bucket }}</td>
+                    <td>{{ row.total_trades }}</td>
+                    <td class="value-display" :class="Number(row.expectancy_money) >= 0 ? 'positive' : 'negative'">
+                      {{ asSignedCurrency(row.expectancy_money) }}
+                    </td>
+                    <td>{{ Number(row.win_rate).toFixed(2) }}%</td>
+                    <td>{{ Number(row.rule_break_rate).toFixed(2) }}%</td>
+                  </tr>
+                </tbody>
+              </table>
             </div>
           </GlassPanel>
         </section>

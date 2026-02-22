@@ -6,7 +6,9 @@ use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\Eloquent\Relations\HasOne;
 use Illuminate\Database\Eloquent\SoftDeletes;
 
 class Trade extends Model
@@ -17,6 +19,9 @@ class Trade extends Model
     protected $fillable = [
         'account_id',
         'instrument_id',
+        'strategy_model_id',
+        'setup_id',
+        'killzone_id',
         'pair',
         'direction',
         'entry_price',
@@ -47,6 +52,7 @@ class Trade extends Model
         'emotion',
         'risk_override_reason',
         'session',
+        'session_enum',
         'model',
         'date',
         'notes',
@@ -55,6 +61,9 @@ class Trade extends Model
     protected $casts = [
         'account_id' => 'integer',
         'instrument_id' => 'integer',
+        'strategy_model_id' => 'integer',
+        'setup_id' => 'integer',
+        'killzone_id' => 'integer',
         'entry_price' => 'decimal:6',
         'avg_entry_price' => 'decimal:6',
         'stop_loss' => 'decimal:6',
@@ -80,6 +89,7 @@ class Trade extends Model
         'account_balance_before_trade' => 'decimal:2',
         'account_balance_after_trade' => 'decimal:2',
         'followed_rules' => 'boolean',
+        'session_enum' => 'string',
         'date' => 'datetime',
         'deleted_at' => 'datetime',
     ];
@@ -104,11 +114,32 @@ class Trade extends Model
                 }
             })
             ->when($filters['instrument_id'] ?? null, fn (Builder $builder, int|string $instrumentId) => $builder->where('instrument_id', (int) $instrumentId))
+            ->when($filters['strategy_model_id'] ?? null, fn (Builder $builder, int|string $strategyModelId) => $builder->where('strategy_model_id', (int) $strategyModelId))
+            ->when($filters['setup_id'] ?? null, fn (Builder $builder, int|string $setupId) => $builder->where('setup_id', (int) $setupId))
+            ->when($filters['killzone_id'] ?? null, fn (Builder $builder, int|string $killzoneId) => $builder->where('killzone_id', (int) $killzoneId))
+            ->when($filters['tag_ids'] ?? null, function (Builder $builder, array|string $tagIds): void {
+                $values = is_array($tagIds)
+                    ? $tagIds
+                    : explode(',', (string) $tagIds);
+                $ids = collect($values)
+                    ->map(fn ($value): int => (int) $value)
+                    ->filter(fn (int $value): bool => $value > 0)
+                    ->unique()
+                    ->values()
+                    ->all();
+
+                if (count($ids) > 0) {
+                    $builder->whereHas('tags', fn (Builder $tagsQuery) => $tagsQuery->whereIn('trade_tags.id', $ids));
+                }
+            })
             ->when($filters['pair'] ?? null, fn (Builder $builder, string $pair) => $builder->where('pair', 'like', "%{$pair}%"))
             ->when($filters['direction'] ?? null, fn (Builder $builder, string $direction) => $builder->where('direction', $direction))
+            ->when($filters['session_enum'] ?? null, fn (Builder $builder, string $sessionEnum) => $builder->where('session_enum', $sessionEnum))
             ->when($filters['session'] ?? null, fn (Builder $builder, string $session) => $builder->where('session', 'like', "%{$session}%"))
             ->when($filters['model'] ?? null, fn (Builder $builder, string $model) => $builder->where('model', 'like', "%{$model}%"))
             ->when($filters['emotion'] ?? null, fn (Builder $builder, string $emotion) => $builder->where('emotion', $emotion))
+            ->when($filters['image_context_tag'] ?? null, fn (Builder $builder, string $contextTag) => $builder->whereHas('images', fn (Builder $query) => $query->where('context_tag', $contextTag)))
+            ->when($filters['image_timeframe'] ?? null, fn (Builder $builder, string $timeframe) => $builder->whereHas('images', fn (Builder $query) => $query->where('timeframe', $timeframe)))
             ->when(
                 array_key_exists('followed_rules', $filters) && $filters['followed_rules'] !== null && $filters['followed_rules'] !== '',
                 fn (Builder $builder) => $builder->where('followed_rules', filter_var($filters['followed_rules'], FILTER_VALIDATE_BOOL, FILTER_NULL_ON_FAILURE) ?? false)
@@ -127,6 +158,21 @@ class Trade extends Model
         return $this->belongsTo(Instrument::class);
     }
 
+    public function strategyModel(): BelongsTo
+    {
+        return $this->belongsTo(StrategyModel::class);
+    }
+
+    public function setup(): BelongsTo
+    {
+        return $this->belongsTo(Setup::class);
+    }
+
+    public function killzone(): BelongsTo
+    {
+        return $this->belongsTo(Killzone::class);
+    }
+
     public function images(): HasMany
     {
         return $this->hasMany(TradeImage::class);
@@ -135,5 +181,16 @@ class Trade extends Model
     public function legs(): HasMany
     {
         return $this->hasMany(TradeLeg::class)->orderBy('executed_at')->orderBy('id');
+    }
+
+    public function tags(): BelongsToMany
+    {
+        return $this->belongsToMany(TradeTag::class, 'trade_tag_map')
+            ->withTimestamps();
+    }
+
+    public function psychology(): HasOne
+    {
+        return $this->hasOne(TradePsychology::class);
     }
 }

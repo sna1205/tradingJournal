@@ -14,6 +14,14 @@ use Illuminate\Validation\ValidationException;
 
 class TradeImageController extends Controller
 {
+    private const CONTEXT_TAGS = [
+        'pre_entry',
+        'entry',
+        'management',
+        'exit',
+        'post_review',
+    ];
+
     private const MAX_IMAGES_PER_TRADE = 5;
     private const MAX_TOTAL_BYTES_PER_TRADE = 20 * 1024 * 1024;
     private const MAX_FILE_KB = 5 * 1024;
@@ -26,6 +34,9 @@ class TradeImageController extends Controller
         $validated = Validator::make($request->all(), [
             'image' => ['required', 'file', 'max:' . self::MAX_FILE_KB, 'mimes:jpg,jpeg,png,webp'],
             'sort_order' => ['nullable', 'integer', 'min:0'],
+            'context_tag' => ['nullable', 'in:' . implode(',', self::CONTEXT_TAGS)],
+            'timeframe' => ['nullable', 'string', 'max:20'],
+            'annotation_notes' => ['nullable', 'string', 'max:2000'],
         ])->validate();
 
         $file = $request->file('image');
@@ -74,9 +85,40 @@ class TradeImageController extends Controller
             'file_size' => $incomingBytes,
             'file_type' => (string) $file->getMimeType(),
             'sort_order' => $sortOrder,
+            'context_tag' => $validated['context_tag'] ?? null,
+            'timeframe' => $validated['timeframe'] ?? null,
+            'annotation_notes' => $validated['annotation_notes'] ?? null,
         ]);
 
         return response()->json($this->serializeTradeImage($image, $disk), 201);
+    }
+
+    /**
+     * @throws ValidationException
+     */
+    public function update(Request $request, TradeImage $tradeImage)
+    {
+        $validated = Validator::make($request->all(), [
+            'context_tag' => ['nullable', 'in:' . implode(',', self::CONTEXT_TAGS)],
+            'timeframe' => ['nullable', 'string', 'max:20'],
+            'annotation_notes' => ['nullable', 'string', 'max:2000'],
+            'sort_order' => ['nullable', 'integer', 'min:0'],
+        ])->validate();
+
+        $tradeImage->fill([
+            'context_tag' => $validated['context_tag'] ?? $tradeImage->context_tag,
+            'timeframe' => $validated['timeframe'] ?? $tradeImage->timeframe,
+            'annotation_notes' => array_key_exists('annotation_notes', $validated)
+                ? $validated['annotation_notes']
+                : $tradeImage->annotation_notes,
+            'sort_order' => array_key_exists('sort_order', $validated)
+                ? (int) $validated['sort_order']
+                : (int) $tradeImage->sort_order,
+        ]);
+        $tradeImage->save();
+
+        $disk = (string) config('filesystems.trade_images_disk', 'public');
+        return response()->json($this->serializeTradeImage($tradeImage, $disk));
     }
 
     public function destroy(TradeImage $tradeImage)
@@ -232,7 +274,7 @@ class TradeImageController extends Controller
     }
 
     /**
-     * @return array{id:int,image_url:string,thumbnail_url:string,file_size:int,file_type:string,sort_order:int}
+     * @return array{id:int,image_url:string,thumbnail_url:string,file_size:int,file_type:string,sort_order:int,context_tag:?string,timeframe:?string,annotation_notes:?string}
      */
     private function serializeTradeImage(TradeImage $image, string $disk): array
     {
@@ -243,6 +285,9 @@ class TradeImageController extends Controller
             'file_size' => (int) $image->file_size,
             'file_type' => (string) $image->file_type,
             'sort_order' => (int) $image->sort_order,
+            'context_tag' => $image->context_tag !== null ? (string) $image->context_tag : null,
+            'timeframe' => $image->timeframe !== null ? (string) $image->timeframe : null,
+            'annotation_notes' => $image->annotation_notes !== null ? (string) $image->annotation_notes : null,
         ];
     }
 

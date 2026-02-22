@@ -20,6 +20,9 @@ class TradeImage extends Model
         'file_size',
         'file_type',
         'sort_order',
+        'context_tag',
+        'timeframe',
+        'annotation_notes',
         'created_at',
     ];
 
@@ -27,6 +30,8 @@ class TradeImage extends Model
         'trade_id' => 'integer',
         'file_size' => 'integer',
         'sort_order' => 'integer',
+        'context_tag' => 'string',
+        'timeframe' => 'string',
         'created_at' => 'datetime',
     ];
 
@@ -35,4 +40,3 @@ class TradeImage extends Model
         return $this->belongsTo(Trade::class);
     }
 }
-

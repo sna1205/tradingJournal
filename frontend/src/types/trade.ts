@@ -12,6 +12,10 @@ export interface Trade {
   id: number
   account_id: number
   instrument_id?: number | null
+  strategy_model_id?: number | null
+  setup_id?: number | null
+  killzone_id?: number | null
+  session_enum?: SessionEnum | null
   pair: string
   direction: TradeDirection
   entry_price: string
@@ -46,6 +50,7 @@ export interface Trade {
   date: string
   notes: string | null
   legs?: TradeLeg[]
+  tag_ids?: number[]
   images?: TradeImage[]
   images_count?: number
   account?: {
@@ -56,6 +61,11 @@ export interface Trade {
     currency?: string
   } | null
   instrument?: Instrument | null
+  strategy_model?: TaxonomyItem | null
+  setup?: TaxonomyItem | null
+  killzone?: KillzoneItem | null
+  tags?: TradeTag[]
+  psychology?: TradePsychology | null
   created_at: string
   updated_at: string
   deleted_at?: string | null
@@ -96,12 +106,64 @@ export interface TradeImage {
   file_size: number
   file_type: string
   sort_order: number
+  context_tag?: ImageContextTag | null
+  timeframe?: string | null
+  annotation_notes?: string | null
 }
 
 export interface TradeDetailsResponse {
   trade: Trade
   legs?: TradeLeg[]
+  psychology?: TradePsychology | null
   images: TradeImage[]
+}
+
+export type SessionEnum = 'asia' | 'london' | 'new_york' | 'overlap' | 'off_session'
+export type ImageContextTag = 'pre_entry' | 'entry' | 'management' | 'exit' | 'post_review'
+
+export interface TaxonomyItem {
+  id: number
+  name: string
+  slug: string
+  description?: string | null
+  is_active: boolean
+}
+
+export interface KillzoneItem extends TaxonomyItem {
+  session_enum: SessionEnum
+}
+
+export interface TradeTag extends TaxonomyItem {
+  color?: string | null
+}
+
+export interface TradePsychology {
+  trade_id: number
+  pre_emotion: string | null
+  post_emotion: string | null
+  confidence_score: number | null
+  stress_score: number | null
+  sleep_hours: string | number | null
+  impulse_flag: boolean
+  fomo_flag: boolean
+  revenge_flag: boolean
+  notes: string | null
+}
+
+export interface SessionOption {
+  value: SessionEnum
+  label: string
+}
+
+export interface SavedReport {
+  id: number
+  name: string
+  scope: 'trades' | 'dashboard'
+  filters_json: Record<string, unknown>
+  columns_json: string[] | null
+  is_default: boolean
+  created_at: string
+  updated_at: string
 }
 
 export interface MissedTrade {

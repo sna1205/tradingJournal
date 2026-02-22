@@ -44,6 +44,9 @@ interface PendingMissedTradeImage {
   id: string
   file: File
   preview_url: string
+  context_tag: 'pre_entry' | 'entry' | 'management' | 'exit' | 'post_review'
+  timeframe: string
+  annotation_notes: string
 }
 
 const MAX_IMAGE_COUNT = 5
@@ -341,6 +344,23 @@ function reorderPendingImages(payload: { from: number; to: number }) {
   pendingImages.value = items
 }
 
+function updatePendingImageMetadata(payload: {
+  id: string
+  context_tag?: string
+  timeframe?: string
+  annotation_notes?: string
+}) {
+  pendingImages.value = pendingImages.value.map((image) => {
+    if (image.id !== payload.id) return image
+    return {
+      ...image,
+      context_tag: (payload.context_tag as PendingMissedTradeImage['context_tag'] | undefined) ?? image.context_tag,
+      timeframe: payload.timeframe ?? image.timeframe,
+      annotation_notes: payload.annotation_notes ?? image.annotation_notes,
+    }
+  })
+}
+
 async function removeExistingImage(imageId: number) {
   if (!isEditMode.value || missedTradeId.value === null) return
   if (deletingImageIds.value.includes(imageId)) return
@@ -395,6 +415,9 @@ async function onSelectImageFiles(files: File[]) {
       id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
       file: compressed,
       preview_url: previewUrl,
+      context_tag: 'entry',
+      timeframe: '',
+      annotation_notes: '',
     })
   }
 
@@ -764,6 +787,7 @@ async function loadImage(file: File): Promise<HTMLImageElement> {
             @remove-pending="removePendingImage"
             @remove-existing="removeExistingImage"
             @reorder-pending="reorderPendingImages"
+            @update-pending-metadata="updatePendingImageMetadata"
           />
         </section>
 
