@@ -6,6 +6,7 @@ use App\Models\Account;
 use App\Models\AccountRiskPolicy;
 use App\Models\Instrument;
 use App\Models\Trade;
+use App\Models\TradeLeg;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
 
@@ -184,6 +185,51 @@ class TradeValidationTest extends TestCase
         ]);
 
         $allowed->assertCreated();
+    }
+
+    public function test_trade_creation_accepts_multi_leg_payload_and_persists_legs(): void
+    {
+        $account = Account::factory()->create([
+            'starting_balance' => 10_000,
+            'current_balance' => 10_000,
+            'is_active' => true,
+        ]);
+
+        $payload = $this->tradePayload((int) $account->id);
+        unset($payload['position_size'], $payload['actual_exit_price']);
+
+        $response = $this->postJson('/api/trades', [
+            ...$payload,
+            'legs' => [
+                [
+                    'leg_type' => 'entry',
+                    'price' => 1.1000,
+                    'quantity_lots' => 1.0,
+                    'executed_at' => now()->subDay()->toIso8601String(),
+                    'fees' => 0,
+                ],
+                [
+                    'leg_type' => 'exit',
+                    'price' => 1.1010,
+                    'quantity_lots' => 0.5,
+                    'executed_at' => now()->subDay()->addMinute()->toIso8601String(),
+                    'fees' => 0,
+                ],
+                [
+                    'leg_type' => 'exit',
+                    'price' => 1.1020,
+                    'quantity_lots' => 0.5,
+                    'executed_at' => now()->subDay()->addMinutes(2)->toIso8601String(),
+                    'fees' => 0,
+                ],
+            ],
+        ]);
+
+        $response->assertCreated();
+        $tradeId = (int) $response->json('id');
+        $this->assertGreaterThan(0, $tradeId);
+        $this->assertSame(3, TradeLeg::query()->where('trade_id', $tradeId)->count());
+        $this->assertEqualsWithDelta(1.1015, (float) $response->json('avg_exit_price'), 0.0001);
     }
 
     /**

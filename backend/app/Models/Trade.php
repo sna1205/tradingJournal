@@ -20,9 +20,11 @@ class Trade extends Model
         'pair',
         'direction',
         'entry_price',
+        'avg_entry_price',
         'stop_loss',
         'take_profit',
         'actual_exit_price',
+        'avg_exit_price',
         'lot_size',
         'risk_per_unit',
         'reward_per_unit',
@@ -37,6 +39,7 @@ class Trade extends Model
         'profit_loss',
         'rr',
         'r_multiple',
+        'realized_r_multiple',
         'risk_percent',
         'account_balance_before_trade',
         'account_balance_after_trade',
@@ -53,9 +56,11 @@ class Trade extends Model
         'account_id' => 'integer',
         'instrument_id' => 'integer',
         'entry_price' => 'decimal:6',
+        'avg_entry_price' => 'decimal:6',
         'stop_loss' => 'decimal:6',
         'take_profit' => 'decimal:6',
         'actual_exit_price' => 'decimal:6',
+        'avg_exit_price' => 'decimal:6',
         'lot_size' => 'decimal:4',
         'risk_per_unit' => 'decimal:6',
         'reward_per_unit' => 'decimal:6',
@@ -70,6 +75,7 @@ class Trade extends Model
         'profit_loss' => 'decimal:2',
         'rr' => 'decimal:2',
         'r_multiple' => 'decimal:4',
+        'realized_r_multiple' => 'decimal:4',
         'risk_percent' => 'decimal:4',
         'account_balance_before_trade' => 'decimal:2',
         'account_balance_after_trade' => 'decimal:2',
@@ -124,5 +130,10 @@ class Trade extends Model
     public function images(): HasMany
     {
         return $this->hasMany(TradeImage::class);
+    }
+
+    public function legs(): HasMany
+    {
+        return $this->hasMany(TradeLeg::class)->orderBy('executed_at')->orderBy('id');
     }
 }

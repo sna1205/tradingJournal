@@ -90,4 +90,67 @@ class TradeCalculationEngineTest extends TestCase
         $this->assertSame(3.0, $result['rr']);
         $this->assertSame(0.0, $result['risk_percent']);
     }
+
+    public function test_it_calculates_three_leg_partial_close_like_manual_spreadsheet(): void
+    {
+        $engine = new TradeCalculationEngine();
+
+        $result = $engine->calculate([
+            'direction' => 'buy',
+            'entry_price' => 1.1000,
+            'stop_loss' => 1.0990,
+            'take_profit' => 1.1030,
+            'actual_exit_price' => 1.1010,
+            'lot_size' => 1.0,
+            'instrument_tick_size' => 0.00001,
+            'instrument_tick_value' => 1.0,
+            'commission' => 7.0,
+            'swap' => 0.0,
+            'spread_cost' => 1.5,
+            'slippage_cost' => 0.5,
+            'account_balance_before_trade' => 10000,
+            'legs' => [
+                [
+                    'leg_type' => 'entry',
+                    'price' => 1.1000,
+                    'quantity_lots' => 1.0,
+                    'executed_at' => '2026-02-20T09:00:00Z',
+                    'fees' => 0.0,
+                ],
+                [
+                    'leg_type' => 'exit',
+                    'price' => 1.1010,
+                    'quantity_lots' => 0.4,
+                    'executed_at' => '2026-02-20T09:20:00Z',
+                    'fees' => 0.0,
+                ],
+                [
+                    'leg_type' => 'exit',
+                    'price' => 1.1020,
+                    'quantity_lots' => 0.3,
+                    'executed_at' => '2026-02-20T09:40:00Z',
+                    'fees' => 0.0,
+                ],
+                [
+                    'leg_type' => 'exit',
+                    'price' => 1.0995,
+                    'quantity_lots' => 0.3,
+                    'executed_at' => '2026-02-20T10:00:00Z',
+                    'fees' => 0.0,
+                ],
+            ],
+        ]);
+
+        // Spreadsheet reference:
+        // leg1: (1.1010 - 1.1000) * 0.4 = +40
+        // leg2: (1.1020 - 1.1000) * 0.3 = +60
+        // leg3: (1.0995 - 1.1000) * 0.3 = -15
+        // gross = +85; net = 85 - (7 + 1.5 + 0.5) = 76
+        $this->assertEqualsWithDelta(85.0, $result['gross_profit_loss'], 0.0001);
+        $this->assertEqualsWithDelta(9.0, $result['costs_total'], 0.0001);
+        $this->assertEqualsWithDelta(76.0, $result['profit_loss'], 0.01);
+        $this->assertEqualsWithDelta(100.0, $result['monetary_risk'], 0.0001);
+        $this->assertEqualsWithDelta(0.76, $result['realized_r_multiple'], 0.0001);
+        $this->assertEqualsWithDelta(1.10085, $result['avg_exit_price'], 0.00001);
+    }
 }

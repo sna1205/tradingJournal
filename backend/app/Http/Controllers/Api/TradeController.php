@@ -109,6 +109,9 @@ class TradeController extends Controller
                 'profit_loss' => $payloadWithMetrics['profit_loss'],
                 'risk_percent' => $payloadWithMetrics['risk_percent'],
                 'r_multiple' => $payloadWithMetrics['r_multiple'],
+                'realized_r_multiple' => $payloadWithMetrics['realized_r_multiple'],
+                'avg_entry_price' => $payloadWithMetrics['avg_entry_price'],
+                'avg_exit_price' => $payloadWithMetrics['avg_exit_price'],
                 'rr' => $payloadWithMetrics['rr'],
             ],
         ]);
@@ -127,10 +130,14 @@ class TradeController extends Controller
             $riskEvaluation = $this->evaluateRiskPolicy($payloadWithMetrics, $account, null);
             $this->throwIfRiskPolicyBlocked($riskEvaluation);
 
-            $createdTrade = Trade::create($payloadWithMetrics);
+            $legs = $this->normalizeLegsForWrite($payloadWithMetrics['legs'] ?? [], (string) $payloadWithMetrics['date']);
+            $createdTrade = Trade::create($this->extractTradeAttributes($payloadWithMetrics));
+            if (count($legs) > 0) {
+                $createdTrade->legs()->createMany($legs);
+            }
             $this->accountBalanceService->rebuildAccountState((int) $account->id);
 
-            return $createdTrade->fresh(['account', 'instrument']);
+            return $createdTrade->fresh(['account', 'instrument', 'legs']);
         });
 
         $this->touchAnalyticsCacheVersion();
@@ -143,6 +150,7 @@ class TradeController extends Controller
         $trade->load([
             'account',
             'instrument',
+            'legs' => fn ($query) => $query->orderBy('executed_at')->orderBy('id'),
             'images' => fn ($query) => $query->orderBy('sort_order')->orderBy('id'),
         ]);
 
@@ -154,6 +162,7 @@ class TradeController extends Controller
 
         return response()->json([
             'trade' => $trade,
+            'legs' => $trade->legs->values(),
             'images' => $images,
         ]);
     }
@@ -177,11 +186,19 @@ class TradeController extends Controller
             $riskEvaluation = $this->evaluateRiskPolicy($payloadWithMetrics, $account, (int) $trade->id);
             $this->throwIfRiskPolicyBlocked($riskEvaluation);
 
-            $trade->update($payload);
+            $trade->update($this->extractTradeAttributes($payloadWithMetrics));
+
+            if (array_key_exists('legs', $payload)) {
+                $legs = $this->normalizeLegsForWrite($payloadWithMetrics['legs'] ?? [], (string) $payloadWithMetrics['date']);
+                $trade->legs()->delete();
+                if (count($legs) > 0) {
+                    $trade->legs()->createMany($legs);
+                }
+            }
 
             $this->accountBalanceService->rebuildMany([$previousAccountId, (int) $trade->account_id]);
 
-            return $trade->fresh(['account', 'instrument']);
+            return $trade->fresh(['account', 'instrument', 'legs']);
         });
 
         $this->touchAnalyticsCacheVersion();
@@ -210,6 +227,7 @@ class TradeController extends Controller
         $request->replace($input);
 
         $required = $isUpdate ? 'sometimes' : 'required';
+        $requiredWithoutLegs = $isUpdate ? 'sometimes' : 'required_without:legs';
 
         $validator = Validator::make($input, [
             'account_id' => [$required, 'integer', 'exists:accounts,id'],
@@ -219,8 +237,15 @@ class TradeController extends Controller
             'entry_price' => [$required, 'numeric', 'gt:0'],
             'stop_loss' => [$required, 'numeric', 'gt:0'],
             'take_profit' => [$required, 'numeric', 'gt:0'],
-            'actual_exit_price' => [$required, 'numeric', 'gt:0'],
-            'lot_size' => [$required, 'numeric', 'min:0.0001'],
+            'actual_exit_price' => [$requiredWithoutLegs, 'numeric', 'gt:0'],
+            'lot_size' => [$requiredWithoutLegs, 'numeric', 'min:0.0001'],
+            'legs' => ['sometimes', 'array', 'min:1'],
+            'legs.*.leg_type' => ['required_with:legs', 'in:entry,exit'],
+            'legs.*.price' => ['required_with:legs', 'numeric', 'gt:0'],
+            'legs.*.quantity_lots' => ['required_with:legs', 'numeric', 'min:0.0001'],
+            'legs.*.executed_at' => ['nullable', 'date'],
+            'legs.*.fees' => ['sometimes', 'numeric'],
+            'legs.*.notes' => ['nullable', 'string', 'max:2000'],
             'commission' => ['sometimes', 'numeric', 'min:0'],
             'swap' => ['sometimes', 'numeric'],
             'spread_cost' => ['sometimes', 'numeric', 'min:0'],
@@ -243,13 +268,24 @@ class TradeController extends Controller
             'profit_loss' => ['prohibited'],
             'rr' => ['prohibited'],
             'r_multiple' => ['prohibited'],
+            'avg_entry_price' => ['prohibited'],
+            'avg_exit_price' => ['prohibited'],
+            'realized_r_multiple' => ['prohibited'],
             'risk_percent' => ['prohibited'],
             'account_balance_before_trade' => ['prohibited'],
             'account_balance_after_trade' => ['prohibited'],
         ]);
 
         $validator->after(function ($validator) use ($input, $isUpdate, $existingTrade): void {
-            $entryPrice = $this->readFloatFromInputOrTrade($input, 'entry_price', $existingTrade);
+            $legs = $this->normalizeLegsForCalculation(
+                $input['legs'] ?? null,
+                (string) ($input['date'] ?? ($existingTrade?->date ?? now()->toIso8601String()))
+            );
+            $legSummary = $this->summarizeLegs($legs);
+
+            $entryPrice = $legSummary['avg_entry_price'] > 0
+                ? $legSummary['avg_entry_price']
+                : $this->readFloatFromInputOrTrade($input, 'entry_price', $existingTrade);
             $stopLoss = $this->readFloatFromInputOrTrade($input, 'stop_loss', $existingTrade);
             $takeProfit = $this->readFloatFromInputOrTrade($input, 'take_profit', $existingTrade);
             $direction = (string) ($input['direction'] ?? ($existingTrade?->direction ?? ''));
@@ -277,6 +313,25 @@ class TradeController extends Controller
                     }
                     if ($takeProfit >= $entryPrice) {
                         $validator->errors()->add('take_profit', 'For sell trades, take profit must be below entry.');
+                    }
+                }
+            }
+
+            if (array_key_exists('legs', $input)) {
+                if ($legSummary['entry_count'] === 0) {
+                    $validator->errors()->add('legs', 'At least one entry leg is required.');
+                }
+                if ($legSummary['exit_count'] === 0) {
+                    $validator->errors()->add('legs', 'At least one exit leg is required.');
+                }
+                if ($legSummary['exit_quantity'] > ($legSummary['entry_quantity'] + 0.000001)) {
+                    $validator->errors()->add('legs', 'Exit quantity cannot exceed total entry quantity.');
+                }
+
+                foreach ($legs as $index => $leg) {
+                    $timestamp = strtotime((string) $leg['executed_at']);
+                    if ($timestamp !== false && $timestamp > now()->addMinute()->getTimestamp()) {
+                        $validator->errors()->add("legs.$index.executed_at", 'Leg execution time cannot be in the future.');
                     }
                 }
             }
@@ -407,6 +462,20 @@ class TradeController extends Controller
             return $payload;
         }
 
+        $existingLegs = $existingTrade->legs()
+            ->orderBy('executed_at')
+            ->orderBy('id')
+            ->get()
+            ->map(fn ($leg): array => [
+                'leg_type' => (string) $leg->leg_type,
+                'price' => (float) $leg->price,
+                'quantity_lots' => (float) $leg->quantity_lots,
+                'executed_at' => (string) $leg->executed_at,
+                'fees' => (float) ($leg->fees ?? 0),
+                'notes' => $leg->notes,
+            ])
+            ->all();
+
         return [
             'account_id' => $payload['account_id'] ?? (int) $existingTrade->account_id,
             'instrument_id' => $payload['instrument_id'] ?? (int) $existingTrade->instrument_id,
@@ -428,6 +497,7 @@ class TradeController extends Controller
             'model' => $payload['model'] ?? (string) $existingTrade->model,
             'date' => $payload['date'] ?? (string) $existingTrade->date,
             'notes' => $payload['notes'] ?? $existingTrade->notes,
+            'legs' => $payload['legs'] ?? $existingLegs,
         ];
     }
 
@@ -439,9 +509,18 @@ class TradeController extends Controller
      */
     private function buildPayloadWithCalculatedFields(array $payload, object $account, object $instrument): array
     {
+        $normalizedLegs = $this->normalizeLegsForCalculation(
+            $payload['legs'] ?? null,
+            (string) ($payload['date'] ?? CarbonImmutable::now()->toIso8601String())
+        );
+        $legSummary = $this->summarizeLegs($normalizedLegs);
+
         $prepared = [
             ...$payload,
             'pair' => strtoupper((string) $instrument->symbol),
+            'entry_price' => (float) ($payload['entry_price'] ?? 0),
+            'actual_exit_price' => (float) ($payload['actual_exit_price'] ?? ($payload['entry_price'] ?? 0)),
+            'lot_size' => (float) ($payload['lot_size'] ?? 0),
             'account_balance_before_trade' => (float) $account->current_balance,
             'instrument_tick_size' => (float) $instrument->tick_size,
             'instrument_tick_value' => (float) $instrument->tick_value,
@@ -449,12 +528,184 @@ class TradeController extends Controller
             'swap' => (float) ($payload['swap'] ?? 0),
             'spread_cost' => (float) ($payload['spread_cost'] ?? 0),
             'slippage_cost' => (float) ($payload['slippage_cost'] ?? 0),
+            'legs' => $normalizedLegs,
         ];
+
+        $calculated = $this->calculationEngine->calculate($prepared);
+        $lotSizeFromLegs = $legSummary['entry_quantity'] > 0
+            ? $legSummary['entry_quantity']
+            : (float) ($payload['lot_size'] ?? 0);
 
         return [
             ...$prepared,
-            ...$this->calculationEngine->calculate($prepared),
+            ...$calculated,
+            'entry_price' => (float) $calculated['avg_entry_price'],
+            'actual_exit_price' => (float) $calculated['avg_exit_price'],
+            'lot_size' => $lotSizeFromLegs,
+            'avg_entry_price' => (float) $calculated['avg_entry_price'],
+            'avg_exit_price' => (float) $calculated['avg_exit_price'],
+            'r_multiple' => (float) $calculated['realized_r_multiple'],
+            'realized_r_multiple' => (float) $calculated['realized_r_multiple'],
         ];
+    }
+
+    /**
+     * @param mixed $legs
+     * @return array<int,array{
+     *   leg_type:string,
+     *   price:float,
+     *   quantity_lots:float,
+     *   executed_at:string,
+     *   fees:float,
+     *   notes:string|null
+     * }>
+     */
+    private function normalizeLegsForCalculation(mixed $legs, string $fallbackExecutedAt): array
+    {
+        if (!is_array($legs)) {
+            return [];
+        }
+
+        $normalized = [];
+        foreach ($legs as $index => $leg) {
+            $row = is_array($leg)
+                ? $leg
+                : (is_object($leg) ? (array) $leg : null);
+            if ($row === null) {
+                continue;
+            }
+
+            $legType = strtolower((string) ($row['leg_type'] ?? ''));
+            if (!in_array($legType, ['entry', 'exit'], true)) {
+                continue;
+            }
+
+            $price = (float) ($row['price'] ?? 0);
+            $quantity = (float) ($row['quantity_lots'] ?? 0);
+            if ($price <= 0 || $quantity <= 0) {
+                continue;
+            }
+
+            $executedAt = (string) ($row['executed_at'] ?? '');
+            $timestamp = strtotime($executedAt);
+            if ($timestamp === false) {
+                $fallbackTimestamp = strtotime($fallbackExecutedAt);
+                $timestamp = $fallbackTimestamp !== false
+                    ? ($fallbackTimestamp + (int) $index)
+                    : (time() + (int) $index);
+            }
+
+            $normalized[] = [
+                'leg_type' => $legType,
+                'price' => $price,
+                'quantity_lots' => $quantity,
+                'executed_at' => date('c', $timestamp),
+                'fees' => (float) ($row['fees'] ?? 0),
+                'notes' => isset($row['notes']) && $row['notes'] !== null
+                    ? (string) $row['notes']
+                    : null,
+            ];
+        }
+
+        usort(
+            $normalized,
+            fn (array $left, array $right): int => strcmp($left['executed_at'], $right['executed_at'])
+        );
+
+        return $normalized;
+    }
+
+    /**
+     * @param array<int,array{
+     *   leg_type:string,
+     *   price:float,
+     *   quantity_lots:float,
+     *   executed_at:string,
+     *   fees:float,
+     *   notes:string|null
+     * }> $legs
+     * @return array{
+     *   entry_count:int,
+     *   exit_count:int,
+     *   entry_quantity:float,
+     *   exit_quantity:float,
+     *   avg_entry_price:float,
+     *   avg_exit_price:float
+     * }
+     */
+    private function summarizeLegs(array $legs): array
+    {
+        $entryLegs = array_values(array_filter($legs, fn (array $leg): bool => $leg['leg_type'] === 'entry'));
+        $exitLegs = array_values(array_filter($legs, fn (array $leg): bool => $leg['leg_type'] === 'exit'));
+
+        $entryQuantity = array_sum(array_column($entryLegs, 'quantity_lots'));
+        $exitQuantity = array_sum(array_column($exitLegs, 'quantity_lots'));
+
+        return [
+            'entry_count' => count($entryLegs),
+            'exit_count' => count($exitLegs),
+            'entry_quantity' => $entryQuantity,
+            'exit_quantity' => $exitQuantity,
+            'avg_entry_price' => $this->weightedAveragePrice($entryLegs),
+            'avg_exit_price' => $this->weightedAveragePrice($exitLegs),
+        ];
+    }
+
+    /**
+     * @param array<int,array{price:float,quantity_lots:float}> $legs
+     */
+    private function weightedAveragePrice(array $legs): float
+    {
+        $totalQty = array_sum(array_column($legs, 'quantity_lots'));
+        if ($totalQty <= 0) {
+            return 0.0;
+        }
+
+        $weightedSum = array_reduce(
+            $legs,
+            fn (float $sum, array $leg): float => $sum + ($leg['price'] * $leg['quantity_lots']),
+            0.0
+        );
+
+        return $weightedSum / $totalQty;
+    }
+
+    /**
+     * @param array<int,array{
+     *   leg_type:string,
+     *   price:float,
+     *   quantity_lots:float,
+     *   executed_at:string,
+     *   fees:float,
+     *   notes:string|null
+     * }> $legs
+     * @return array<int,array{
+     *   leg_type:string,
+     *   price:float,
+     *   quantity_lots:float,
+     *   executed_at:string,
+     *   fees:float,
+     *   notes:string|null
+     * }>
+     */
+    private function normalizeLegsForWrite(array $legs, string $fallbackExecutedAt): array
+    {
+        return $this->normalizeLegsForCalculation($legs, $fallbackExecutedAt);
+    }
+
+    /**
+     * @param array<string,mixed> $payloadWithMetrics
+     * @return array<string,mixed>
+     */
+    private function extractTradeAttributes(array $payloadWithMetrics): array
+    {
+        return collect($payloadWithMetrics)
+            ->except([
+                'legs',
+                'instrument_tick_size',
+                'instrument_tick_value',
+            ])
+            ->all();
     }
 
     /**

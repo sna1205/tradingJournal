@@ -77,7 +77,10 @@ class TradeMetricsEngine
 
         $realizedRValues = $trades
             ->map(function ($trade): ?float {
-                $candidate = data_get($trade, 'r_multiple');
+                $candidate = data_get($trade, 'realized_r_multiple');
+                if ($candidate === null || $candidate === '') {
+                    $candidate = data_get($trade, 'r_multiple');
+                }
                 if ($candidate === null || $candidate === '') {
                     return null;
                 }

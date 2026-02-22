@@ -20,6 +20,7 @@ import type {
   Trade,
   TradeDetailsResponse,
   TradeEmotion,
+  TradeLeg,
   TradeImage,
 } from '@/types/trade'
 
@@ -45,6 +46,7 @@ export interface TradePayload {
   swap?: number
   spread_cost?: number
   slippage_cost?: number
+  legs?: TradeLegPayload[]
   risk_override_reason?: string | null
   followed_rules: boolean
   emotion: TradeEmotion
@@ -52,6 +54,15 @@ export interface TradePayload {
   strategy_model?: string
   close_date: string
   notes: string | null
+}
+
+export interface TradeLegPayload {
+  leg_type: 'entry' | 'exit'
+  price: number
+  quantity_lots: number
+  executed_at: string
+  fees?: number
+  notes?: string | null
 }
 
 export interface TradePrecheckViolation {
@@ -91,6 +102,9 @@ export interface TradePrecheckResult {
     profit_loss: number
     risk_percent: number
     r_multiple: number
+    realized_r_multiple: number
+    avg_entry_price: number
+    avg_exit_price: number
     rr: number
   }
 }
@@ -253,11 +267,25 @@ export const useTradeStore = defineStore('trades', () => {
         actual_exit_price: payload.actual_exit_price !== undefined
           ? String(payload.actual_exit_price)
           : current.actual_exit_price,
+        avg_exit_price: payload.actual_exit_price !== undefined
+          ? String(payload.actual_exit_price)
+          : current.avg_exit_price,
         lot_size: payload.position_size !== undefined ? String(payload.position_size) : current.lot_size,
+        avg_entry_price: payload.entry_price !== undefined ? String(payload.entry_price) : current.avg_entry_price,
         commission: payload.commission !== undefined ? String(payload.commission) : current.commission,
         swap: payload.swap !== undefined ? String(payload.swap) : current.swap,
         spread_cost: payload.spread_cost !== undefined ? String(payload.spread_cost) : current.spread_cost,
         slippage_cost: payload.slippage_cost !== undefined ? String(payload.slippage_cost) : current.slippage_cost,
+        legs: payload.legs !== undefined
+          ? payload.legs.map((leg) => ({
+            leg_type: leg.leg_type,
+            price: String(leg.price),
+            quantity_lots: String(leg.quantity_lots),
+            executed_at: leg.executed_at,
+            fees: leg.fees !== undefined ? String(leg.fees) : '0',
+            notes: leg.notes ?? null,
+          }))
+          : current.legs,
         risk_override_reason: payload.risk_override_reason !== undefined
           ? payload.risk_override_reason
           : current.risk_override_reason,
@@ -356,6 +384,43 @@ export const useTradeStore = defineStore('trades', () => {
     }
   }
 
+  async function fetchTradeLegs(tradeId: number): Promise<TradeLeg[]> {
+    try {
+      const { data } = await api.get<TradeLeg[]>(`/trades/${tradeId}/legs`)
+      syncStatusStore.markServerHealthy()
+      return Array.isArray(data) ? data : []
+    } catch (error) {
+      if (!shouldUseLocalFallback(error)) {
+        throw error
+      }
+      syncStatusStore.markLocalFallback('trade-legs')
+      return []
+    }
+  }
+
+  async function addTradeLeg(tradeId: number, payload: TradeLegPayload): Promise<TradeLeg> {
+    const { data } = await api.post<TradeLeg>(`/trades/${tradeId}/legs`, payload)
+    syncStatusStore.markServerHealthy()
+    void analyticsStore.fetchAnalytics().catch(() => undefined)
+    void accountStore.fetchAccounts().catch(() => undefined)
+    return data
+  }
+
+  async function updateTradeLeg(legId: number, payload: TradeLegPayload): Promise<TradeLeg> {
+    const { data } = await api.put<TradeLeg>(`/trade-legs/${legId}`, payload)
+    syncStatusStore.markServerHealthy()
+    void analyticsStore.fetchAnalytics().catch(() => undefined)
+    void accountStore.fetchAccounts().catch(() => undefined)
+    return data
+  }
+
+  async function deleteTradeLeg(legId: number): Promise<void> {
+    await api.delete(`/trade-legs/${legId}`)
+    syncStatusStore.markServerHealthy()
+    void analyticsStore.fetchAnalytics().catch(() => undefined)
+    void accountStore.fetchAccounts().catch(() => undefined)
+  }
+
   async function fetchInstruments() {
     try {
       const { data } = await api.get<Instrument[]>('/instruments')
@@ -417,6 +482,9 @@ export const useTradeStore = defineStore('trades', () => {
           profit_loss: 0,
           risk_percent: 0,
           r_multiple: 0,
+          realized_r_multiple: 0,
+          avg_entry_price: 0,
+          avg_exit_price: 0,
           rr: 0,
         },
       }
@@ -496,6 +564,10 @@ export const useTradeStore = defineStore('trades', () => {
     updateTrade,
     deleteTrade,
     fetchTradeDetails,
+    fetchTradeLegs,
+    addTradeLeg,
+    updateTradeLeg,
+    deleteTradeLeg,
     uploadTradeImage,
     deleteTradeImage,
     resetFilters,
@@ -510,9 +582,11 @@ function toOptimisticTrade(payload: TradePayload, tempId: number): Trade {
     instrument_id: payload.instrument_id,
     direction: payload.direction,
     entry_price: String(payload.entry_price),
+    avg_entry_price: String(payload.entry_price),
     stop_loss: String(payload.stop_loss),
     take_profit: String(payload.take_profit),
     actual_exit_price: String(payload.actual_exit_price),
+    avg_exit_price: String(payload.actual_exit_price),
     lot_size: String(payload.position_size),
     risk_per_unit: null,
     reward_per_unit: null,
@@ -527,6 +601,7 @@ function toOptimisticTrade(payload: TradePayload, tempId: number): Trade {
     profit_loss: '0',
     rr: '0',
     r_multiple: '0',
+    realized_r_multiple: '0',
     risk_percent: null,
     account_balance_before_trade: null,
     account_balance_after_trade: null,
@@ -536,6 +611,14 @@ function toOptimisticTrade(payload: TradePayload, tempId: number): Trade {
     session: payload.session ?? 'N/A',
     model: payload.strategy_model ?? 'General',
     date: payload.close_date,
+    legs: payload.legs?.map((leg) => ({
+      leg_type: leg.leg_type,
+      price: String(leg.price),
+      quantity_lots: String(leg.quantity_lots),
+      executed_at: leg.executed_at,
+      fees: String(leg.fees ?? 0),
+      notes: leg.notes ?? null,
+    })) ?? [],
     notes: payload.notes,
     images: [],
     images_count: 0,

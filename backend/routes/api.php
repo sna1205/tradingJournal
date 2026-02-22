@@ -6,6 +6,7 @@ use App\Http\Controllers\Api\InstrumentController;
 use App\Http\Controllers\Api\MissedTradeController;
 use App\Http\Controllers\Api\MissedTradeImageController;
 use App\Http\Controllers\Api\TradeController;
+use App\Http\Controllers\Api\TradeLegController;
 use App\Http\Controllers\Api\TradeImageController;
 use Illuminate\Support\Facades\Route;
 
@@ -25,6 +26,10 @@ Route::get('accounts/{account}/challenge-status', [AccountController::class, 'ch
 Route::get('instruments', [InstrumentController::class, 'index']);
 Route::post('trades/precheck', [TradeController::class, 'precheck']);
 Route::apiResource('trades', TradeController::class);
+Route::get('trades/{trade}/legs', [TradeLegController::class, 'index']);
+Route::post('trades/{trade}/legs', [TradeLegController::class, 'store']);
+Route::put('trade-legs/{tradeLeg}', [TradeLegController::class, 'update']);
+Route::delete('trade-legs/{tradeLeg}', [TradeLegController::class, 'destroy']);
 Route::post('trades/{trade}/images', [TradeImageController::class, 'store']);
 Route::delete('trade-images/{tradeImage}', [TradeImageController::class, 'destroy']);
 Route::apiResource('missed-trades', MissedTradeController::class);

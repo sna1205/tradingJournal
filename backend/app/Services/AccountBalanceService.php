@@ -26,7 +26,7 @@ class AccountBalanceService
         $runningBalance = (float) $account->starting_balance;
         $trades = Trade::query()
             ->where('account_id', $accountId)
-            ->with('instrument')
+            ->with(['instrument', 'legs'])
             ->orderBy('date')
             ->orderBy('id')
             ->get();
@@ -45,12 +45,22 @@ class AccountBalanceService
                 'swap' => (float) ($trade->swap ?? 0),
                 'spread_cost' => (float) ($trade->spread_cost ?? 0),
                 'slippage_cost' => (float) ($trade->slippage_cost ?? 0),
+                'legs' => $trade->legs
+                    ->map(fn ($leg): array => [
+                        'leg_type' => (string) $leg->leg_type,
+                        'price' => (float) $leg->price,
+                        'quantity_lots' => (float) $leg->quantity_lots,
+                        'executed_at' => (string) $leg->executed_at,
+                        'fees' => (float) ($leg->fees ?? 0),
+                    ])
+                    ->all(),
                 'account_balance_before_trade' => $runningBalance,
             ]);
 
             DB::table('trades')
                 ->where('id', $trade->id)
                 ->update([
+                    'entry_price' => $calculated['avg_entry_price'],
                     'risk_per_unit' => $calculated['risk_per_unit'],
                     'reward_per_unit' => $calculated['reward_per_unit'],
                     'monetary_risk' => $calculated['monetary_risk'],
@@ -64,6 +74,11 @@ class AccountBalanceService
                     'profit_loss' => $calculated['profit_loss'],
                     'rr' => $calculated['rr'],
                     'r_multiple' => $calculated['r_multiple'],
+                    'avg_entry_price' => $calculated['avg_entry_price'],
+                    'avg_exit_price' => $calculated['avg_exit_price'],
+                    'realized_r_multiple' => $calculated['realized_r_multiple'],
+                    'actual_exit_price' => $calculated['avg_exit_price'],
+                    'lot_size' => (float) ($trade->legs->where('leg_type', 'entry')->sum('quantity_lots') ?: $trade->lot_size),
                     'risk_percent' => $calculated['risk_percent'],
                     'account_balance_before_trade' => round($runningBalance, 2),
                     'account_balance_after_trade' => $calculated['account_balance_after_trade'],

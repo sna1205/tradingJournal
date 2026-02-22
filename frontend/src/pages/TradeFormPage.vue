@@ -16,7 +16,7 @@ import {
   type TradePrecheckResult,
 } from '@/stores/tradeStore'
 import { useUiStore } from '@/stores/uiStore'
-import type { Instrument, Trade, TradeEmotion, TradeImage } from '@/types/trade'
+import type { Instrument, Trade, TradeEmotion, TradeImage, TradeLeg } from '@/types/trade'
 import { asCurrency, asSignedCurrency } from '@/utils/format'
 
 const router = useRouter()
@@ -68,7 +68,6 @@ const form = reactive({
   entry_price: 0,
   stop_loss: 0,
   take_profit: 0,
-  actual_exit_price: 0,
   position_size: 0.01,
   commission: 0,
   swap: 0,
@@ -79,6 +78,17 @@ const form = reactive({
   emotion: 'neutral' as TradeEmotion,
   notes: '',
 })
+
+interface ExitLegRow {
+  id: string
+  price: number
+  quantity_lots: number
+  executed_at: string
+  fees: number
+  notes: string
+}
+
+const exitLegs = ref<ExitLegRow[]>([])
 
 interface PendingTradeImage {
   id: string
@@ -129,18 +139,37 @@ const precheckResult = ref<TradePrecheckResult | null>(null)
 let precheckTimer: ReturnType<typeof setTimeout> | null = null
 const isSaveBlocked = computed(() => (precheckResult.value !== null) && !precheckResult.value.allowed)
 
+const validExitLegs = computed(() =>
+  exitLegs.value.filter((leg) => toNumber(leg.price) > 0 && toNumber(leg.quantity_lots) > 0)
+)
+
+const exitLegSummary = computed(() => {
+  const rows = validExitLegs.value
+  const quantity = rows.reduce((sum, leg) => sum + toNumber(leg.quantity_lots), 0)
+  const weighted = rows.reduce((sum, leg) => sum + (toNumber(leg.price) * toNumber(leg.quantity_lots)), 0)
+  const weightedPrice = quantity > 0 ? (weighted / quantity) : toNumber(form.entry_price)
+  const fees = rows.reduce((sum, leg) => sum + toNumber(leg.fees), 0)
+
+  return {
+    quantity,
+    weightedPrice,
+    fees,
+  }
+})
+
 const liveEstimate = computed(() => {
   const instrument = selectedInstrument.value
   const entry = toNumber(form.entry_price)
   const stop = toNumber(form.stop_loss)
   const take = toNumber(form.take_profit)
-  const exit = toNumber(form.actual_exit_price)
   const lotSize = toNumber(form.position_size)
   const commission = toNumber(form.commission)
   const swap = toNumber(form.swap)
   const spreadCost = toNumber(form.spread_cost)
   const slippageCost = toNumber(form.slippage_cost)
-  const costsTotal = commission + swap + spreadCost + slippageCost
+  const exits = validExitLegs.value
+  const legFeesTotal = exitLegSummary.value.fees
+  const costsTotal = commission + swap + spreadCost + slippageCost + legFeesTotal
 
   if (!instrument) {
     return {
@@ -153,10 +182,12 @@ const liveEstimate = computed(() => {
       netPnl: 0,
       rAtExit: 0,
       rrPlan: 0,
+      weightedExitPrice: 0,
+      exitQuantity: 0,
     }
   }
 
-  if (!(entry > 0) || !(stop > 0) || !(take > 0) || !(exit > 0) || !(lotSize > 0)) {
+  if (!(entry > 0) || !(stop > 0) || !(take > 0) || !(lotSize > 0) || exits.length === 0) {
     return {
       ready: false as const,
       error: '',
@@ -167,6 +198,8 @@ const liveEstimate = computed(() => {
       netPnl: 0,
       rAtExit: 0,
       rrPlan: 0,
+      weightedExitPrice: 0,
+      exitQuantity: 0,
     }
   }
 
@@ -185,25 +218,31 @@ const liveEstimate = computed(() => {
       netPnl: 0,
       rAtExit: 0,
       rrPlan: 0,
+      weightedExitPrice: 0,
+      exitQuantity: 0,
     }
   }
 
   const tickSize = toNumber(instrument.tick_size)
   const tickValue = toNumber(instrument.tick_value)
-  const moveToValue = (move: number) => {
+  const moveToValue = (move: number, quantityLots: number) => {
     if (tickSize > 0 && tickValue > 0) {
-      return (move / tickSize) * tickValue * lotSize
+      return (move / tickSize) * tickValue * quantityLots
     }
-    return move * lotSize
+    return move * quantityLots
   }
 
-  const liveMove = (exit - entry) * direction
-  const riskAmount = moveToValue(riskMove)
-  const targetGrossPnl = moveToValue(rewardMove)
-  const grossPnl = moveToValue(liveMove)
+  const riskAmount = moveToValue(riskMove, lotSize)
+  const targetGrossPnl = moveToValue(rewardMove, lotSize)
+  const grossPnl = exits.reduce((sum, leg) => {
+    const liveMove = (toNumber(leg.price) - entry) * direction
+    return sum + moveToValue(liveMove, toNumber(leg.quantity_lots))
+  }, 0)
   const netPnl = grossPnl - costsTotal
   const rrPlan = rewardMove / riskMove
   const rAtExit = riskAmount !== 0 ? netPnl / riskAmount : 0
+  const weightedExitPrice = exitLegSummary.value.weightedPrice
+  const exitQuantity = exitLegSummary.value.quantity
 
   return {
     ready: true as const,
@@ -215,6 +254,8 @@ const liveEstimate = computed(() => {
     netPnl,
     rAtExit,
     rrPlan,
+    weightedExitPrice,
+    exitQuantity,
   }
 })
 
@@ -289,6 +330,34 @@ function toNumber(value: unknown) {
   return Number(value || 0)
 }
 
+function makeExitLeg(partial?: Partial<ExitLegRow>): ExitLegRow {
+  return {
+    id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+    price: partial?.price ?? toNumber(form.entry_price),
+    quantity_lots: partial?.quantity_lots ?? toNumber(form.position_size),
+    executed_at: partial?.executed_at ?? (form.date || nowLocalDateTime()),
+    fees: partial?.fees ?? 0,
+    notes: partial?.notes ?? '',
+  }
+}
+
+function addExitLeg() {
+  const defaultQty = exitLegs.value.length > 0
+    ? Math.max(0.0001, toNumber(form.position_size) - exitLegSummary.value.quantity)
+    : toNumber(form.position_size)
+  exitLegs.value = [...exitLegs.value, makeExitLeg({ quantity_lots: defaultQty > 0 ? defaultQty : 0.0001 })]
+}
+
+function removeExitLeg(id: string) {
+  if (exitLegs.value.length <= 1) return
+  exitLegs.value = exitLegs.value.filter((leg) => leg.id !== id)
+}
+
+function ensureDefaultExitLeg() {
+  if (exitLegs.value.length > 0) return
+  exitLegs.value = [makeExitLeg()]
+}
+
 function appendNotesBlock(title: string, lines: string[]) {
   if (form.notes.includes(`${title}:`)) {
     uiStore.toast({
@@ -346,7 +415,7 @@ function parseLocalDateTime(value: string): number | null {
   return timestamp
 }
 
-function setFormFromTrade(trade: Trade) {
+function setFormFromTrade(trade: Trade, legs: TradeLeg[] = []) {
   form.account_id = String(trade.account_id || '')
   form.instrument_id = trade.instrument_id ? String(trade.instrument_id) : ''
   form.symbol = trade.pair
@@ -357,7 +426,6 @@ function setFormFromTrade(trade: Trade) {
   form.entry_price = Number(trade.entry_price)
   form.stop_loss = Number(trade.stop_loss)
   form.take_profit = Number(trade.take_profit)
-  form.actual_exit_price = Number(trade.actual_exit_price ?? trade.entry_price)
   form.position_size = Number(trade.lot_size)
   form.commission = Number(trade.commission ?? 0)
   form.swap = Number(trade.swap ?? 0)
@@ -367,6 +435,34 @@ function setFormFromTrade(trade: Trade) {
   form.followed_rules = Boolean(trade.followed_rules)
   form.emotion = (trade.emotion ?? 'neutral') as TradeEmotion
   form.notes = trade.notes || ''
+
+  const sourceLegs = (legs.length > 0 ? legs : (trade.legs ?? [])).map((leg) => ({
+    ...leg,
+    price: Number(leg.price),
+    quantity_lots: Number(leg.quantity_lots),
+    fees: Number(leg.fees ?? 0),
+  }))
+
+  const exitRows = sourceLegs
+    .filter((leg) => leg.leg_type === 'exit')
+    .map((leg) => makeExitLeg({
+      price: Number(leg.price),
+      quantity_lots: Number(leg.quantity_lots),
+      executed_at: leg.executed_at ? toLocalDateTime(leg.executed_at) : form.date,
+      fees: Number(leg.fees ?? 0),
+      notes: leg.notes ?? '',
+    }))
+
+  if (exitRows.length > 0) {
+    exitLegs.value = exitRows
+  } else {
+    exitLegs.value = [makeExitLeg({
+      price: Number(trade.actual_exit_price ?? trade.entry_price),
+      quantity_lots: Number(trade.lot_size),
+      executed_at: form.date,
+    })]
+  }
+
   showAdvanced.value = Boolean(
     form.session.trim()
     || form.model.trim()
@@ -413,7 +509,6 @@ const formErrors = computed<Record<string, string>>(() => {
   const entry = toNumber(form.entry_price)
   const stop = toNumber(form.stop_loss)
   const take = toNumber(form.take_profit)
-  const exit = toNumber(form.actual_exit_price)
   const positionSize = toNumber(form.position_size)
   const commission = toNumber(form.commission)
   const spreadCost = toNumber(form.spread_cost)
@@ -436,11 +531,40 @@ const formErrors = computed<Record<string, string>>(() => {
   if (!(entry > 0)) errors.entry_price = 'Entry price must be greater than 0.'
   if (!(stop > 0)) errors.stop_loss = 'Stop loss must be greater than 0.'
   if (!(take > 0)) errors.take_profit = 'Take profit must be greater than 0.'
-  if (!(exit > 0)) errors.actual_exit_price = 'Actual exit price must be greater than 0.'
   if (!(positionSize >= 0.0001)) errors.position_size = 'Position size must be at least 0.0001.'
   if (commission < 0) errors.commission = 'Commission cannot be negative.'
   if (spreadCost < 0) errors.spread_cost = 'Spread cost cannot be negative.'
   if (slippageCost < 0) errors.slippage_cost = 'Slippage cost cannot be negative.'
+
+  if (exitLegs.value.length === 0) {
+    errors.legs = 'Add at least one exit leg.'
+  }
+
+  let exitQuantity = 0
+  for (let index = 0; index < exitLegs.value.length; index += 1) {
+    const leg = exitLegs.value[index]!
+    const price = toNumber(leg.price)
+    const quantity = toNumber(leg.quantity_lots)
+    const legDate = parseLocalDateTime(leg.executed_at)
+
+    if (!(price > 0)) {
+      errors[`legs.${index}.price`] = `Exit leg ${index + 1} price must be greater than 0.`
+    }
+    if (!(quantity > 0)) {
+      errors[`legs.${index}.quantity_lots`] = `Exit leg ${index + 1} quantity must be greater than 0.`
+    }
+    if (legDate === null) {
+      errors[`legs.${index}.executed_at`] = `Exit leg ${index + 1} execution time is required.`
+    } else if (legDate > now + 60_000) {
+      errors[`legs.${index}.executed_at`] = `Exit leg ${index + 1} execution time cannot be in the future.`
+    }
+
+    exitQuantity += quantity
+  }
+
+  if (positionSize > 0 && exitQuantity > (positionSize + 0.0001)) {
+    errors.legs = 'Total exit quantity cannot exceed position size.'
+  }
 
   if (entry > 0 && stop > 0 && entry === stop) {
     errors.stop_loss = 'Stop loss must differ from entry price.'
@@ -487,6 +611,42 @@ function buildPayload(): TradePayload {
     throw new Error('Instrument is required.')
   }
 
+  const entryExecutedAt = new Date(closeDate).toISOString()
+  const legs = [
+    {
+      leg_type: 'entry' as const,
+      price: Number(form.entry_price),
+      quantity_lots: Number(form.position_size),
+      executed_at: entryExecutedAt,
+      fees: 0,
+      notes: null,
+    },
+    ...exitLegs.value.map((leg) => {
+      const executedAt = parseLocalDateTime(leg.executed_at)
+      return {
+        leg_type: 'exit' as const,
+        price: Number(leg.price),
+        quantity_lots: Number(leg.quantity_lots),
+        executed_at: new Date(executedAt ?? closeDate).toISOString(),
+        fees: Number(leg.fees || 0),
+        notes: leg.notes.trim() ? leg.notes.trim() : null,
+      }
+    }),
+  ]
+
+  const exitQuantity = legs
+    .filter((leg) => leg.leg_type === 'exit')
+    .reduce((sum, leg) => sum + leg.quantity_lots, 0)
+  if (exitQuantity <= 0) {
+    throw new Error('At least one exit leg is required.')
+  }
+
+  const weightedExitPrice = exitQuantity > 0
+    ? legs
+      .filter((leg) => leg.leg_type === 'exit')
+      .reduce((sum, leg) => sum + (leg.price * leg.quantity_lots), 0) / exitQuantity
+    : Number(form.entry_price)
+
   return {
     account_id: Number(form.account_id),
     instrument_id: instrumentId,
@@ -498,12 +658,13 @@ function buildPayload(): TradePayload {
     entry_price: Number(form.entry_price),
     stop_loss: Number(form.stop_loss),
     take_profit: Number(form.take_profit),
-    actual_exit_price: Number(form.actual_exit_price),
+    actual_exit_price: weightedExitPrice,
     position_size: Number(form.position_size),
     commission: Number(form.commission || 0),
     swap: Number(form.swap || 0),
     spread_cost: Number(form.spread_cost || 0),
     slippage_cost: Number(form.slippage_cost || 0),
+    legs,
     risk_override_reason: form.risk_override_reason.trim() ? form.risk_override_reason.trim() : null,
     followed_rules: form.followed_rules,
     emotion: form.emotion,
@@ -744,6 +905,7 @@ async function submitForm() {
 async function loadTradeIfNeeded() {
   if (!isEditMode.value || tradeId.value === null) {
     form.date = nowLocalDateTime()
+    ensureDefaultExitLeg()
     showAdvanced.value = false
     return
   }
@@ -751,7 +913,7 @@ async function loadTradeIfNeeded() {
   loadingTrade.value = true
   try {
     const data = await tradeStore.fetchTradeDetails(tradeId.value)
-    setFormFromTrade(data.trade)
+    setFormFromTrade(data.trade, data.legs ?? [])
     existingImages.value = (data.images ?? [])
       .slice()
       .sort((a, b) => a.sort_order - b.sort_order || a.id - b.id)
@@ -819,7 +981,6 @@ watch(
     form.entry_price,
     form.stop_loss,
     form.take_profit,
-    form.actual_exit_price,
     form.position_size,
     form.commission,
     form.swap,
@@ -830,6 +991,14 @@ watch(
   () => {
     schedulePrecheck()
   }
+)
+
+watch(
+  exitLegs,
+  () => {
+    schedulePrecheck()
+  },
+  { deep: true }
 )
 
 onBeforeUnmount(() => {
@@ -1034,7 +1203,7 @@ async function loadImage(file: File): Promise<HTMLImageElement> {
 
         <section class="trade-form-section">
           <p class="trade-section-title">Exit</p>
-          <div class="grid grid-premium md:grid-cols-2 xl:grid-cols-3">
+          <div class="grid grid-premium md:grid-cols-2 xl:grid-cols-2">
             <BaseInput
               v-model="form.stop_loss"
               label="Stop Loss"
@@ -1053,15 +1222,75 @@ async function loadImage(file: File): Promise<HTMLImageElement> {
               step="0.000001"
               :error="fieldError('take_profit')"
             />
-            <BaseInput
-              v-model="form.actual_exit_price"
-              label="Exit Price"
-              type="number"
-              required
-              min="0.000001"
-              step="0.000001"
-              :error="fieldError('actual_exit_price')"
-            />
+          </div>
+          <p v-if="fieldError('legs')" class="field-error-text mt-2">{{ fieldError('legs') }}</p>
+          <div class="panel mt-3 p-3">
+            <div class="flex flex-wrap items-center justify-between gap-2">
+              <p class="kicker-label">Exit Legs (Partials)</p>
+              <button type="button" class="btn btn-ghost px-3 py-1.5 text-xs" @click="addExitLeg">
+                Add Exit Leg
+              </button>
+            </div>
+
+            <div class="mt-3 space-y-3">
+              <div v-for="(leg, index) in exitLegs" :key="leg.id" class="rounded-xl border border-white/10 p-3">
+                <div class="mb-2 flex items-center justify-between gap-2">
+                  <p class="text-sm font-semibold text-white/90">Leg {{ index + 1 }}</p>
+                  <button
+                    type="button"
+                    class="btn btn-ghost px-2 py-1 text-xs"
+                    :disabled="exitLegs.length <= 1"
+                    @click="removeExitLeg(leg.id)"
+                  >
+                    Remove
+                  </button>
+                </div>
+                <div class="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+                  <BaseInput
+                    v-model="leg.price"
+                    label="Exit Price"
+                    type="number"
+                    min="0.000001"
+                    step="0.000001"
+                    :error="fieldError(`legs.${index}.price`)"
+                  />
+                  <BaseInput
+                    v-model="leg.quantity_lots"
+                    label="Quantity (Lot)"
+                    type="number"
+                    min="0.0001"
+                    step="0.0001"
+                    :error="fieldError(`legs.${index}.quantity_lots`)"
+                  />
+                  <BaseDateTime
+                    v-model="leg.executed_at"
+                    label="Executed At"
+                    :max="closeDateMax"
+                    :error="fieldError(`legs.${index}.executed_at`)"
+                  />
+                  <BaseInput
+                    v-model="leg.fees"
+                    label="Leg Fees"
+                    type="number"
+                    step="0.01"
+                  />
+                </div>
+                <BaseInput
+                  v-model="leg.notes"
+                  class="mt-2"
+                  label="Leg Note (Optional)"
+                  multiline
+                  :rows="1"
+                  placeholder="Scale-out reason, execution quality..."
+                />
+              </div>
+            </div>
+
+            <div class="mt-3 grid gap-2 text-xs md:grid-cols-3">
+              <p>Total Exit Qty: <strong>{{ exitLegSummary.quantity.toFixed(4) }}</strong> lot</p>
+              <p>Weighted Exit: <strong>{{ exitLegSummary.weightedPrice.toFixed(6) }}</strong></p>
+              <p>Leg Fees: <strong>{{ asCurrency(exitLegSummary.fees) }}</strong></p>
+            </div>
           </div>
         </section>
 
@@ -1135,10 +1364,18 @@ async function loadImage(file: File): Promise<HTMLImageElement> {
                   </strong>
                 </article>
                 <article>
+                  <p>Weighted Exit</p>
+                  <strong class="value-display">{{ liveEstimate.weightedExitPrice.toFixed(6) }}</strong>
+                </article>
+                <article>
                   <p>Costs</p>
                   <strong class="negative">
                     {{ asSignedCurrency(-Math.abs(liveEstimate.costsTotal)) }}
                   </strong>
+                </article>
+                <article>
+                  <p>Exit Qty</p>
+                  <strong class="value-display">{{ liveEstimate.exitQuantity.toFixed(4) }} lot</strong>
                 </article>
                 <article>
                   <p>R @ Exit</p>
@@ -1151,7 +1388,7 @@ async function loadImage(file: File): Promise<HTMLImageElement> {
               </div>
             </details>
           </div>
-          <p v-else class="section-note">Select instrument and enter Entry/SL/TP/Exit/Size for preview.</p>
+          <p v-else class="section-note">Select instrument and enter Entry/SL/TP/Size plus at least one exit leg.</p>
         </section>
 
         <section class="trade-form-section">

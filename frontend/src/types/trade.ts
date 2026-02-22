@@ -15,9 +15,11 @@ export interface Trade {
   pair: string
   direction: TradeDirection
   entry_price: string
+  avg_entry_price?: string | null
   stop_loss: string
   take_profit: string
   actual_exit_price: string | null
+  avg_exit_price?: string | null
   lot_size: string
   risk_per_unit: string | null
   reward_per_unit: string | null
@@ -32,6 +34,7 @@ export interface Trade {
   profit_loss: string
   rr: string
   r_multiple: string | null
+  realized_r_multiple?: string | null
   risk_percent: string | null
   account_balance_before_trade: string | null
   account_balance_after_trade: string | null
@@ -42,6 +45,7 @@ export interface Trade {
   model: string
   date: string
   notes: string | null
+  legs?: TradeLeg[]
   images?: TradeImage[]
   images_count?: number
   account?: {
@@ -55,6 +59,19 @@ export interface Trade {
   created_at: string
   updated_at: string
   deleted_at?: string | null
+}
+
+export interface TradeLeg {
+  id?: number
+  trade_id?: number
+  leg_type: 'entry' | 'exit'
+  price: string
+  quantity_lots: string
+  executed_at: string
+  fees?: string | null
+  notes?: string | null
+  created_at?: string
+  updated_at?: string
 }
 
 export interface Instrument {
@@ -83,6 +100,7 @@ export interface TradeImage {
 
 export interface TradeDetailsResponse {
   trade: Trade
+  legs?: TradeLeg[]
   images: TradeImage[]
 }
 
