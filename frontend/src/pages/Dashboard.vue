@@ -122,11 +122,8 @@ const scopeMetaLabel = computed(() => {
 const propAccounts = computed(() => accounts.value.filter((account) => isPropAccountType(account.account_type)))
 const liveAccounts = computed(() => accounts.value.filter((account) => isLiveAccountType(account.account_type)))
 
-const hasPropAccounts = computed(() => propAccounts.value.length > 0)
-const hasLiveAccounts = computed(() => liveAccounts.value.length > 0)
-
 const modeScopeAccounts = computed(() => {
-  if (effectiveDashboardMode.value === 'prop') {
+  if (dashboardMode.value === 'prop') {
     return propAccounts.value
   }
 
@@ -160,21 +157,7 @@ const selectedAccountScopeModel = computed({
   },
 })
 
-const effectiveDashboardMode = computed<DashboardMode>(() => {
-  if (dashboardMode.value === 'prop' && hasPropAccounts.value) {
-    return 'prop'
-  }
-
-  if (dashboardMode.value === 'live' && hasLiveAccounts.value) {
-    return 'live'
-  }
-
-  if (hasPropAccounts.value) {
-    return 'prop'
-  }
-
-  return 'live'
-})
+const effectiveDashboardMode = computed<DashboardMode>(() => dashboardMode.value)
 
 const activeRangeFilters = computed(() => {
   if (rangePreset.value === '30d') {
@@ -679,7 +662,6 @@ function setDashboardMode(mode: DashboardMode) {
             <button
               class="overview-tab-btn"
               :class="{ active: effectiveDashboardMode === 'live' }"
-              :disabled="!hasLiveAccounts"
               @click="setDashboardMode('live')"
             >
               Live Journal
@@ -687,7 +669,6 @@ function setDashboardMode(mode: DashboardMode) {
             <button
               class="overview-tab-btn"
               :class="{ active: effectiveDashboardMode === 'prop' }"
-              :disabled="!hasPropAccounts"
               @click="setDashboardMode('prop')"
             >
               Prop Challenge
