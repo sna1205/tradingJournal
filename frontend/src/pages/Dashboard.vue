@@ -24,17 +24,32 @@ import CalendarHeatmap from '@/components/analytics/CalendarHeatmap.vue'
 import DatePopoverField from '@/components/form/DatePopoverField.vue'
 import BaseSelect from '@/components/form/BaseSelect.vue'
 import api from '@/services/api'
-import { queryLocalTrades, shouldUseLocalFallback } from '@/services/localFallback'
+import { queryLocalMissedTrades, queryLocalTrades, shouldUseLocalFallback } from '@/services/localFallback'
 import { asCurrency, asSignedCurrency } from '@/utils/format'
 import { useAccountStore } from '@/stores/accountStore'
 import { useAnalyticsStore } from '@/stores/analyticsStore'
-import type { Paginated, Trade } from '@/types/trade'
+import { useSyncStatusStore } from '@/stores/syncStatusStore'
+import type { MissedTrade, Paginated, Trade } from '@/types/trade'
 
-type DashboardTab = 'overview' | 'calendar'
+type DashboardTab = 'overview' | 'chart' | 'calendar'
 type RangePreset = '30d' | 'custom'
+
+const chartMockEmotionRows = [
+  { emotion: 'confident', total_trades: 6, total_profit: 420 },
+  { emotion: 'calm', total_trades: 5, total_profit: 280 },
+  { emotion: 'hesitant', total_trades: 3, total_profit: -110 },
+  { emotion: 'fearful', total_trades: 2, total_profit: -160 },
+]
+
+const chartMockSessionRows = [
+  { session: 'London', total_pnl: 360 },
+  { session: 'New York', total_pnl: 140 },
+  { session: 'Asia', total_pnl: -80 },
+]
 
 const analyticsStore = useAnalyticsStore()
 const accountStore = useAccountStore()
+const syncStatusStore = useSyncStatusStore()
 const {
   summary,
   overview,
@@ -56,7 +71,9 @@ const calendarMonthKey = ref(monthKeyFromDate(new Date()))
 const customDateFrom = ref(shiftIsoDate(initialRangeEnd, -29))
 const customDateTo = ref(initialRangeEnd)
 const recentTrades = ref<Trade[]>([])
+const recentMissedTrades = ref<MissedTrade[]>([])
 const recentTradesLoading = ref(false)
+const recentMissedTradesLoading = ref(false)
 let recentTradesRefreshHandle: number | null = null
 
 const totalStartingBalance = computed(() =>
@@ -189,10 +206,46 @@ const emotionChartRows = computed(() =>
     total_profit: Number((item as Record<string, unknown>).total_profit ?? 0),
   }))
 )
+const chartEmotionRows = computed(() =>
+  emotionChartRows.value.length > 0 ? emotionChartRows.value : chartMockEmotionRows
+)
+const chartSessionRows = computed(() =>
+  sessionRows.value.length > 0 ? sessionRows.value : chartMockSessionRows
+)
+const usingChartMockData = computed(() =>
+  emotionChartRows.value.length === 0 && sessionRows.value.length === 0
+)
 
 const reviewCandidates = computed(() => recentTrades.value.filter((trade) => needsReview(trade)))
 const nextReviewTrade = computed(() => reviewCandidates.value[0] ?? null)
 const recentTradeRows = computed(() => recentTrades.value.slice(0, 6))
+const weeklyTrades = computed(() => recentTrades.value.filter((trade) => isWithinLastDays(trade.date, 7)))
+const weeklyMissedRows = computed(() => recentMissedTrades.value.filter((entry) => isWithinLastDays(entry.date, 7)))
+const weeklyReviewVolume = computed(() => weeklyTrades.value.length + weeklyMissedRows.value.length)
+const weeklyCaptureCompleteCount = computed(() => {
+  const tradeCaptures = weeklyTrades.value.filter((trade) => tradeCaptureReady(trade)).length
+  const missedCaptures = weeklyMissedRows.value.filter((entry) => missedCaptureReady(entry)).length
+  return tradeCaptures + missedCaptures
+})
+const weeklyCaptureRate = computed(() => toPercent(weeklyCaptureCompleteCount.value, weeklyReviewVolume.value))
+const weeklyTriageQueueCount = computed(() => {
+  const tradeQueue = weeklyTrades.value.filter((trade) => needsReview(trade)).length
+  const missedQueue = weeklyMissedRows.value.filter((entry) => needsMissedRecovery(entry)).length
+  return tradeQueue + missedQueue
+})
+const weeklyActionPlanCount = computed(() => {
+  const tradePlans = weeklyTrades.value.filter((trade) => hasActionPlan(trade.notes)).length
+  const missedPlans = weeklyMissedRows.value.filter((entry) => hasActionPlan(entry.notes)).length
+  return tradePlans + missedPlans
+})
+const weeklyActionPlanRate = computed(() => toPercent(weeklyActionPlanCount.value, weeklyReviewVolume.value))
+const weeklyFollowUpDoneCount = computed(() => {
+  const tradeFollowUp = weeklyTrades.value.filter((trade) => hasFollowUpNote(trade.notes)).length
+  const missedFollowUp = weeklyMissedRows.value.filter((entry) => hasFollowUpNote(entry.notes)).length
+  return tradeFollowUp + missedFollowUp
+})
+const weeklyFollowUpPendingCount = computed(() => Math.max(weeklyActionPlanCount.value - weeklyFollowUpDoneCount.value, 0))
+const weeklyLoopLoading = computed(() => recentTradesLoading.value || recentMissedTradesLoading.value)
 
 onMounted(async () => {
   await accountStore.fetchAccounts()
@@ -235,6 +288,7 @@ async function refreshDashboardData() {
   await Promise.allSettled([
     analyticsStore.fetchAnalytics(filters),
     fetchRecentTrades(filters),
+    fetchRecentMissedTrades(filters),
   ])
 }
 
@@ -259,6 +313,7 @@ async function fetchRecentTrades(filters: { date_from?: string; date_to?: string
     }
 
     const { data } = await api.get<Paginated<Trade>>('/trades', { params })
+    syncStatusStore.markServerHealthy()
     let rows = data.data ?? []
 
     if (selectedAccountId.value !== null) {
@@ -276,6 +331,7 @@ async function fetchRecentTrades(filters: { date_from?: string; date_to?: string
     if (!shouldUseLocalFallback(error)) {
       throw error
     }
+    syncStatusStore.markLocalFallback('dashboard-recent-trades')
 
     const local = queryLocalTrades({
       page: 1,
@@ -290,10 +346,58 @@ async function fetchRecentTrades(filters: { date_from?: string; date_to?: string
   }
 }
 
+async function fetchRecentMissedTrades(filters: { date_from?: string; date_to?: string } = {}) {
+  recentMissedTradesLoading.value = true
+  try {
+    const params: Record<string, number | string> = {
+      page: 1,
+      per_page: 40,
+    }
+
+    if (filters.date_from) {
+      params.date_from = filters.date_from
+    }
+
+    if (filters.date_to) {
+      params.date_to = filters.date_to
+    }
+
+    const { data } = await api.get<Paginated<MissedTrade>>('/missed-trades', { params })
+    syncStatusStore.markServerHealthy()
+    const rows = (data.data ?? []).slice()
+
+    rows.sort((left, right) => {
+      const leftTime = new Date(left.date).getTime()
+      const rightTime = new Date(right.date).getTime()
+      return rightTime - leftTime
+    })
+
+    recentMissedTrades.value = rows
+  } catch (error) {
+    if (!shouldUseLocalFallback(error)) {
+      throw error
+    }
+    syncStatusStore.markLocalFallback('dashboard-recent-missed-trades')
+
+    const local = queryLocalMissedTrades({
+      page: 1,
+      per_page: 40,
+      date_from: filters.date_from,
+      date_to: filters.date_to,
+    })
+    recentMissedTrades.value = local.data
+  } finally {
+    recentMissedTradesLoading.value = false
+  }
+}
+
 function startRecentTradesAutoRefresh() {
   stopRecentTradesAutoRefresh()
   recentTradesRefreshHandle = window.setInterval(() => {
-    void fetchRecentTrades(activeRangeFilters.value)
+    void Promise.allSettled([
+      fetchRecentTrades(activeRangeFilters.value),
+      fetchRecentMissedTrades(activeRangeFilters.value),
+    ])
   }, 45000)
 }
 
@@ -305,7 +409,10 @@ function stopRecentTradesAutoRefresh() {
 
 function handleVisibilityOrFocus() {
   if (document.visibilityState && document.visibilityState !== 'visible') return
-  void fetchRecentTrades(activeRangeFilters.value)
+  void Promise.allSettled([
+    fetchRecentTrades(activeRangeFilters.value),
+    fetchRecentMissedTrades(activeRangeFilters.value),
+  ])
 }
 
 function getTodayIso() {
@@ -384,10 +491,58 @@ function toNumber(value: unknown): number {
   return Number.isFinite(parsed) ? parsed : 0
 }
 
+function toPercent(partial: number, total: number): number {
+  if (total <= 0) return 0
+  return (partial / total) * 100
+}
+
+function isWithinLastDays(value: string, days: number): boolean {
+  const parsed = new Date(value)
+  if (Number.isNaN(parsed.getTime())) return false
+
+  const now = new Date()
+  const start = new Date(now)
+  start.setHours(0, 0, 0, 0)
+  start.setDate(start.getDate() - (days - 1))
+  return parsed.getTime() >= start.getTime()
+}
+
+function parseTags(reason: string): string[] {
+  return reason
+    .split(',')
+    .map((tag) => tag.trim())
+    .filter(Boolean)
+}
+
+function imageCount(trade: Trade): number {
+  return toNumber(trade.images_count ?? trade.images?.length ?? 0)
+}
+
+function tradeCaptureReady(trade: Trade): boolean {
+  return imageCount(trade) > 0 || (trade.notes ?? '').trim().length >= 12
+}
+
+function missedCaptureReady(entry: MissedTrade): boolean {
+  const images = toNumber(entry.images_count ?? entry.images?.length ?? 0)
+  return images > 0 || parseTags(entry.reason).length > 0
+}
+
+function needsMissedRecovery(entry: MissedTrade): boolean {
+  const images = toNumber(entry.images_count ?? entry.images?.length ?? 0)
+  return images === 0 || parseTags(entry.reason).length < 2 || (entry.notes ?? '').trim().length < 20
+}
+
+function hasActionPlan(notes: string | null | undefined): boolean {
+  return /action plan|next time|i will|prevent|if setup repeats/i.test(notes ?? '')
+}
+
+function hasFollowUpNote(notes: string | null | undefined): boolean {
+  return /follow[\s-]?up|revisit|check back/i.test(notes ?? '')
+}
+
 function needsReview(trade: Trade): boolean {
   const note = (trade.notes ?? '').trim()
-  const imageCount = toNumber(trade.images_count ?? trade.images?.length ?? 0)
-  return note.length < 8 || imageCount === 0
+  return note.length < 8 || imageCount(trade) === 0
 }
 
 function tradePnlClass(value: number): string {
@@ -423,6 +578,9 @@ function shortDate(value: string): string {
             </button>
             <button class="overview-tab-btn" :class="{ active: activeTab === 'calendar' }" @click="activeTab = 'calendar'">
               Calendar
+            </button>
+            <button class="overview-tab-btn" :class="{ active: activeTab === 'chart' }" @click="activeTab = 'chart'">
+              Chart
             </button>
           </div>
 
@@ -597,6 +755,71 @@ function shortDate(value: string): string {
         </section>
 
         <section class="grid grid-premium">
+          <GlassPanel class="weekly-loop-panel">
+            <div class="section-head">
+              <div>
+                <h2 class="section-title">Weekly Review Loop</h2>
+                <p class="section-note">Capture -> Triage -> Action Plan -> Follow-up (last 7 days)</p>
+              </div>
+              <div class="weekly-loop-links">
+                <RouterLink :to="{ path: '/trades', query: { focus: 'needs_review' } }" class="btn btn-ghost px-3 py-2 text-sm">
+                  Trade triage
+                </RouterLink>
+                <RouterLink :to="{ path: '/missed-trades', query: { focus: 'action_required' } }" class="btn btn-ghost px-3 py-2 text-sm">
+                  Missed triage
+                </RouterLink>
+              </div>
+            </div>
+
+            <div v-if="weeklyLoopLoading" class="grid gap-2 md:grid-cols-4">
+              <SkeletonBlock v-for="index in 4" :key="`weekly-loop-skeleton-${index}`" height-class="h-20" rounded-class="rounded-xl" />
+            </div>
+
+            <div v-else class="weekly-loop-grid">
+              <article class="weekly-loop-card">
+                <span class="kicker-label">Capture</span>
+                <strong class="value-display">
+                  <AnimatedNumber :value="weeklyCaptureRate" :decimals="0" suffix="%" />
+                </strong>
+                <p class="section-note">
+                  {{ weeklyCaptureCompleteCount }}/{{ weeklyReviewVolume }} entries captured
+                </p>
+              </article>
+
+              <article class="weekly-loop-card">
+                <span class="kicker-label">Triage</span>
+                <strong class="value-display" :class="weeklyTriageQueueCount > 0 ? 'negative' : 'positive'">
+                  <AnimatedNumber :value="weeklyTriageQueueCount" />
+                </strong>
+                <p class="section-note">
+                  {{ weeklyTriageQueueCount > 0 ? 'Items need review now' : 'Queue is clear' }}
+                </p>
+              </article>
+
+              <article class="weekly-loop-card">
+                <span class="kicker-label">Action Plan</span>
+                <strong class="value-display">
+                  <AnimatedNumber :value="weeklyActionPlanRate" :decimals="0" suffix="%" />
+                </strong>
+                <p class="section-note">
+                  {{ weeklyActionPlanCount }} of {{ weeklyReviewVolume }} entries planned
+                </p>
+              </article>
+
+              <article class="weekly-loop-card">
+                <span class="kicker-label">Follow-up</span>
+                <strong class="value-display" :class="weeklyFollowUpPendingCount > 0 ? 'negative' : 'positive'">
+                  <AnimatedNumber :value="weeklyFollowUpPendingCount" />
+                </strong>
+                <p class="section-note">
+                  {{ weeklyFollowUpDoneCount }} closed
+                </p>
+              </article>
+            </div>
+          </GlassPanel>
+        </section>
+
+        <section class="grid grid-premium">
           <GlassPanel>
             <div class="section-head">
               <h2 class="section-title">Cumulative P&amp;L</h2>
@@ -607,22 +830,6 @@ function shortDate(value: string): string {
               :equity="equity?.equity_points ?? []"
               :drawdown="drawdownSeries"
             />
-          </GlassPanel>
-        </section>
-
-        <section class="grid grid-premium xl:grid-cols-2">
-          <GlassPanel>
-            <div class="section-head">
-              <h2 class="section-title">Emotional Impact</h2>
-            </div>
-            <EmotionPieChart :slices="emotionChartRows" />
-          </GlassPanel>
-
-          <GlassPanel>
-            <div class="section-head">
-              <h2 class="section-title">Session Edge</h2>
-            </div>
-            <SessionPerformanceBarChart :rows="sessionRows" />
           </GlassPanel>
         </section>
 
@@ -711,6 +918,28 @@ function shortDate(value: string): string {
                 </tbody>
               </table>
             </div>
+          </GlassPanel>
+        </section>
+      </template>
+
+      <template v-else-if="activeTab === 'chart'">
+        <section v-if="usingChartMockData" class="panel p-3 text-sm">
+          <p class="section-note">Showing mock chart data for preview. Add executions in the selected range to replace this.</p>
+        </section>
+
+        <section class="grid grid-premium xl:grid-cols-2">
+          <GlassPanel>
+            <div class="section-head">
+              <h2 class="section-title">Emotional Impact</h2>
+            </div>
+            <EmotionPieChart :slices="chartEmotionRows" />
+          </GlassPanel>
+
+          <GlassPanel>
+            <div class="section-head">
+              <h2 class="section-title">Session Edge</h2>
+            </div>
+            <SessionPerformanceBarChart :rows="chartSessionRows" />
           </GlassPanel>
         </section>
       </template>

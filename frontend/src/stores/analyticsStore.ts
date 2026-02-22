@@ -3,6 +3,7 @@ import { computed, ref, type Ref } from 'vue'
 import api from '@/services/api'
 import { fetchLocalAccounts, queryLocalTrades, shouldUseLocalFallback } from '@/services/localFallback'
 import { useAccountStore } from '@/stores/accountStore'
+import { useSyncStatusStore } from '@/stores/syncStatusStore'
 import type { SummaryStats, Trade } from '@/types/trade'
 
 export interface AnalyticsOverview {
@@ -166,6 +167,7 @@ const weekdayLabels = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
 
 export const useAnalyticsStore = defineStore('analytics', () => {
   const accountStore = useAccountStore()
+  const syncStatusStore = useSyncStatusStore()
   const overview = ref<AnalyticsOverview | null>(null)
   const dailyStats = ref<AnalyticsDailyRow[]>([])
   const performanceProfile = ref<PerformanceProfile | null>(null)
@@ -316,6 +318,7 @@ export const useAnalyticsStore = defineStore('analytics', () => {
         api.get<MonthlyHeatmapPayload>('/analytics/monthly-heatmap', { params }),
         api.get<RiskStatusPayload>('/analytics/risk-status', { params }),
       ])
+      syncStatusStore.markServerHealthy()
 
       overview.value = {
         ...overviewRes.data,
@@ -458,10 +461,32 @@ export const useAnalyticsStore = defineStore('analytics', () => {
         revenge_after_loss_events: riskStatusRes.data.revenge_after_loss_events || [],
         warnings: riskStatusRes.data.warnings || [],
       }
+
+      if (shouldUseMockAnalytics({
+        overview: overview.value,
+        dailyStats: dailyStats.value,
+        rankings: rankings.value,
+        behavioral: behavioral.value,
+      })) {
+        applyMockAnalyticsPreset({
+          overview,
+          dailyStats,
+          performanceProfile,
+          equity,
+          drawdown,
+          streaks,
+          metrics,
+          rankings,
+          monthlyHeatmap,
+          riskStatus,
+          behavioral,
+        })
+      }
     } catch (error) {
       if (!shouldUseLocalFallback(error)) {
         throw error
       }
+      syncStatusStore.markLocalFallback('analytics')
 
       const localTrades = queryLocalTrades({
         page: 1,
@@ -561,6 +586,11 @@ function applyLocalAnalyticsFallback(args: {
   const sorted = args.trades
     .slice()
     .sort((left, right) => left.date.localeCompare(right.date) || left.id - right.id)
+
+  if (sorted.length === 0) {
+    applyMockAnalyticsPreset(args)
+    return
+  }
 
   const totalTrades = sorted.length
   let wins = 0
@@ -816,4 +846,177 @@ function toIsoDateKey(value: string): string {
   const parsed = new Date(value)
   if (Number.isNaN(parsed.getTime())) return new Date().toISOString().slice(0, 10)
   return parsed.toISOString().slice(0, 10)
+}
+
+function shouldUseMockAnalytics(payload: {
+  overview: AnalyticsOverview | null
+  dailyStats: AnalyticsDailyRow[]
+  rankings: RankingsPayload | null
+  behavioral: BehavioralPayload | null
+}): boolean {
+  const totalTrades = Number(payload.overview?.total_trades ?? 0)
+  const noDaily = payload.dailyStats.length === 0
+  const noRankings = (payload.rankings?.sessions?.length ?? 0) === 0
+    && (payload.rankings?.strategy_models?.length ?? 0) === 0
+    && (payload.rankings?.symbols?.length ?? 0) === 0
+  const noBehavioral = (payload.behavioral?.emotion_analytics?.breakdown?.length ?? 0) === 0
+  return totalTrades === 0 && noDaily && noRankings && noBehavioral
+}
+
+function applyMockAnalyticsPreset(args: {
+  overview: Ref<AnalyticsOverview | null>
+  dailyStats: Ref<AnalyticsDailyRow[]>
+  performanceProfile: Ref<PerformanceProfile | null>
+  equity: Ref<EquityPayload | null>
+  drawdown: Ref<DrawdownPayload | null>
+  streaks: Ref<StreakPayload | null>
+  metrics: Ref<MetricsPayload | null>
+  rankings: Ref<RankingsPayload | null>
+  monthlyHeatmap: Ref<MonthlyHeatmapPayload | null>
+  riskStatus: Ref<RiskStatusPayload | null>
+  behavioral: Ref<BehavioralPayload | null>
+}) {
+  const mockDaily: AnalyticsDailyRow[] = [
+    { date: shiftIsoDate(new Date(), -6), close_date: shiftIsoDate(new Date(), -6), total_trades: 2, profit_loss: 48, average_r: 0.62, win_rate: 50 },
+    { date: shiftIsoDate(new Date(), -5), close_date: shiftIsoDate(new Date(), -5), total_trades: 1, profit_loss: -22, average_r: -0.35, win_rate: 0 },
+    { date: shiftIsoDate(new Date(), -4), close_date: shiftIsoDate(new Date(), -4), total_trades: 2, profit_loss: 64, average_r: 0.88, win_rate: 100 },
+    { date: shiftIsoDate(new Date(), -3), close_date: shiftIsoDate(new Date(), -3), total_trades: 1, profit_loss: -15, average_r: -0.24, win_rate: 0 },
+    { date: shiftIsoDate(new Date(), -2), close_date: shiftIsoDate(new Date(), -2), total_trades: 2, profit_loss: 52, average_r: 0.71, win_rate: 50 },
+    { date: shiftIsoDate(new Date(), -1), close_date: shiftIsoDate(new Date(), -1), total_trades: 1, profit_loss: 34, average_r: 0.49, win_rate: 100 },
+    { date: shiftIsoDate(new Date(), 0), close_date: shiftIsoDate(new Date(), 0), total_trades: 1, profit_loss: 19, average_r: 0.28, win_rate: 100 },
+  ]
+
+  const startingBalance = 10000
+  const cumulativeProfit: number[] = []
+  const equityPoints: number[] = []
+  const equityTimestamps: string[] = []
+  let runningProfit = 0
+  for (const day of mockDaily) {
+    runningProfit = Number((runningProfit + Number(day.profit_loss || 0)).toFixed(2))
+    cumulativeProfit.push(runningProfit)
+    equityPoints.push(Number((startingBalance + runningProfit).toFixed(2)))
+    equityTimestamps.push(day.date)
+  }
+
+  const totalTrades = mockDaily.reduce((sum, day) => sum + Number(day.total_trades || 0), 0)
+  const netProfit = Number(cumulativeProfit[cumulativeProfit.length - 1] ?? 0)
+
+  args.overview.value = {
+    total_trades: totalTrades,
+    win_rate: 62.5,
+    total_profit: 217,
+    total_loss: 37,
+    profit_factor: 5.86,
+    returns_percent: 1.8,
+    expectancy: 18,
+    average_r: 0.48,
+    recovery_factor: 3.2,
+  }
+  args.dailyStats.value = mockDaily
+  args.performanceProfile.value = {
+    win_rate: 62.5,
+    avg_rr: 0.48,
+    profit_factor: 5.86,
+    consistency_score: 7.4,
+    recovery_factor: 3.2,
+    sharpe_ratio: null,
+  }
+  args.equity.value = {
+    equity_points: equityPoints,
+    cumulative_profit: cumulativeProfit,
+    equity_timestamps: equityTimestamps,
+  }
+  args.drawdown.value = {
+    max_drawdown: 37,
+    max_drawdown_percent: 0.36,
+    current_drawdown: 0,
+    current_drawdown_percent: 0,
+    peak_balance: 10180,
+    current_equity: 10180,
+  }
+  args.streaks.value = {
+    longest_win_streak: 3,
+    longest_loss_streak: 1,
+    current_win_streak: 2,
+    current_loss_streak: 0,
+    current_streak: { type: 'win', length: 2 },
+  }
+  args.metrics.value = {
+    total_trades: totalTrades,
+    wins: 5,
+    losses: 3,
+    breakeven: 2,
+    win_rate: 62.5,
+    loss_rate: 30,
+    average_win: 43.4,
+    average_loss: 12.33,
+    total_winning_amount: 217,
+    total_losing_amount: 37,
+    net_profit: netProfit,
+    profit_factor: 5.86,
+    expectancy: 18,
+    recovery_factor: 3.2,
+    average_r: 0.48,
+    avg_r: 0.48,
+    sharpe_ratio: null,
+  }
+  args.rankings.value = {
+    sessions: [
+      { session: 'London', total_trades: 4, win_rate: 75, profit_factor: 3.2, expectancy: 24, total_pnl: 96, avg_r: 0.62 },
+      { session: 'New York', total_trades: 3, win_rate: 66.67, profit_factor: 2.1, expectancy: 18, total_pnl: 54, avg_r: 0.44 },
+      { session: 'Asia', total_trades: 3, win_rate: 33.33, profit_factor: 0.8, expectancy: -6, total_pnl: -18, avg_r: -0.12 },
+    ],
+    strategy_models: [
+      { strategy_model: 'Liquidity Sweep', total_trades: 4, win_rate: 75, profit_factor: 3.4, expectancy: 22, total_pnl: 88, avg_r: 0.58 },
+      { strategy_model: 'Reversal', total_trades: 3, win_rate: 66.67, profit_factor: 2.0, expectancy: 14, total_pnl: 42, avg_r: 0.39 },
+      { strategy_model: 'Breakout', total_trades: 3, win_rate: 33.33, profit_factor: 0.7, expectancy: -8, total_pnl: -24, avg_r: -0.16 },
+    ],
+    symbols: [
+      { symbol: 'XAUUSD', total_trades: 4, win_rate: 75, profit_factor: 3.6, expectancy: 26, total_pnl: 104, avg_r: 0.64 },
+      { symbol: 'GBPUSD', total_trades: 3, win_rate: 66.67, profit_factor: 1.9, expectancy: 12, total_pnl: 36, avg_r: 0.33 },
+      { symbol: 'USDJPY', total_trades: 3, win_rate: 33.33, profit_factor: 0.8, expectancy: -6.67, total_pnl: -20, avg_r: -0.11 },
+    ],
+  }
+  args.monthlyHeatmap.value = {
+    months: [],
+    max_abs_daily_pnl: 64,
+  }
+  args.behavioral.value = {
+    discipline_comparison: {
+      followed_rules: { expectancy: 0.62, win_rate: 71.4, total_pnl: 144 },
+      broke_rules: { expectancy: -0.21, win_rate: 25, total_pnl: -21 },
+      insight: {
+        when_follow_rules: 'Mock insight: rule-following days held better expectancy.',
+        when_break_rules: 'Mock insight: rule breaks reduced edge consistency.',
+      },
+    },
+    emotion_analytics: {
+      breakdown: [
+        { emotion: 'confident', total_trades: 4, total_profit: 96 },
+        { emotion: 'calm', total_trades: 3, total_profit: 62 },
+        { emotion: 'hesitant', total_trades: 2, total_profit: -14 },
+        { emotion: 'fearful', total_trades: 1, total_profit: -20 },
+      ],
+      most_costly_emotion: 'fearful',
+      most_profitable_mindset: 'confident',
+    },
+  }
+  args.riskStatus.value = {
+    risk_percent_warning: false,
+    loss_streak_caution: false,
+    drawdown_banner: false,
+    revenge_behavior_flag: false,
+    latest_risk_percent: 0.75,
+    max_risk_percent: 1.2,
+    current_loss_streak: 0,
+    current_drawdown_percent: 0,
+    revenge_after_loss_events: [],
+    warnings: [],
+  }
+}
+
+function shiftIsoDate(value: Date, dayDelta: number): string {
+  const next = new Date(value)
+  next.setDate(next.getDate() + dayDelta)
+  return next.toISOString().slice(0, 10)
 }

@@ -3,6 +3,7 @@
 namespace Database\Seeders;
 
 use Illuminate\Database\Seeder;
+use Illuminate\Support\Facades\Cache;
 
 class DatabaseSeeder extends Seeder
 {
@@ -15,5 +16,11 @@ class DatabaseSeeder extends Seeder
             MissedTradeSeeder::class,
             MissedTradeImageSeeder::class,
         ]);
+
+        // Keep analytics cache fresh after reseeding demo/mock datasets.
+        if (!Cache::has('analytics:version')) {
+            Cache::forever('analytics:version', 1);
+        }
+        Cache::increment('analytics:version');
     }
 }
