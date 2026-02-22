@@ -153,7 +153,7 @@ function badgeClass(badge: string | undefined) {
 
 <template>
   <FieldWrapper :label="label" :required="required" :error="error" :hint="hint" :for-id="controlId">
-    <div ref="rootRef" class="select-popover">
+    <div ref="rootRef" class="select-popover" :class="{ 'is-open': isOpen }">
       <button
         :id="controlId"
         type="button"

@@ -673,6 +673,10 @@ body {
   z-index: 35;
 }
 
+.select-popover.is-open {
+  z-index: 85;
+}
+
 .select-trigger {
   margin-top: 0;
   display: inline-flex;
@@ -799,6 +803,10 @@ body {
   position: relative;
   margin-top: 0.52rem;
   z-index: 40;
+}
+
+.date-popover.is-open {
+  z-index: 86;
 }
 
 .date-trigger {
@@ -967,6 +975,12 @@ input[type='time'] {
 
 .form-field-shell {
   display: block;
+  position: relative;
+  z-index: 1;
+}
+
+.form-field-shell:focus-within {
+  z-index: 72;
 }
 
 .form-field-head {

@@ -191,7 +191,7 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div ref="rootRef" class="date-popover">
+  <div ref="rootRef" class="date-popover" :class="{ 'is-open': isOpen }">
     <button
       :id="id"
       type="button"
