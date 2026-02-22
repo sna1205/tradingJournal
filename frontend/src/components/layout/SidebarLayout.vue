@@ -92,6 +92,8 @@ const currentItem = computed(() =>
   navItems.value.find((item) => route.path === item.to || route.path.startsWith(`${item.to}/`)) ?? navItems.value[0]!
 )
 const showPageHero = computed(() => currentItem.value.to !== '/dashboard')
+const compactHeroRoutes = new Set(['/trades', '/missed-trades'])
+const useCompactHero = computed(() => compactHeroRoutes.has(route.path))
 </script>
 
 <template>
@@ -161,7 +163,7 @@ const showPageHero = computed(() => currentItem.value.to !== '/dashboard')
           </div>
         </header>
 
-        <div v-if="showPageHero" class="mt-8 motion-fade-scale">
+        <div v-if="showPageHero" class="mt-8 motion-fade-scale" :class="{ 'page-hero-compact': useCompactHero }">
           <p class="page-kicker">Execution Suite</p>
           <h1 class="page-title">{{ currentItem.title }}</h1>
           <p class="page-subtitle">{{ currentItem.subtitle }}</p>

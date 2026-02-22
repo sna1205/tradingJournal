@@ -292,7 +292,7 @@ onMounted(async () => {
 </script>
 
 <template>
-  <div class="space-y-6">
+  <div class="space-y-5 accounts-minimal">
     <GlassPanel>
       <div class="section-head">
         <div>
@@ -374,7 +374,7 @@ onMounted(async () => {
           <button type="button" class="btn btn-ghost p-2" @click="openEditModal(row.account)">
             <Pencil class="h-4 w-4" />
           </button>
-          <button type="button" class="btn btn-danger p-2" @click="removeAccount(row.account)">
+          <button type="button" class="btn btn-secondary p-2" @click="removeAccount(row.account)">
             <Trash2 class="h-4 w-4" />
           </button>
         </div>

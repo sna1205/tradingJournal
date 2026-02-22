@@ -1,8 +1,8 @@
 <script setup lang="ts">
-import { computed, onMounted } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useRouter } from 'vue-router'
-import { CalendarDays, CalendarX2, CircleAlert, ImageOff, Images, Pencil, Plus, Tags, Trash2 } from 'lucide-vue-next'
+import { CalendarDays, CalendarX2, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Eye, ImageOff, Images, Pencil, Plus, Trash2, X } from 'lucide-vue-next'
 import GlassPanel from '@/components/layout/GlassPanel.vue'
 import SkeletonBlock from '@/components/layout/SkeletonBlock.vue'
 import EmptyState from '@/components/layout/EmptyState.vue'
@@ -18,6 +18,13 @@ const router = useRouter()
 const missedTradeStore = useMissedTradeStore()
 const uiStore = useUiStore()
 const { missedTrades, pagination, filters, loading, hasFilters } = storeToRefs(missedTradeStore)
+const detailsOpen = ref(false)
+const detailsLoading = ref(false)
+const detailsEntry = ref<MissedTrade | null>(null)
+const detailsImages = ref<MissedTradeImage[]>([])
+const detailImageIndex = ref(0)
+const activeDetailImage = computed(() => detailsImages.value[detailImageIndex.value] ?? null)
+const filtersExpanded = ref(false)
 
 const mostMissedModel = computed(() => {
   if (missedTrades.value.length === 0) return '-'
@@ -65,24 +72,29 @@ const mostMissedSession = computed(() => {
   return topSession
 })
 
+const activeFilterPills = computed(() => {
+  const pills: string[] = []
+  const pair = filters.value.pair.trim()
+  const model = filters.value.model.trim()
+  const reason = filters.value.reason.trim()
+  const from = filters.value.date_from
+  const to = filters.value.date_to
+
+  if (pair) pills.push(`Pair: ${pair.toUpperCase()}`)
+  if (model) pills.push(`Model: ${model}`)
+  if (reason) pills.push(`Tag: ${reason}`)
+  if (from && to) pills.push(`${from} to ${to}`)
+  else if (from) pills.push(`From: ${from}`)
+  else if (to) pills.push(`To: ${to}`)
+
+  return pills
+})
+
 function parseTags(reason: string): string[] {
   return reason
     .split(',')
     .map((tag) => tag.trim())
     .filter(Boolean)
-}
-
-function notePreview(value: string | null) {
-  const normalized = (value ?? '').trim()
-  if (!normalized) return '-'
-  if (normalized.length <= 82) return normalized
-  return `${normalized.slice(0, 82)}...`
-}
-
-function tagClass(tag: string) {
-  if (tag.startsWith('session:')) return 'pill missed-tag-session'
-  if (tag.includes('fear') || tag.includes('hesitation')) return 'pill missed-tag-discipline'
-  return 'pill missed-tag-generic'
 }
 
 function primaryImage(item: MissedTrade): MissedTradeImage | null {
@@ -112,12 +124,58 @@ function addDays(value: Date, days: number) {
   return next
 }
 
-function openAddPage() {
-  void router.push('/missed-trades/new')
+function openQuickAddPage() {
+  const query: Record<string, string> = { quick: '1' }
+  const pair = filters.value.pair.trim()
+  const model = filters.value.model.trim()
+  const reason = filters.value.reason.trim()
+  if (pair) query.pair = pair.toUpperCase()
+  if (model) query.model = model
+  if (reason) query.reason = reason
+  void router.push({ path: '/missed-trades/new', query })
 }
 
 function openEditPage(item: MissedTrade) {
   void router.push(`/missed-trades/${item.id}/edit`)
+}
+
+async function openDetails(item: MissedTrade) {
+  detailsOpen.value = true
+  detailsLoading.value = true
+  detailsEntry.value = null
+  detailsImages.value = []
+  detailImageIndex.value = 0
+
+  try {
+    const entry = await missedTradeStore.fetchMissedTrade(item.id)
+    detailsEntry.value = entry
+    detailsImages.value = (entry.images ?? [])
+      .slice()
+      .sort((a, b) => a.sort_order - b.sort_order || a.id - b.id)
+  } catch {
+    detailsOpen.value = false
+    uiStore.toast({
+      type: 'error',
+      title: 'Failed to load setup details',
+      message: 'Please try again.',
+    })
+  } finally {
+    detailsLoading.value = false
+  }
+}
+
+function closeDetails() {
+  detailsOpen.value = false
+}
+
+function nextDetailImage() {
+  if (detailsImages.value.length <= 1) return
+  detailImageIndex.value = (detailImageIndex.value + 1) % detailsImages.value.length
+}
+
+function previousDetailImage() {
+  if (detailsImages.value.length <= 1) return
+  detailImageIndex.value = (detailImageIndex.value - 1 + detailsImages.value.length) % detailsImages.value.length
 }
 
 async function remove(id: number) {
@@ -155,6 +213,7 @@ async function applyFilters() {
   }
 
   await missedTradeStore.fetchMissedTrades(1)
+  filtersExpanded.value = false
 }
 
 function setFilterPreset(preset: 'today' | '7d' | '30d' | 'clear') {
@@ -186,6 +245,7 @@ function setFilterPreset(preset: 'today' | '7d' | '30d' | 'clear') {
 async function clearFilters() {
   missedTradeStore.resetFilters()
   await missedTradeStore.fetchMissedTrades(1)
+  filtersExpanded.value = false
 }
 
 async function changePage(delta: number) {
@@ -197,6 +257,7 @@ async function changePage(delta: number) {
 onMounted(async () => {
   try {
     await missedTradeStore.fetchMissedTrades()
+    filtersExpanded.value = hasFilters.value
   } catch {
     uiStore.toast({
       type: 'error',
@@ -208,54 +269,83 @@ onMounted(async () => {
 </script>
 
 <template>
-  <div class="space-y-6">
-    <section class="grid grid-premium md:grid-cols-3">
-      <GlassPanel class="metric-card">
+  <div class="space-y-5 missed-list-minimal">
+    <section class="grid grid-premium md:grid-cols-3 missed-summary-strip">
+      <GlassPanel class="metric-card metric-card-minimal">
         <p class="kicker-label">Total Missed</p>
         <p class="metric-value value-display">
           <AnimatedNumber :value="pagination.total" />
         </p>
       </GlassPanel>
-      <GlassPanel class="metric-card">
+      <GlassPanel class="metric-card metric-card-minimal">
         <p class="kicker-label">Most Missed Strategy</p>
         <p class="metric-value positive">{{ mostMissedModel }}</p>
       </GlassPanel>
-      <GlassPanel class="metric-card">
+      <GlassPanel class="metric-card metric-card-minimal">
         <p class="kicker-label">Most Missed Session</p>
         <p class="metric-value">{{ mostMissedSession }}</p>
       </GlassPanel>
     </section>
 
-    <GlassPanel class="missed-db-shell">
-      <div class="section-head">
-        <h2 class="section-title">Missed Setups</h2>
-        <div class="flex flex-wrap items-center gap-2">
-          <button class="btn btn-primary inline-flex items-center gap-2 px-4 py-2 text-sm" @click="openAddPage">
+    <GlassPanel class="missed-db-shell command-filter-shell">
+      <div class="command-filter-bar">
+        <div class="command-filter-left">
+          <h2 class="section-title">Missed Setups</h2>
+          <div class="filter-summary-strip">
+            <span v-if="activeFilterPills.length === 0" class="section-note">No filters applied</span>
+            <span v-for="pill in activeFilterPills" :key="`missed-pill-${pill}`" class="filter-chip-mini">{{ pill }}</span>
+          </div>
+        </div>
+        <div class="command-filter-right">
+          <button class="btn btn-secondary inline-flex items-center gap-2 px-3 py-2 text-sm" @click="openQuickAddPage">
             <Plus class="h-4 w-4" />
-            Log Missed Setup
+            Quick Add
           </button>
           <button class="btn btn-ghost px-4 py-2 text-sm" @click="applyFilters">Apply</button>
-          <button v-if="hasFilters" class="btn btn-ghost px-4 py-2 text-sm" @click="clearFilters">Reset</button>
+          <button type="button" class="btn btn-ghost inline-flex items-center gap-2 px-3 py-2 text-sm" @click="filtersExpanded = !filtersExpanded">
+            <ChevronUp v-if="filtersExpanded" class="h-4 w-4" />
+            <ChevronDown v-else class="h-4 w-4" />
+            Filters
+          </button>
         </div>
       </div>
 
-      <div class="form-block mb-4 grid grid-premium md:grid-cols-2 xl:grid-cols-3">
-        <BaseInput v-model="filters.pair" label="Pair" type="text" placeholder="EURUSD" size="sm" />
-        <BaseInput v-model="filters.model" label="Model" type="text" placeholder="Breakout" size="sm" />
-        <BaseInput v-model="filters.reason" label="Reason Tag" type="text" placeholder="session:london" size="sm" />
-      </div>
+      <Transition name="drawer">
+        <div v-if="filtersExpanded" class="filter-drawer">
+          <div class="form-block mb-4 grid grid-premium md:grid-cols-2 xl:grid-cols-3">
+            <BaseInput v-model="filters.pair" label="Pair" type="text" placeholder="EURUSD" size="sm" />
+            <BaseInput v-model="filters.model" label="Model" type="text" placeholder="Breakout" size="sm" />
+            <BaseInput v-model="filters.reason" label="Reason Tag" type="text" placeholder="session:london" size="sm" />
+          </div>
 
-      <div class="trade-filter-date-panel mb-4">
-        <div class="trade-filter-date-grid form-block">
-          <BaseDateInput v-model="filters.date_from" label="Date From" size="sm" :max="filters.date_to || undefined" />
-          <BaseDateInput v-model="filters.date_to" label="Date To" size="sm" :min="filters.date_from || undefined" />
+          <div class="filter-drawer-row">
+            <div class="trade-filter-date-grid form-block">
+              <BaseDateInput v-model="filters.date_from" label="Date From" size="sm" :max="filters.date_to || undefined" />
+              <BaseDateInput v-model="filters.date_to" label="Date To" size="sm" :min="filters.date_from || undefined" />
+            </div>
+            <div class="trade-filter-presets">
+              <button type="button" class="chip-btn" @click="setFilterPreset('today')">Today</button>
+              <button type="button" class="chip-btn" @click="setFilterPreset('7d')">Last 7D</button>
+              <button type="button" class="chip-btn" @click="setFilterPreset('30d')">Last 30D</button>
+              <button type="button" class="chip-btn" @click="setFilterPreset('clear')">Clear</button>
+            </div>
+          </div>
+
+          <div class="filter-drawer-footer">
+            <button class="btn btn-primary px-4 py-2 text-sm" @click="applyFilters">Apply</button>
+            <button class="btn btn-ghost px-4 py-2 text-sm" :disabled="!hasFilters" @click="clearFilters">Reset</button>
+          </div>
         </div>
-        <div class="trade-filter-presets">
-          <button type="button" class="chip-btn" @click="setFilterPreset('today')">Today</button>
-          <button type="button" class="chip-btn" @click="setFilterPreset('7d')">Last 7D</button>
-          <button type="button" class="chip-btn" @click="setFilterPreset('30d')">Last 30D</button>
-          <button type="button" class="chip-btn" @click="setFilterPreset('clear')">Clear</button>
-        </div>
+      </Transition>
+    </GlassPanel>
+
+    <section class="missed-db-shell panel p-4 md:p-5">
+      <div class="section-head">
+        <h2 class="section-title">Missed Setup Log</h2>
+        <p class="section-note">
+          <span v-if="loading">Loading...</span>
+          <span v-else><AnimatedNumber :value="pagination.total" /> entries</span>
+        </p>
       </div>
 
       <div v-if="loading" class="missed-db-grid">
@@ -267,73 +357,72 @@ onMounted(async () => {
         title="No missed setups yet"
         description="Capture missed setups with tags to improve execution."
         :icon="CalendarX2"
+        cta-text="Quick Add"
+        @cta="openQuickAddPage"
       />
 
       <div v-else class="missed-db-grid">
-        <article v-for="item in missedTrades" :key="item.id" class="missed-db-card">
-          <div class="missed-db-media">
+        <article v-for="item in missedTrades" :key="item.id" class="trade-db-card missed-log-row">
+          <button type="button" class="trade-db-media" @click="openDetails(item)">
             <img
               v-if="primaryImage(item)"
               :src="primaryImage(item)?.thumbnail_url || primaryImage(item)?.image_url"
               :alt="`${item.pair} missed setup screenshot`"
               loading="lazy"
-              class="missed-db-image"
+              class="trade-db-image"
               @error="setImageFallback($event, primaryImage(item)?.image_url)"
             />
-            <div v-else class="missed-db-image-empty">
+            <div v-else class="trade-db-empty-chart">
               <ImageOff class="h-7 w-7" />
               <span>No screenshot</span>
             </div>
-            <span class="pill missed-db-image-count">
+            <span class="pill trade-log-image-count">
               <Images class="h-3.5 w-3.5" />
               {{ item.images_count ?? item.images?.length ?? 0 }}
             </span>
-          </div>
+          </button>
 
-          <div class="missed-db-head">
-            <div>
-              <h3>{{ item.pair }}</h3>
-              <p>{{ item.model }}</p>
-            </div>
-            <span class="pill missed-db-pill-alert">
-              <CircleAlert class="h-3.5 w-3.5" />
-              Uncaptured
-            </span>
-          </div>
-
-          <div class="missed-db-meta">
-            <span class="inline-flex items-center gap-1">
-              <CalendarDays class="h-3.5 w-3.5" />
-              {{ asDate(item.date) }}
-            </span>
-          </div>
-
-          <div class="mt-3">
-            <p
-              class="kicker-label inline-flex items-center gap-1"
-              :style="{ color: 'color-mix(in srgb, var(--primary) 68%, var(--muted) 32%)' }"
-            >
-              <Tags class="h-3.5 w-3.5" />
-              Reason Tags
-            </p>
-            <div class="chip-row mt-2">
-              <span v-for="tag in parseTags(item.reason)" :key="`${item.id}-${tag}`" :class="tagClass(tag)">
-                {{ tag }}
+          <div class="missed-log-row-content">
+            <div class="missed-log-row-head">
+              <div class="missed-log-row-id">
+                <h3>{{ item.pair }}</h3>
+                <span class="pill missed-status-pill">Missed</span>
+              </div>
+              <span class="missed-log-row-date">
+                <CalendarDays class="h-3.5 w-3.5" />
+                {{ asDate(item.date) }}
               </span>
             </div>
-          </div>
 
-          <p class="missed-db-note">{{ notePreview(item.notes) }}</p>
+            <div class="missed-db-meta">
+              <span>{{ item.model }}</span>
+            </div>
 
-          <div class="missed-db-actions">
-            <button class="btn btn-ghost px-3 py-1.5 text-xs" @click="openEditPage(item)">
-              <Pencil class="h-3.5 w-3.5" />
-              Edit
-            </button>
-            <button class="btn btn-danger px-3 py-1.5 text-xs" @click="remove(item.id)">
-              <Trash2 class="h-3.5 w-3.5" />
-              Delete
-            </button>
+            <div class="missed-log-row-metrics">
+              <article class="trade-log-metric">
+                <p class="kicker-label">Tags</p>
+                <strong class="value-display">{{ parseTags(item.reason).length }}</strong>
+              </article>
+              <article class="trade-log-metric">
+                <p class="kicker-label">Images</p>
+                <strong class="value-display">{{ item.images_count ?? item.images?.length ?? 0 }}</strong>
+              </article>
+            </div>
+
+            <div class="trade-db-actions">
+              <button class="btn btn-ghost px-3 py-1.5 text-xs" @click="openDetails(item)">
+                <Eye class="h-3.5 w-3.5" />
+                View
+              </button>
+              <button class="btn btn-ghost px-3 py-1.5 text-xs" @click="openEditPage(item)">
+                <Pencil class="h-3.5 w-3.5" />
+                Edit
+              </button>
+              <button class="btn btn-secondary px-3 py-1.5 text-xs" @click="remove(item.id)">
+                <Trash2 class="h-3.5 w-3.5" />
+                Delete
+              </button>
+            </div>
           </div>
         </article>
       </div>
@@ -351,6 +440,79 @@ onMounted(async () => {
           Next
         </button>
       </div>
-    </GlassPanel>
+    </section>
+
+    <Transition name="fade">
+      <div v-if="detailsOpen" class="trade-details-modal-backdrop" @click.self="closeDetails">
+        <div class="trade-details-modal panel p-5">
+          <div class="section-head">
+            <h3 class="section-title">Missed Setup Details</h3>
+            <button type="button" class="btn btn-ghost p-2" @click="closeDetails">
+              <X class="h-4 w-4" />
+            </button>
+          </div>
+
+          <div v-if="detailsLoading" class="space-y-3">
+            <SkeletonBlock v-for="row in 3" :key="`missed-detail-skeleton-${row}`" height-class="h-12" rounded-class="rounded-xl" />
+          </div>
+
+          <div v-else-if="detailsEntry" class="trade-simple-detail">
+            <div class="trade-simple-image-shell">
+              <img
+                v-if="activeDetailImage"
+                :src="activeDetailImage.image_url"
+                alt="Missed setup screenshot"
+                class="trade-simple-image"
+                @error="setImageFallback($event, activeDetailImage.image_url)"
+              />
+              <div v-else class="trade-simple-image-empty">
+                <ImageOff class="h-8 w-8" />
+                <span>No screenshot uploaded</span>
+              </div>
+
+              <button
+                v-if="detailsImages.length > 1"
+                type="button"
+                class="trade-simple-nav left"
+                @click="previousDetailImage"
+              >
+                <ChevronLeft class="h-4 w-4" />
+              </button>
+              <button
+                v-if="detailsImages.length > 1"
+                type="button"
+                class="trade-simple-nav right"
+                @click="nextDetailImage"
+              >
+                <ChevronRight class="h-4 w-4" />
+              </button>
+            </div>
+
+            <div class="trade-simple-metrics">
+              <article>
+                <span>Pair</span>
+                <strong>{{ detailsEntry.pair }}</strong>
+              </article>
+              <article>
+                <span>Model</span>
+                <strong>{{ detailsEntry.model }}</strong>
+              </article>
+              <article>
+                <span>Date</span>
+                <strong>{{ asDate(detailsEntry.date) }}</strong>
+              </article>
+              <article>
+                <span>Tags</span>
+                <strong>{{ parseTags(detailsEntry.reason).join(', ') || '-' }}</strong>
+              </article>
+              <article class="trade-simple-note">
+                <span>Notes</span>
+                <strong>{{ detailsEntry.notes || '-' }}</strong>
+              </article>
+            </div>
+          </div>
+        </div>
+      </div>
+    </Transition>
   </div>
 </template>

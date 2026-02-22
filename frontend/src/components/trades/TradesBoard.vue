@@ -5,20 +5,17 @@ import { useRouter } from 'vue-router'
 import {
   BarChart3,
   CalendarDays,
-  CheckCircle2,
+  ChevronDown,
+  ChevronUp,
   ChevronLeft,
   ChevronRight,
   Eye,
   ImageOff,
   Images,
-  MessageSquareText,
   Pencil,
   Plus,
   Trash2,
   X,
-  Zap,
-  ZoomIn,
-  ZoomOut,
 } from 'lucide-vue-next'
 import GlassPanel from '@/components/layout/GlassPanel.vue'
 import SkeletonBlock from '@/components/layout/SkeletonBlock.vue'
@@ -41,16 +38,33 @@ const detailsOpen = ref(false)
 const detailsLoading = ref(false)
 const detailsTrade = ref<Trade | null>(null)
 const detailsImages = ref<TradeImage[]>([])
-const lightboxOpen = ref(false)
-const lightboxIndex = ref(0)
-const lightboxZoom = ref(1)
-const activeLightboxImage = computed(() => detailsImages.value[lightboxIndex.value] ?? null)
+const detailImageIndex = ref(0)
+const activeDetailImage = computed(() => detailsImages.value[detailImageIndex.value] ?? null)
+const filtersExpanded = ref(false)
 
 const filterDirectionOptions = [
   { label: 'All', value: '' },
   { label: 'Buy', value: 'buy' },
   { label: 'Sell', value: 'sell' },
 ]
+
+const activeFilterPills = computed(() => {
+  const pills: string[] = []
+  const pair = filters.value.pair.trim()
+  const model = filters.value.model.trim()
+  const direction = filters.value.direction
+  const from = filters.value.date_from
+  const to = filters.value.date_to
+
+  if (pair) pills.push(`Symbol: ${pair.toUpperCase()}`)
+  if (model) pills.push(`Model: ${model}`)
+  if (direction) pills.push(`Direction: ${direction === 'buy' ? 'Long' : 'Short'}`)
+  if (from && to) pills.push(`${from} to ${to}`)
+  else if (from) pills.push(`From: ${from}`)
+  else if (to) pills.push(`To: ${to}`)
+
+  return pills
+})
 
 function toLocalDateString(value: Date) {
   const offset = value.getTimezoneOffset() * 60000
@@ -89,8 +103,12 @@ function setFilterPreset(preset: 'today' | '7d' | '30d' | 'clear') {
   filters.value.date_to = today
 }
 
-function openAddPage() {
-  void router.push('/trades/new')
+function openQuickAddPage() {
+  const query: Record<string, string> = { quick: '1' }
+  const pair = filters.value.pair.trim()
+  if (pair) query.symbol = pair.toUpperCase()
+  if (filters.value.direction) query.direction = filters.value.direction
+  void router.push({ path: '/trades/new', query })
 }
 
 function openEditPage(trade: Trade) {
@@ -102,8 +120,7 @@ async function openDetails(trade: Trade) {
   detailsLoading.value = true
   detailsTrade.value = null
   detailsImages.value = []
-  lightboxOpen.value = false
-  lightboxIndex.value = 0
+  detailImageIndex.value = 0
 
   try {
     const details = await tradeStore.fetchTradeDetails(trade.id)
@@ -125,52 +142,21 @@ async function openDetails(trade: Trade) {
 
 function closeDetails() {
   detailsOpen.value = false
-  lightboxOpen.value = false
-  lightboxZoom.value = 1
 }
 
-function openLightbox(index: number) {
-  lightboxIndex.value = index
-  lightboxOpen.value = true
-  lightboxZoom.value = 1
-}
-
-function closeLightbox() {
-  lightboxOpen.value = false
-  lightboxZoom.value = 1
-}
-
-function nextLightboxImage() {
+function nextDetailImage() {
   if (detailsImages.value.length <= 1) return
-  lightboxIndex.value = (lightboxIndex.value + 1) % detailsImages.value.length
+  detailImageIndex.value = (detailImageIndex.value + 1) % detailsImages.value.length
 }
 
-function previousLightboxImage() {
+function previousDetailImage() {
   if (detailsImages.value.length <= 1) return
-  lightboxIndex.value = (lightboxIndex.value - 1 + detailsImages.value.length) % detailsImages.value.length
-}
-
-function zoomIn() {
-  lightboxZoom.value = Math.min(3, Number((lightboxZoom.value + 0.25).toFixed(2)))
-}
-
-function zoomOut() {
-  lightboxZoom.value = Math.max(1, Number((lightboxZoom.value - 0.25).toFixed(2)))
+  detailImageIndex.value = (detailImageIndex.value - 1 + detailsImages.value.length) % detailsImages.value.length
 }
 
 function primaryTradeImage(trade: Trade): TradeImage | null {
   const images = trade.images ?? []
   return images.length > 0 ? images[0]! : null
-}
-
-function reviewedClass(trade: Trade) {
-  return primaryTradeImage(trade)
-    ? 'trade-db-status reviewed'
-    : 'trade-db-status open'
-}
-
-function reviewedLabel(trade: Trade) {
-  return primaryTradeImage(trade) ? 'Reviewed' : 'Open'
 }
 
 function directionLabel(trade: Trade) {
@@ -194,10 +180,12 @@ function setImageFallback(event: Event, fallbackUrl?: string | null) {
   target.src = fallbackUrl
 }
 
-function truncateModel(value: string) {
-  const normalized = value?.trim() || 'General'
-  if (normalized.length <= 20) return normalized
-  return `${normalized.slice(0, 20)}...`
+function rMultipleLabel(trade: Trade) {
+  const source = trade.r_multiple ?? trade.rr
+  const value = Number(source)
+  if (!Number.isFinite(value)) return '-'
+  const sign = value > 0 ? '+' : ''
+  return `${sign}${value.toFixed(2)}R`
 }
 
 async function removeTrade(id: number) {
@@ -235,11 +223,13 @@ async function applyFilters() {
   }
 
   await tradeStore.fetchTrades(1)
+  filtersExpanded.value = false
 }
 
 async function clearFilters() {
   tradeStore.resetFilters()
   await tradeStore.fetchTrades(1)
+  filtersExpanded.value = false
 }
 
 async function changePage(delta: number) {
@@ -251,6 +241,7 @@ async function changePage(delta: number) {
 onMounted(async () => {
   try {
     await tradeStore.fetchTrades()
+    filtersExpanded.value = hasFilters.value
   } catch {
     uiStore.toast({
       type: 'error',
@@ -262,48 +253,67 @@ onMounted(async () => {
 </script>
 
 <template>
-  <div class="space-y-6">
-    <GlassPanel>
-      <div class="section-head">
-        <h2 class="section-title">Trade Log Filters</h2>
-        <div class="flex flex-wrap items-center gap-2">
-          <button class="btn btn-primary inline-flex items-center gap-2 px-4 py-2 text-sm" @click="openAddPage">
+  <div class="space-y-5 trade-log-minimal">
+    <GlassPanel class="command-filter-shell">
+      <div class="command-filter-bar">
+        <div class="command-filter-left">
+          <h2 class="section-title">Trade Log Filters</h2>
+          <div class="filter-summary-strip">
+            <span v-if="activeFilterPills.length === 0" class="section-note">No filters applied</span>
+            <span v-for="pill in activeFilterPills" :key="`trade-pill-${pill}`" class="filter-chip-mini">{{ pill }}</span>
+          </div>
+        </div>
+        <div class="command-filter-right">
+          <button class="btn btn-secondary inline-flex items-center gap-2 px-3 py-2 text-sm" @click="openQuickAddPage">
             <Plus class="h-4 w-4" />
-            New Execution
+            Quick Add
           </button>
           <button class="btn btn-ghost px-4 py-2 text-sm" @click="applyFilters">Apply</button>
-          <button v-if="hasFilters" class="btn btn-ghost px-4 py-2 text-sm" @click="clearFilters">Reset</button>
+          <button type="button" class="btn btn-ghost inline-flex items-center gap-2 px-3 py-2 text-sm" @click="filtersExpanded = !filtersExpanded">
+            <ChevronUp v-if="filtersExpanded" class="h-4 w-4" />
+            <ChevronDown v-else class="h-4 w-4" />
+            Filters
+          </button>
         </div>
       </div>
 
-      <div class="form-block grid grid-premium md:grid-cols-2 xl:grid-cols-3">
-        <BaseInput v-model="filters.pair" label="Symbol" placeholder="EURUSD" size="sm" />
-        <BaseInput v-model="filters.model" label="Strategy Model" placeholder="Breakout" size="sm" />
-        <BaseSelect v-model="filters.direction" label="Direction" :options="filterDirectionOptions" size="sm" />
-      </div>
+      <Transition name="drawer">
+        <div v-if="filtersExpanded" class="filter-drawer">
+          <div class="form-block grid grid-premium md:grid-cols-2 xl:grid-cols-3">
+            <BaseInput v-model="filters.pair" label="Symbol" placeholder="EURUSD" size="sm" />
+            <BaseInput v-model="filters.model" label="Strategy Model" placeholder="Breakout" size="sm" />
+            <BaseSelect v-model="filters.direction" label="Direction" :options="filterDirectionOptions" size="sm" />
+          </div>
 
-      <div class="trade-filter-date-panel">
-        <div class="trade-filter-date-grid form-block">
-          <BaseDateInput
-            v-model="filters.date_from"
-            label="Date From"
-            size="sm"
-            :max="filters.date_to || undefined"
-          />
-          <BaseDateInput
-            v-model="filters.date_to"
-            label="Date To"
-            size="sm"
-            :min="filters.date_from || undefined"
-          />
+          <div class="filter-drawer-row">
+            <div class="trade-filter-date-grid form-block">
+              <BaseDateInput
+                v-model="filters.date_from"
+                label="Date From"
+                size="sm"
+                :max="filters.date_to || undefined"
+              />
+              <BaseDateInput
+                v-model="filters.date_to"
+                label="Date To"
+                size="sm"
+                :min="filters.date_from || undefined"
+              />
+            </div>
+            <div class="trade-filter-presets">
+              <button type="button" class="chip-btn" @click="setFilterPreset('today')">Today</button>
+              <button type="button" class="chip-btn" @click="setFilterPreset('7d')">Last 7D</button>
+              <button type="button" class="chip-btn" @click="setFilterPreset('30d')">Last 30D</button>
+              <button type="button" class="chip-btn" @click="setFilterPreset('clear')">Clear</button>
+            </div>
+          </div>
+
+          <div class="filter-drawer-footer">
+            <button class="btn btn-primary px-4 py-2 text-sm" @click="applyFilters">Apply</button>
+            <button class="btn btn-ghost px-4 py-2 text-sm" :disabled="!hasFilters" @click="clearFilters">Reset</button>
+          </div>
         </div>
-        <div class="trade-filter-presets">
-          <button type="button" class="chip-btn" @click="setFilterPreset('today')">Today</button>
-          <button type="button" class="chip-btn" @click="setFilterPreset('7d')">Last 7D</button>
-          <button type="button" class="chip-btn" @click="setFilterPreset('30d')">Last 30D</button>
-          <button type="button" class="chip-btn" @click="setFilterPreset('clear')">Clear</button>
-        </div>
-      </div>
+      </Transition>
     </GlassPanel>
 
     <section class="trade-db-shell panel p-4 md:p-5">
@@ -311,7 +321,7 @@ onMounted(async () => {
         <h2 class="section-title">Trade Log</h2>
         <p class="section-note">
           <span v-if="loading">Loading...</span>
-          <span v-else><AnimatedNumber :value="pagination.total" /> records</span>
+          <span v-else><AnimatedNumber :value="pagination.total" /> trades</span>
         </p>
       </div>
 
@@ -324,14 +334,14 @@ onMounted(async () => {
         title="No executions found"
         description="Log your first execution or adjust filters to see results."
         :icon="BarChart3"
-        cta-text="New Execution"
-        @cta="openAddPage"
+        cta-text="Quick Add"
+        @cta="openQuickAddPage"
       />
 
       <div v-else class="trade-db-grid">
-        <article v-for="trade in trades" :key="trade.id" class="trade-db-card">
+        <article v-for="trade in trades" :key="trade.id" class="trade-db-card trade-log-row">
           <button type="button" class="trade-db-media" @click="openDetails(trade)">
-              <img
+            <img
               v-if="primaryTradeImage(trade)"
               :src="primaryTradeImage(trade)?.thumbnail_url || primaryTradeImage(trade)?.image_url"
               :alt="`${trade.pair} execution chart`"
@@ -340,45 +350,38 @@ onMounted(async () => {
               @error="setImageFallback($event, primaryTradeImage(trade)?.image_url)"
             />
             <div v-else class="trade-db-empty-chart">
-              <ImageOff class="h-9 w-9" />
+              <ImageOff class="h-8 w-8" />
               <span>No chart uploaded</span>
             </div>
-
-            <span :class="reviewedClass(trade)">
-              <CheckCircle2 class="h-3.5 w-3.5" />
-              {{ reviewedLabel(trade) }}
+            <span class="pill trade-log-image-count">
+              <Images class="h-3.5 w-3.5" />
+              {{ trade.images_count ?? trade.images?.length ?? 0 }}
             </span>
           </button>
 
-          <div class="trade-db-body">
-            <div class="trade-db-title-row">
-              <h3>{{ trade.pair }}</h3>
-              <span :class="directionClass(trade)">{{ directionLabel(trade) }}</span>
-              <strong class="trade-db-pnl" :class="Number(trade.profit_loss) >= 0 ? 'positive' : 'negative'">
-                {{ asSignedCurrency(trade.profit_loss) }}
-              </strong>
-            </div>
-
-            <div class="trade-db-meta-row">
-              <span class="inline-flex items-center gap-1">
+          <div class="trade-log-row-content">
+            <div class="trade-log-row-head">
+              <div class="trade-log-row-id">
+                <h3>{{ trade.pair }}</h3>
+                <span :class="directionClass(trade)">{{ directionLabel(trade) }}</span>
+              </div>
+              <span class="trade-log-row-date">
                 <CalendarDays class="h-3.5 w-3.5" />
                 {{ asDate(trade.date) }}
               </span>
-              <span class="trade-dot">&bull;</span>
-              <span class="trade-db-model">{{ truncateModel(trade.model) }}</span>
-              <span class="trade-dot">&bull;</span>
-              <span class="inline-flex items-center gap-1">
-                <Images class="h-3.5 w-3.5" />
-                {{ trade.images_count ?? trade.images?.length ?? 0 }}
-              </span>
-              <span
-                v-if="trade.notes"
-                class="inline-flex items-center gap-1"
-                :style="{ color: 'var(--warning)' }"
-              >
-                <Zap class="h-3.5 w-3.5" />
-                1
-              </span>
+            </div>
+
+            <div class="trade-log-row-metrics">
+              <article class="trade-log-metric">
+                <p class="kicker-label">P/L</p>
+                <strong class="trade-db-pnl" :class="Number(trade.profit_loss) >= 0 ? 'positive' : 'negative'">
+                  {{ asSignedCurrency(trade.profit_loss) }}
+                </strong>
+              </article>
+              <article class="trade-log-metric">
+                <p class="kicker-label">R</p>
+                <strong class="value-display">{{ rMultipleLabel(trade) }}</strong>
+              </article>
             </div>
 
             <div class="trade-db-actions">
@@ -390,14 +393,10 @@ onMounted(async () => {
                 <Pencil class="h-3.5 w-3.5" />
                 Edit
               </button>
-              <button type="button" class="btn btn-danger px-3 py-1.5 text-xs" @click="removeTrade(trade.id)">
+              <button type="button" class="btn btn-secondary px-3 py-1.5 text-xs" @click="removeTrade(trade.id)">
                 <Trash2 class="h-3.5 w-3.5" />
                 Delete
               </button>
-              <span v-if="trade.notes" class="ml-auto inline-flex items-center gap-1 text-xs muted">
-                <MessageSquareText class="h-3.5 w-3.5" />
-                note
-              </span>
             </div>
           </div>
         </article>
@@ -428,105 +427,63 @@ onMounted(async () => {
             <SkeletonBlock v-for="row in 4" :key="`detail-skeleton-${row}`" height-class="h-12" rounded-class="rounded-xl" />
           </div>
 
-          <div v-else-if="detailsTrade" class="space-y-4">
-            <div class="grid grid-premium md:grid-cols-2 xl:grid-cols-3">
-              <article class="panel p-3">
-                <p class="kicker-label">Symbol</p>
-                <p class="mt-1 font-semibold">{{ detailsTrade.pair }}</p>
-              </article>
-              <article class="panel p-3">
-                <p class="kicker-label">Direction</p>
-                <p class="mt-1 font-semibold">{{ detailsTrade.direction }}</p>
-              </article>
-              <article class="panel p-3">
-                <p class="kicker-label">Date</p>
-                <p class="mt-1 font-semibold">{{ asDate(detailsTrade.date) }}</p>
-              </article>
-              <article class="panel p-3">
-                <p class="kicker-label">P/L</p>
-                <p class="mt-1 font-semibold" :class="Number(detailsTrade.profit_loss) >= 0 ? 'positive' : 'negative'">
-                  {{ asSignedCurrency(detailsTrade.profit_loss) }}
-                </p>
-              </article>
-              <article class="panel p-3">
-                <p class="kicker-label">R-Multiple</p>
-                <p class="mt-1 font-semibold value-display">{{ Number(detailsTrade.r_multiple ?? detailsTrade.rr).toFixed(2) }}</p>
-              </article>
-              <article class="panel p-3">
-                <p class="kicker-label">Risk %</p>
-                <p class="mt-1 font-semibold value-display">{{ Number(detailsTrade.risk_percent ?? 0).toFixed(2) }}%</p>
-              </article>
+          <div v-else-if="detailsTrade" class="trade-simple-detail">
+            <div class="trade-simple-image-shell">
+              <img
+                v-if="activeDetailImage"
+                :src="activeDetailImage.image_url"
+                alt="Execution screenshot"
+                class="trade-simple-image"
+                @error="setImageFallback($event, activeDetailImage.image_url)"
+              />
+              <div v-else class="trade-simple-image-empty">
+                <ImageOff class="h-8 w-8" />
+                <span>No screenshot uploaded</span>
+              </div>
+
+              <button
+                v-if="detailsImages.length > 1"
+                type="button"
+                class="trade-simple-nav left"
+                @click="previousDetailImage"
+              >
+                <ChevronLeft class="h-4 w-4" />
+              </button>
+              <button
+                v-if="detailsImages.length > 1"
+                type="button"
+                class="trade-simple-nav right"
+                @click="nextDetailImage"
+              >
+                <ChevronRight class="h-4 w-4" />
+              </button>
             </div>
 
-            <article class="panel p-3">
-              <p class="kicker-label">Notes</p>
-              <p class="mt-2 text-sm">{{ detailsTrade.notes || 'No notes.' }}</p>
-            </article>
-
-            <div>
-              <div class="section-head">
-                <h4 class="section-title">Screenshots</h4>
-                <p class="section-note">{{ detailsImages.length }} image(s)</p>
-              </div>
-
-              <div v-if="detailsImages.length === 0" class="panel p-4 text-sm muted">
-                No screenshots attached to this execution.
-              </div>
-
-              <div v-else class="trade-image-grid">
-                <button
-                  v-for="(image, index) in detailsImages"
-                  :key="`details-image-${image.id}`"
-                  type="button"
-                  class="trade-image-card trade-image-card-button"
-                  @click="openLightbox(index)"
-                >
-                  <img
-                    :src="image.thumbnail_url || image.image_url"
-                    alt="Execution screenshot thumbnail"
-                    loading="lazy"
-                    class="trade-image-thumb"
-                    @error="setImageFallback($event, image.image_url)"
-                  />
-                </button>
-              </div>
+            <div class="trade-simple-metrics">
+              <article>
+                <span>Symbol</span>
+                <strong>{{ detailsTrade.pair }}</strong>
+              </article>
+              <article>
+                <span>Direction</span>
+                <strong>{{ directionLabel(detailsTrade) }}</strong>
+              </article>
+              <article>
+                <span>Date</span>
+                <strong>{{ asDate(detailsTrade.date) }}</strong>
+              </article>
+              <article>
+                <span>Total P/L</span>
+                <strong :class="Number(detailsTrade.profit_loss) >= 0 ? 'positive' : 'negative'">
+                  {{ asSignedCurrency(detailsTrade.profit_loss) }}
+                </strong>
+              </article>
+              <article>
+                <span>R</span>
+                <strong class="value-display">{{ rMultipleLabel(detailsTrade) }}</strong>
+              </article>
             </div>
           </div>
-        </div>
-      </div>
-    </Transition>
-
-    <Transition name="fade">
-      <div v-if="lightboxOpen && activeLightboxImage" class="trade-lightbox-backdrop" @click.self="closeLightbox">
-        <button type="button" class="trade-lightbox-nav left" @click="previousLightboxImage">
-          <ChevronLeft class="h-5 w-5" />
-        </button>
-
-        <div class="trade-lightbox-content">
-          <img
-            :src="activeLightboxImage.image_url"
-            alt="Execution screenshot full"
-            class="trade-lightbox-image"
-            :style="{ transform: `scale(${lightboxZoom})` }"
-          />
-        </div>
-
-        <button type="button" class="trade-lightbox-nav right" @click="nextLightboxImage">
-          <ChevronRight class="h-5 w-5" />
-        </button>
-
-        <button type="button" class="trade-lightbox-close btn btn-ghost p-2" @click="closeLightbox">
-          <X class="h-4 w-4" />
-        </button>
-
-        <div class="trade-lightbox-zoom">
-          <button type="button" class="btn btn-ghost p-2" @click="zoomOut">
-            <ZoomOut class="h-4 w-4" />
-          </button>
-          <span class="value-display text-xs">{{ (lightboxZoom * 100).toFixed(0) }}%</span>
-          <button type="button" class="btn btn-ghost p-2" @click="zoomIn">
-            <ZoomIn class="h-4 w-4" />
-          </button>
         </div>
       </div>
     </Transition>

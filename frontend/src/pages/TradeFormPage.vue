@@ -13,7 +13,7 @@ import { useAccountStore } from '@/stores/accountStore'
 import { useTradeStore, type TradePayload } from '@/stores/tradeStore'
 import { useUiStore } from '@/stores/uiStore'
 import type { Trade, TradeEmotion, TradeImage } from '@/types/trade'
-import { asCurrency } from '@/utils/format'
+import { asCurrency, asSignedCurrency } from '@/utils/format'
 
 const router = useRouter()
 const route = useRoute()
@@ -24,6 +24,7 @@ const { accounts } = storeToRefs(accountStore)
 
 const loadingTrade = ref(false)
 const submitAttempted = ref(false)
+const showAdvanced = ref(false)
 const emotionOptions: TradeEmotion[] = ['neutral', 'calm', 'confident', 'fearful', 'greedy', 'hesitant', 'revenge']
 const directionOptions = [
   { label: 'Buy', value: 'buy' },
@@ -89,12 +90,67 @@ const tradeId = computed(() => {
 })
 const isEditMode = computed(() => tradeId.value !== null)
 const pageTitle = computed(() => (isEditMode.value ? 'Edit Execution' : 'New Execution'))
+const tradeFormId = 'trade-execution-form'
 const closeDateMax = computed(() => maxDateTime(nowLocalDateTime(), form.date || ''))
 const totalImageCount = computed(() => existingImages.value.length + pendingImages.value.length)
 const totalImageSize = computed(() => {
   const existingTotal = existingImages.value.reduce((sum, image) => sum + Number(image.file_size || 0), 0)
   const pendingTotal = pendingImages.value.reduce((sum, image) => sum + image.file.size, 0)
   return existingTotal + pendingTotal
+})
+
+const liveEstimate = computed(() => {
+  const entry = toNumber(form.entry_price)
+  const stop = toNumber(form.stop_loss)
+  const take = toNumber(form.take_profit)
+  const exit = toNumber(form.actual_exit_price)
+  const lotSize = toNumber(form.position_size)
+
+  if (!(entry > 0) || !(stop > 0) || !(take > 0) || !(exit > 0) || !(lotSize > 0)) {
+    return {
+      ready: false as const,
+      error: '',
+      riskAmount: 0,
+      targetPnl: 0,
+      livePnl: 0,
+      rAtExit: 0,
+      rrPlan: 0,
+    }
+  }
+
+  const direction = form.direction === 'buy' ? 1 : -1
+  const riskMove = (entry - stop) * direction
+  const rewardMove = (take - entry) * direction
+
+  if (!(riskMove > 0)) {
+    return {
+      ready: false as const,
+      error: 'Stop loss placement is invalid for the selected direction.',
+      riskAmount: 0,
+      targetPnl: 0,
+      livePnl: 0,
+      rAtExit: 0,
+      rrPlan: 0,
+    }
+  }
+
+  const positionUnits = lotSize * 100000
+  const liveMove = (exit - entry) * direction
+  const riskAmount = riskMove * positionUnits
+  const targetPnl = rewardMove * positionUnits
+  const livePnl = liveMove * positionUnits
+  const rrPlan = rewardMove / riskMove
+  const rAtExit = riskAmount !== 0 ? livePnl / riskAmount : 0
+
+  return {
+    ready: true as const,
+    error: '',
+    riskAmount,
+    targetPnl,
+    livePnl,
+    rAtExit,
+    rrPlan,
+  }
 })
 
 function toLocalDateTime(value: string) {
@@ -137,6 +193,27 @@ function setFormFromTrade(trade: Trade) {
   form.followed_rules = Boolean(trade.followed_rules)
   form.emotion = (trade.emotion ?? 'neutral') as TradeEmotion
   form.notes = trade.notes || ''
+  showAdvanced.value = Boolean(
+    form.session.trim()
+    || form.model.trim()
+    || form.emotion !== 'neutral'
+    || form.followed_rules === false
+  )
+}
+
+function applyQuickDefaultsFromQuery() {
+  if (isEditMode.value) return
+  if (`${route.query.quick ?? ''}` !== '1') return
+
+  const symbol = `${route.query.symbol ?? ''}`.trim().toUpperCase()
+  const direction = `${route.query.direction ?? ''}`.trim().toLowerCase()
+
+  if (symbol) {
+    form.symbol = symbol
+  }
+  if (direction === 'buy' || direction === 'sell') {
+    form.direction = direction
+  }
 }
 
 const formErrors = computed<Record<string, string>>(() => {
@@ -419,6 +496,7 @@ async function submitForm() {
 async function loadTradeIfNeeded() {
   if (!isEditMode.value || tradeId.value === null) {
     form.date = nowLocalDateTime()
+    showAdvanced.value = false
     return
   }
 
@@ -456,6 +534,7 @@ onMounted(async () => {
     form.account_id = accountSelectOptions.value[0]?.value ?? ''
   }
 
+  applyQuickDefaultsFromQuery()
   await loadTradeIfNeeded()
 })
 
@@ -523,18 +602,43 @@ async function loadImage(file: File): Promise<HTMLImageElement> {
 </script>
 
 <template>
-  <div class="space-y-6">
-    <GlassPanel>
-      <div class="section-head">
-        <div>
+  <div class="space-y-4 trade-form-minimal">
+    <GlassPanel class="form-command-shell">
+      <div class="form-command-bar">
+        <div class="form-command-left">
           <h2 class="section-title">{{ pageTitle }}</h2>
-          <p class="section-note">Execution ticket with server-side risk math and cleaner data entry flow.</p>
+          <p class="section-note">Minimal execution ticket with server-calculated results.</p>
+          <div class="form-command-chips">
+            <span class="filter-chip-mini">Entry</span>
+            <span class="filter-chip-mini">Exit</span>
+            <span class="filter-chip-mini">Notes</span>
+            <span class="filter-chip-mini">Images</span>
+          </div>
         </div>
-        <button type="button" class="btn btn-ghost inline-flex items-center gap-2 px-3 py-2 text-sm" @click="router.push('/trades')">
-          <ArrowLeft class="h-4 w-4" />
-          Back to Trade Log
-        </button>
+        <div class="form-command-right">
+          <button type="button" class="btn btn-ghost inline-flex items-center gap-2 px-3 py-2 text-sm" @click="router.push('/trades')">
+            <ArrowLeft class="h-4 w-4" />
+            Back
+          </button>
+          <button
+            type="submit"
+            :form="tradeFormId"
+            class="btn btn-primary px-4 py-2 text-sm"
+            :disabled="tradeStore.saving || uploadingImages || loadingTrade"
+          >
+            {{
+              uploadingImages
+                ? 'Uploading...'
+                : tradeStore.saving
+                  ? 'Saving...'
+                  : isEditMode ? 'Update' : 'Save'
+            }}
+          </button>
+        </div>
       </div>
+    </GlassPanel>
+
+    <GlassPanel class="form-shell-panel">
 
       <div v-if="loadingTrade" class="space-y-3">
         <div class="skeleton-shimmer h-12 rounded-xl" />
@@ -542,17 +646,17 @@ async function loadImage(file: File): Promise<HTMLImageElement> {
         <div class="skeleton-shimmer h-12 rounded-xl" />
       </div>
 
-      <form v-else class="form-block space-y-4" @submit.prevent="submitForm">
-        <p class="text-sm muted">
-          Profit/Loss, R-Multiple, Risk %, and account balance after execution are calculated server-side.
+      <form v-else :id="tradeFormId" class="form-block space-y-4" @submit.prevent="submitForm">
+        <p class="trade-form-disclaimer">
+          P/L, risk, and R are recalculated server-side on save.
         </p>
 
         <section class="trade-form-section">
-          <p class="trade-section-title">Instrument & Context</p>
+          <p class="trade-section-title">Entry</p>
           <div class="grid grid-premium md:grid-cols-2 xl:grid-cols-3">
             <BaseDateTime
               v-model="form.date"
-              label="Close Date"
+              label="Date"
               required
               :max="closeDateMax"
               :error="fieldError('date')"
@@ -574,19 +678,6 @@ async function loadImage(file: File): Promise<HTMLImageElement> {
               :error="fieldError('symbol')"
             />
             <BaseSelect v-model="form.direction" label="Direction" :options="directionOptions" />
-            <BaseSelect v-model="form.emotion" label="Emotion" :options="emotionSelectOptions" />
-            <BaseInput v-model="form.session" label="Session (Optional)" placeholder="London" />
-            <BaseInput v-model="form.model" label="Strategy Model (Optional)" placeholder="Liquidity Sweep" />
-            <label class="trade-checkbox-label">
-              <input v-model="form.followed_rules" type="checkbox" class="h-4 w-4" />
-              Followed Rules
-            </label>
-          </div>
-        </section>
-
-        <section class="trade-form-section">
-          <p class="trade-section-title">Price Plan & Sizing</p>
-          <div class="grid grid-premium md:grid-cols-2 xl:grid-cols-3">
             <BaseInput
               v-model="form.entry_price"
               label="Entry Price"
@@ -596,6 +687,39 @@ async function loadImage(file: File): Promise<HTMLImageElement> {
               step="0.000001"
               :error="fieldError('entry_price')"
             />
+            <BaseInput
+              v-model="form.position_size"
+              label="Position Size (Lot)"
+              type="number"
+              required
+              min="0.0001"
+              step="0.0001"
+              :error="fieldError('position_size')"
+            />
+          </div>
+
+          <div class="mt-3">
+            <button type="button" class="btn btn-ghost px-3 py-1.5 text-xs" @click="showAdvanced = !showAdvanced">
+              {{ showAdvanced ? 'Hide Advanced' : 'Advanced' }}
+            </button>
+          </div>
+
+          <Transition name="fade">
+            <div v-if="showAdvanced" class="mt-3 grid grid-premium md:grid-cols-2 xl:grid-cols-3">
+              <BaseSelect v-model="form.emotion" label="Emotion" :options="emotionSelectOptions" />
+              <BaseInput v-model="form.session" label="Session (Optional)" placeholder="London" />
+              <BaseInput v-model="form.model" label="Strategy Model (Optional)" placeholder="Liquidity Sweep" />
+              <label class="trade-checkbox-label">
+                <input v-model="form.followed_rules" type="checkbox" class="h-4 w-4" />
+                Followed Rules
+              </label>
+            </div>
+          </Transition>
+        </section>
+
+        <section class="trade-form-section">
+          <p class="trade-section-title">Exit</p>
+          <div class="grid grid-premium md:grid-cols-2 xl:grid-cols-3">
             <BaseInput
               v-model="form.stop_loss"
               label="Stop Loss"
@@ -616,23 +740,49 @@ async function loadImage(file: File): Promise<HTMLImageElement> {
             />
             <BaseInput
               v-model="form.actual_exit_price"
-              label="Actual Exit Price"
+              label="Exit Price"
               type="number"
               required
               min="0.000001"
               step="0.000001"
               :error="fieldError('actual_exit_price')"
             />
-            <BaseInput
-              v-model="form.position_size"
-              label="Position Size"
-              type="number"
-              required
-              min="0.0001"
-              step="0.0001"
-              :error="fieldError('position_size')"
-            />
           </div>
+        </section>
+
+        <section class="trade-form-section trade-estimate-quiet">
+          <div class="section-head">
+            <p class="trade-section-title">Live Estimate</p>
+            <span class="section-note">Preview only</span>
+          </div>
+          <p v-if="liveEstimate.error" class="field-error-text">{{ liveEstimate.error }}</p>
+          <div v-else-if="liveEstimate.ready" class="trade-preview-grid trade-preview-grid-calm">
+            <article class="trade-preview-card">
+              <p>Risk</p>
+              <strong class="negative">{{ asSignedCurrency(-Math.abs(liveEstimate.riskAmount)) }}</strong>
+            </article>
+            <article class="trade-preview-card">
+              <p>Target P/L</p>
+              <strong :class="liveEstimate.targetPnl >= 0 ? 'positive' : 'negative'">
+                {{ asSignedCurrency(liveEstimate.targetPnl) }}
+              </strong>
+            </article>
+            <article class="trade-preview-card">
+              <p>Live P/L</p>
+              <strong :class="liveEstimate.livePnl >= 0 ? 'positive' : 'negative'">
+                {{ asSignedCurrency(liveEstimate.livePnl) }}
+              </strong>
+            </article>
+            <article class="trade-preview-card">
+              <p>R @ Exit</p>
+              <strong class="value-display">{{ liveEstimate.rAtExit.toFixed(2) }}R</strong>
+            </article>
+            <article class="trade-preview-card trade-preview-card-span">
+              <p>Plan R:R</p>
+              <strong class="value-display">{{ liveEstimate.rrPlan.toFixed(2) }}R</strong>
+            </article>
+          </div>
+          <p v-else class="section-note">Enter Entry, Stop Loss, Take Profit, Exit Price, and Position Size to preview.</p>
         </section>
 
         <section class="trade-form-section">

@@ -410,7 +410,7 @@ function shortDate(value: string): string {
 
 <template>
   <Transition name="account-switch" mode="out-in">
-    <div :key="selectedAccountId === null ? 'portfolio' : `account-${selectedAccountId}`" class="space-y-4 dashboard-overview-shell">
+    <div :key="selectedAccountId === null ? 'portfolio' : `account-${selectedAccountId}`" class="space-y-4 dashboard-overview-shell dashboard-minimal">
       <section class="overview-top-row">
         <div class="overview-heading-block">
           <h1 class="overview-heading-title">Overview</h1>

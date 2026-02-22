@@ -76,6 +76,7 @@ const missedTradeId = computed(() => {
 })
 const isEditMode = computed(() => missedTradeId.value !== null)
 const pageTitle = computed(() => (isEditMode.value ? 'Edit Missed Setup' : 'Log Missed Setup'))
+const missedSetupFormId = 'missed-setup-form'
 
 const formErrors = computed<Record<string, string>>(() => {
   const errors: Record<string, string> = {}
@@ -167,6 +168,28 @@ function setFormFromMissedTrade(entry: MissedTrade) {
   existingImages.value = (entry.images ?? [])
     .slice()
     .sort((a, b) => a.sort_order - b.sort_order || a.id - b.id)
+}
+
+function applyQuickDefaultsFromQuery() {
+  if (isEditMode.value) return
+  if (`${route.query.quick ?? ''}` !== '1') return
+
+  const pair = `${route.query.pair ?? ''}`.trim().toUpperCase()
+  const model = `${route.query.model ?? ''}`.trim()
+  const reason = `${route.query.reason ?? ''}`.trim()
+
+  if (pair) {
+    form.pair = pair
+  }
+  if (model) {
+    form.model = model
+  }
+  if (reason) {
+    const parsed = parseTags(reason)
+    if (parsed.length > 0) {
+      form.tags = Array.from(new Set([...form.tags, ...parsed]))
+    }
+  }
 }
 
 function buildPayload(): MissedTradePayload {
@@ -435,6 +458,7 @@ async function loadEntryIfNeeded() {
 }
 
 onMounted(async () => {
+  applyQuickDefaultsFromQuery()
   await loadEntryIfNeeded()
 })
 
@@ -502,18 +526,44 @@ async function loadImage(file: File): Promise<HTMLImageElement> {
 </script>
 
 <template>
-  <div class="space-y-6">
-    <GlassPanel>
-      <div class="section-head">
-        <div>
+  <div class="space-y-4 missed-form-minimal">
+    <GlassPanel class="form-command-shell">
+      <div class="form-command-bar">
+        <div class="form-command-left">
           <h2 class="section-title">{{ pageTitle }}</h2>
-          <p class="section-note">Capture skipped opportunities with tags, notes, and screenshots for review.</p>
+          <p class="section-note">Capture missed opportunities with clear reasons and screenshots.</p>
+          <div class="form-command-chips">
+            <span class="filter-chip-mini">Setup</span>
+            <span class="filter-chip-mini">Tags</span>
+            <span class="filter-chip-mini">Notes</span>
+            <span class="filter-chip-mini">Images</span>
+          </div>
         </div>
-        <button type="button" class="btn btn-ghost inline-flex items-center gap-2 px-3 py-2 text-sm" @click="router.push('/missed-trades')">
-          <ArrowLeft class="h-4 w-4" />
-          Back to Missed Setups
-        </button>
+        <div class="form-command-right">
+          <button type="button" class="btn btn-ghost inline-flex items-center gap-2 px-3 py-2 text-sm" @click="router.push('/missed-trades')">
+            <ArrowLeft class="h-4 w-4" />
+            Back
+          </button>
+          <button
+            type="submit"
+            :form="missedSetupFormId"
+            class="btn btn-primary inline-flex items-center gap-2 px-4 py-2 text-sm"
+            :disabled="missedTradeStore.saving || uploadingImages || loadingEntry"
+          >
+            <Plus class="h-4 w-4" />
+            {{
+              uploadingImages
+                ? 'Uploading...'
+                : missedTradeStore.saving
+                  ? 'Saving...'
+                  : isEditMode ? 'Update' : 'Save'
+            }}
+          </button>
+        </div>
       </div>
+    </GlassPanel>
+
+    <GlassPanel class="form-shell-panel">
 
       <div v-if="loadingEntry" class="space-y-3">
         <div class="skeleton-shimmer h-12 rounded-xl" />
@@ -521,30 +571,33 @@ async function loadImage(file: File): Promise<HTMLImageElement> {
         <div class="skeleton-shimmer h-12 rounded-xl" />
       </div>
 
-      <form v-else class="form-block space-y-4" @submit.prevent="submit">
-        <div class="grid grid-premium md:grid-cols-2 xl:grid-cols-4">
-          <BaseInput v-model="form.pair" label="Pair" required placeholder="EURUSD" :error="fieldError('pair')" />
-          <BaseInput v-model="form.model" label="Model" required placeholder="Liquidity Sweep" :error="fieldError('model')" />
-          <BaseDateTime v-model="form.date" label="Date" required :max="nowLocalDateTime()" :error="fieldError('date')" />
-          <div class="form-field-shell">
-            <span class="form-field-head">
-              <span class="form-field-label">Custom Tag</span>
-            </span>
-            <div class="mt-2 flex gap-2">
-              <input
-                v-model="customTag"
-                type="text"
-                placeholder="discipline"
-                class="field control-modern mt-0 w-full"
-                @keydown.enter.prevent="addCustomTag"
-              />
-              <button type="button" class="btn btn-ghost px-3 text-xs" @click="addCustomTag">Add</button>
+      <form v-else :id="missedSetupFormId" class="form-block space-y-4" @submit.prevent="submit">
+        <section class="trade-form-section">
+          <p class="trade-section-title">Setup Details</p>
+          <div class="grid grid-premium md:grid-cols-2 xl:grid-cols-4">
+            <BaseInput v-model="form.pair" label="Pair" required placeholder="EURUSD" :error="fieldError('pair')" />
+            <BaseInput v-model="form.model" label="Model" required placeholder="Liquidity Sweep" :error="fieldError('model')" />
+            <BaseDateTime v-model="form.date" label="Date" required :max="nowLocalDateTime()" :error="fieldError('date')" />
+            <div class="form-field-shell">
+              <span class="form-field-head">
+                <span class="form-field-label">Custom Tag</span>
+              </span>
+              <div class="mt-2 flex gap-2">
+                <input
+                  v-model="customTag"
+                  type="text"
+                  placeholder="discipline"
+                  class="field control-modern mt-0 w-full"
+                  @keydown.enter.prevent="addCustomTag"
+                />
+                <button type="button" class="btn btn-ghost px-3 text-xs" @click="addCustomTag">Add</button>
+              </div>
             </div>
           </div>
-        </div>
+        </section>
 
-        <div>
-          <p class="kicker-label mb-2">Reason Tags</p>
+        <section class="trade-form-section">
+          <p class="trade-section-title">Reason Tags</p>
           <div class="chip-row">
             <button
               v-for="tag in reasonTagOptions"
@@ -566,31 +619,37 @@ async function loadImage(file: File): Promise<HTMLImageElement> {
               </button>
             </span>
           </div>
-        </div>
+        </section>
 
-        <BaseInput v-model="form.notes" label="Notes" multiline :rows="4" />
+        <section class="trade-form-section">
+          <p class="trade-section-title">Notes</p>
+          <BaseInput v-model="form.notes" label="Notes" multiline :rows="4" />
+        </section>
 
-        <TradeImageUploader
-          title="Missed Setup Screenshots"
-          upload-hint="Max 5 images - jpg, jpeg, png, webp - 5MB each"
-          :existing-images="existingImages"
-          :pending-images="pendingImages"
-          :max-files="MAX_IMAGE_COUNT"
-          :uploading="uploadingImages"
-          :upload-progress="uploadProgressByPendingId"
-          :deleting-image-ids="deletingImageIds"
-          :error="imageUploadError"
-          @select-files="onSelectImageFiles"
-          @remove-pending="removePendingImage"
-          @remove-existing="removeExistingImage"
-          @reorder-pending="reorderPendingImages"
-        />
+        <section class="trade-form-section">
+          <p class="trade-section-title">Screenshots</p>
+          <TradeImageUploader
+            title="Missed Setup Screenshots"
+            upload-hint="Max 5 images - jpg, jpeg, png, webp - 5MB each"
+            :existing-images="existingImages"
+            :pending-images="pendingImages"
+            :max-files="MAX_IMAGE_COUNT"
+            :uploading="uploadingImages"
+            :upload-progress="uploadProgressByPendingId"
+            :deleting-image-ids="deletingImageIds"
+            :error="imageUploadError"
+            @select-files="onSelectImageFiles"
+            @remove-pending="removePendingImage"
+            @remove-existing="removeExistingImage"
+            @reorder-pending="reorderPendingImages"
+          />
+        </section>
 
         <div class="flex items-center justify-end gap-2">
           <button
             v-if="isEditMode"
             type="button"
-            class="btn btn-danger inline-flex items-center gap-2 px-4 py-2 text-sm"
+            class="btn btn-secondary inline-flex items-center gap-2 px-4 py-2 text-sm"
             @click="deleteEntry"
           >
             <Trash2 class="h-4 w-4" />

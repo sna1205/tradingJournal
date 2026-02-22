@@ -1,0 +1,99 @@
+:root {
+  --layout-max-width: 1600px;
+  --layout-gutter: 1.25rem;
+  --layout-gap: 1.1rem;
+  --layout-sidebar-width: clamp(16rem, 17.5vw, 18rem);
+
+  --bg: #f6f7f8;
+  --bg-soft: #f2f4f6;
+  --panel: #ffffff;
+  --panel-soft: #f8fafc;
+  --panel-strong: #f1f5f9;
+  --border: #dbe3eb;
+  --text: #0f172a;
+  --muted: #64748b;
+  --primary: #0f766e;
+  --primary-soft: #e2f4f2;
+  --danger: #dc2626;
+  --danger-soft: #fee2e2;
+  --warning: #b45309;
+  --warning-soft: #fef3c7;
+
+  --chart-grid: rgba(100, 116, 105, 0.2);
+  --chart-axis-line: rgba(100, 116, 105, 0.28);
+  --chart-positive: #179a56;
+  --chart-positive-soft: rgba(23, 154, 86, 0.34);
+  --chart-positive-fade: rgba(23, 154, 86, 0.08);
+  --chart-negative: #d94646;
+  --chart-negative-soft: rgba(217, 70, 70, 0.28);
+  --chart-negative-fade: rgba(217, 70, 70, 0.06);
+  --chart-cyan: #0284c7;
+  --chart-cyan-soft: rgba(2, 132, 199, 0.26);
+  --chart-cyan-fade: rgba(2, 132, 199, 0.03);
+  --chart-radar-split-a: rgba(255, 255, 255, 0.44);
+  --chart-radar-split-b: rgba(232, 237, 229, 0.58);
+
+  --shadow-soft: 0 10px 30px rgba(15, 23, 42, 0.06);
+  --shadow-hover: 0 12px 32px rgba(15, 23, 42, 0.1);
+
+  --radius-sm: 0.6rem;
+  --radius-md: 0.75rem;
+  --radius-lg: 0.9rem;
+  --radius-xl: 1rem;
+  --radius-2xl: 1.25rem;
+  --radius-panel: 0.9rem;
+  --radius-control: 0.7rem;
+
+  --panel-padding: 1rem;
+  --panel-padding-sm: 0.82rem;
+  --control-height: 2.5rem;
+  --control-height-sm: 2.15rem;
+  --control-padding-x: 0.72rem;
+  --control-font-size: 0.9rem;
+
+  --ease-standard: cubic-bezier(0.22, 1, 0.36, 1);
+  --transition-fast: 190ms var(--ease-standard);
+  --transition-medium: 300ms var(--ease-standard);
+
+  --z-base: 1;
+  --z-raised: 20;
+  --z-sticky: 120;
+  --z-dropdown: 500;
+  --z-overlay: 700;
+  --z-modal: 800;
+  --z-toast: 900;
+}
+
+[data-theme='dark'] {
+  --bg: #0b1220;
+  --bg-soft: #0f172a;
+  --panel: #111b2d;
+  --panel-soft: #172338;
+  --panel-strong: #1d2b43;
+  --border: #26354d;
+  --text: #e5e7eb;
+  --muted: #9aa9bd;
+  --primary: #22c1b4;
+  --primary-soft: rgba(34, 193, 180, 0.14);
+  --danger: #f87171;
+  --danger-soft: rgba(248, 113, 113, 0.16);
+  --warning: #f59e0b;
+  --warning-soft: rgba(245, 158, 11, 0.18);
+
+  --chart-grid: rgba(132, 145, 159, 0.14);
+  --chart-axis-line: rgba(132, 145, 159, 0.24);
+  --chart-positive: #16c47f;
+  --chart-positive-soft: rgba(22, 196, 127, 0.34);
+  --chart-positive-fade: rgba(22, 196, 127, 0.08);
+  --chart-negative: #ef4444;
+  --chart-negative-soft: rgba(239, 68, 68, 0.28);
+  --chart-negative-fade: rgba(239, 68, 68, 0.06);
+  --chart-cyan: #22d3ee;
+  --chart-cyan-soft: rgba(34, 211, 238, 0.45);
+  --chart-cyan-fade: rgba(34, 211, 238, 0.02);
+  --chart-radar-split-a: rgba(255, 255, 255, 0.12);
+  --chart-radar-split-b: rgba(26, 42, 33, 0.65);
+
+  --shadow-soft: 0 14px 36px rgba(2, 6, 23, 0.42);
+  --shadow-hover: 0 18px 40px rgba(2, 6, 23, 0.5);
+}

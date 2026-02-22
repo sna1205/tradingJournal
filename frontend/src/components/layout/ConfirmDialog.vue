@@ -18,7 +18,7 @@ const { confirm } = storeToRefs(uiStore)
   >
     <div
       v-if="confirm.open"
-      class="fixed inset-0 z-[80] flex items-center justify-center bg-black/40 px-4 backdrop-blur-sm"
+      class="confirm-overlay fixed inset-0 flex items-center justify-center bg-black/40 px-4 backdrop-blur-sm"
     >
       <Transition
         enter-active-class="transition duration-200 ease-out"
@@ -40,7 +40,7 @@ const { confirm } = storeToRefs(uiStore)
             </button>
             <button
               class="btn px-4 py-2 text-sm"
-              :class="confirm.danger ? 'btn-danger' : 'btn-primary'"
+              :class="confirm.danger ? 'btn-secondary' : 'btn-primary'"
               @click="uiStore.closeConfirmation(true)"
             >
               {{ confirm.confirmText }}

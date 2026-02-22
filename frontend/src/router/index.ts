@@ -6,6 +6,7 @@ import MissedTrades from '@/pages/MissedTrades.vue'
 import MissedTradeFormPage from '@/pages/MissedTradeFormPage.vue'
 import Milestones from '@/pages/Milestones.vue'
 import Accounts from '@/pages/Accounts.vue'
+import UiRegressionPage from '@/pages/UiRegressionPage.vue'
 
 const router = createRouter({
   history: createWebHistory(),
@@ -66,6 +67,11 @@ const router = createRouter({
       path: '/progress',
       name: 'progress',
       component: Milestones,
+    },
+    {
+      path: '/__visual-regression',
+      name: 'visual-regression',
+      component: UiRegressionPage,
     },
   ],
 })
