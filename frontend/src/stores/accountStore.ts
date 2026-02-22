@@ -76,7 +76,12 @@ export const useAccountStore = defineStore('accounts', () => {
         params,
       })
       syncStatusStore.markServerHealthy()
-      accounts.value = Array.isArray(data) ? (data as Account[]) : []
+      const source = Array.isArray(data)
+        ? data
+        : (isRecord(data) && Array.isArray(data.data) ? data.data : [])
+      accounts.value = source
+        .map((row) => normalizeAccount(row))
+        .filter((row): row is Account => row !== null)
 
       if (selectedAccountId.value !== null) {
         const exists = accounts.value.some((account) => account.id === selectedAccountId.value)
@@ -105,10 +110,14 @@ export const useAccountStore = defineStore('accounts', () => {
   async function createAccount(payload: AccountPayload) {
     saving.value = true
     try {
-      const { data } = await api.post<Account>('/accounts', payload)
+      const { data } = await api.post<unknown>('/accounts', payload)
       syncStatusStore.markServerHealthy()
-      accounts.value = [data, ...accounts.value]
-      return data
+      const normalized = normalizeAccount(data)
+      if (!normalized) {
+        throw new Error('Invalid account payload returned by API.')
+      }
+      accounts.value = [normalized, ...accounts.value]
+      return normalized
     } catch (error) {
       if (!shouldUseLocalFallback(error)) {
         throw error
@@ -126,15 +135,19 @@ export const useAccountStore = defineStore('accounts', () => {
   async function updateAccount(id: number, payload: Partial<AccountPayload>) {
     saving.value = true
     try {
-      const { data } = await api.put<Account>(`/accounts/${id}`, payload)
+      const { data } = await api.put<unknown>(`/accounts/${id}`, payload)
       syncStatusStore.markServerHealthy()
+      const normalized = normalizeAccount(data)
+      if (!normalized) {
+        throw new Error('Invalid account payload returned by API.')
+      }
       const index = accounts.value.findIndex((account) => account.id === id)
       if (index >= 0) {
-        accounts.value[index] = data
+        accounts.value[index] = normalized
       } else {
-        accounts.value.push(data)
+        accounts.value.push(normalized)
       }
-      return data
+      return normalized
     } catch (error) {
       if (!shouldUseLocalFallback(error)) {
         throw error
@@ -271,4 +284,56 @@ function readSelectedAccountId(): number | null {
   const value = Number(raw)
   if (!Number.isInteger(value) || value <= 0) return null
   return value
+}
+
+function normalizeAccount(input: unknown): Account | null {
+  if (!isRecord(input)) return null
+
+  const id = toInt(input.id)
+  if (id <= 0) return null
+
+  const startingBalance = asMoney(input.starting_balance)
+  const currentBalance = asMoney(input.current_balance ?? input.starting_balance)
+
+  return {
+    id,
+    user_id: input.user_id === null || input.user_id === undefined ? null : toInt(input.user_id),
+    name: String(input.name ?? 'Account'),
+    broker: String(input.broker ?? 'Broker'),
+    account_type: normalizeAccountType(input.account_type),
+    starting_balance: startingBalance,
+    current_balance: currentBalance,
+    currency: String(input.currency ?? 'USD').toUpperCase(),
+    is_active: Boolean(input.is_active ?? true),
+    created_at: String(input.created_at ?? new Date().toISOString()),
+    updated_at: String(input.updated_at ?? new Date().toISOString()),
+  }
+}
+
+function normalizeAccountType(value: unknown): AccountType {
+  const normalized = String(value ?? 'personal').toLowerCase()
+  if (normalized === 'funded' || normalized === 'personal' || normalized === 'demo') {
+    return normalized
+  }
+
+  // Accept legacy naming variants to avoid UI grouping failures.
+  if (normalized === 'prop') return 'funded'
+  if (normalized === 'live') return 'personal'
+
+  return 'personal'
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null
+}
+
+function toInt(value: unknown): number {
+  const parsed = Number(value)
+  return Number.isFinite(parsed) ? Math.trunc(parsed) : 0
+}
+
+function asMoney(value: unknown): string {
+  const parsed = Number(value)
+  const safe = Number.isFinite(parsed) ? parsed : 0
+  return safe.toFixed(2)
 }

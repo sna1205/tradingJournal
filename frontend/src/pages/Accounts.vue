@@ -321,6 +321,7 @@ async function submitChallenge() {
 
   challengeSaving.value = true
   try {
+    const status = challengeForm.status
     await accountStore.updateAccountChallenge(challengeAccount.value.id, {
       provider: challengeForm.provider.trim(),
       phase: challengeForm.phase.trim(),
@@ -330,9 +331,9 @@ async function submitChallenge() {
       max_total_drawdown_pct: Number(challengeForm.max_total_drawdown_pct),
       min_trading_days: Number(challengeForm.min_trading_days),
       start_date: challengeForm.start_date,
-      status: challengeForm.status,
-      passed_at: challengeForm.passed_at || null,
-      failed_at: challengeForm.failed_at || null,
+      status,
+      passed_at: status === 'passed' ? (challengeForm.passed_at || null) : null,
+      failed_at: status === 'failed' ? (challengeForm.failed_at || null) : null,
     })
     uiStore.toast({ type: 'success', title: 'Challenge configuration saved' })
     closeChallengeModal()
@@ -417,6 +418,12 @@ async function removeAccount(account: Account) {
 async function fetchAnalyticsData() {
   loadingAnalytics.value = true
   try {
+    if (accounts.value.length === 0) {
+      analyticsRows.value = []
+      sparklineByAccountId.value = {}
+      return
+    }
+
     const rows = await Promise.all(
       accounts.value.map(async (account) => {
         try {
@@ -491,7 +498,10 @@ function extractErrorMessage(error: unknown): string {
 }
 
 function toIsoDateOnly(value: string) {
-  return value.slice(0, 10)
+  if (!value) return ''
+  const parsed = new Date(value)
+  if (Number.isNaN(parsed.getTime())) return ''
+  return parsed.toISOString().slice(0, 10)
 }
 
 onMounted(async () => {
