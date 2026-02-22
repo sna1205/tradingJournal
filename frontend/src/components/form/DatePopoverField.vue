@@ -35,6 +35,7 @@ type CalendarCell = {
 const weekdayLabels = ['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa']
 const isOpen = ref(false)
 const openUpward = ref(false)
+const alignRight = ref(false)
 const rootRef = ref<HTMLElement | null>(null)
 const selectedValue = computed(() => props.modelValue ?? '')
 const currentMonth = ref(startOfMonth(parseIsoDate(selectedValue.value) ?? new Date()))
@@ -132,17 +133,29 @@ function toggleOpen() {
   if (props.disabled) return
   isOpen.value = !isOpen.value
   if (isOpen.value) {
-    void nextTick(() => {
-      const rect = rootRef.value?.getBoundingClientRect()
-      if (!rect) return
-      const estimatedMenuHeight = 340
-      openUpward.value = rect.bottom + estimatedMenuHeight > window.innerHeight - 12 && rect.top > estimatedMenuHeight
-    })
+    void nextTick(updateMenuPlacement)
   }
 }
 
 function closeMenu() {
   isOpen.value = false
+}
+
+function updateMenuPlacement() {
+  const rect = rootRef.value?.getBoundingClientRect()
+  if (!rect) return
+
+  const viewportPadding = 12
+  const estimatedMenuHeight = 352
+  const estimatedMenuWidth = 320
+
+  const availableBelow = window.innerHeight - rect.bottom - viewportPadding
+  const availableAbove = rect.top - viewportPadding
+  openUpward.value = availableBelow < estimatedMenuHeight && availableAbove > availableBelow
+
+  const overflowsRight = rect.left + estimatedMenuWidth > window.innerWidth - viewportPadding
+  const hasLeftRoom = rect.right - estimatedMenuWidth >= viewportPadding
+  alignRight.value = overflowsRight && hasLeftRoom
 }
 
 function selectDate(iso: string | undefined) {
@@ -181,12 +194,19 @@ function onDocumentPointerDown(event: PointerEvent) {
   closeMenu()
 }
 
+function onWindowResize() {
+  if (!isOpen.value) return
+  updateMenuPlacement()
+}
+
 onMounted(() => {
   document.addEventListener('pointerdown', onDocumentPointerDown)
+  window.addEventListener('resize', onWindowResize)
 })
 
 onBeforeUnmount(() => {
   document.removeEventListener('pointerdown', onDocumentPointerDown)
+  window.removeEventListener('resize', onWindowResize)
 })
 </script>
 
@@ -209,7 +229,16 @@ onBeforeUnmount(() => {
     </button>
 
     <Transition name="fade">
-      <div v-if="isOpen" class="date-menu" :class="{ 'date-menu-up': openUpward }" role="dialog" aria-label="Date picker">
+      <div
+        v-if="isOpen"
+        class="date-menu"
+        :class="{
+          'date-menu-up': openUpward,
+          'date-menu-right': alignRight,
+        }"
+        role="dialog"
+        aria-label="Date picker"
+      >
         <header class="date-menu-header">
           <button type="button" class="date-nav-btn" @click="prevMonth">
             <ChevronLeft class="h-4 w-4" />

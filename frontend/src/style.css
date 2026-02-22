@@ -793,12 +793,17 @@ body {
   left: 0;
   top: calc(100% + 0.45rem);
   z-index: calc(var(--z-dropdown) + 1);
-  width: min(20rem, 92vw);
+  width: min(20rem, calc(100vw - 1rem));
   border: 1px solid color-mix(in srgb, var(--primary) 36%, var(--border) 64%);
   border-radius: 1rem;
   background: color-mix(in srgb, var(--panel) 95%, var(--panel-soft) 5%);
   box-shadow: var(--shadow-soft);
   padding: 0.62rem;
+}
+
+.date-menu-right {
+  left: auto;
+  right: 0;
 }
 
 .date-menu-up {
