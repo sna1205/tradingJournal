@@ -2,7 +2,7 @@
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import type { AxiosError } from 'axios'
-import { ArrowLeft, Plus, Trash2, X } from 'lucide-vue-next'
+import { ArrowLeft, Plus, Trash2 } from 'lucide-vue-next'
 import GlassPanel from '@/components/layout/GlassPanel.vue'
 import BaseInput from '@/components/form/BaseInput.vue'
 import BaseDateTime from '@/components/form/BaseDateTime.vue'
@@ -78,7 +78,7 @@ const missedTradeId = computed(() => {
   return Number.isInteger(value) && value > 0 ? value : null
 })
 const isEditMode = computed(() => missedTradeId.value !== null)
-const pageTitle = computed(() => (isEditMode.value ? 'Edit Missed Setup' : 'Log Missed Setup'))
+const pageTitle = computed(() => (isEditMode.value ? 'Edit Missed Trade' : 'New Missed Trade'))
 const missedSetupFormId = 'missed-setup-form'
 
 const formErrors = computed<Record<string, string>>(() => {
@@ -554,7 +554,7 @@ async function loadImage(file: File): Promise<HTMLImageElement> {
       <div class="form-command-bar">
         <div class="form-command-left">
           <h2 class="section-title">{{ pageTitle }}</h2>
-          <p class="section-note">Capture missed opportunities with clear reasons and screenshots.</p>
+          <p class="section-note">Minimal missed-trade log with clear reasons and optional screenshots.</p>
           <div class="form-command-chips">
             <span class="filter-chip-mini">Setup</span>
             <span class="filter-chip-mini">Tags</span>
@@ -605,42 +605,40 @@ async function loadImage(file: File): Promise<HTMLImageElement> {
 
         <section class="trade-form-section">
           <p class="trade-section-title">Reason Tags</p>
-          <div class="chip-row">
-            <button
-              v-for="tag in reasonTagOptions"
-              :key="tag"
-              type="button"
-              class="chip-btn"
-              :class="{ active: form.tags.includes(tag) }"
-              @click="toggleTag(tag)"
-            >
-              {{ tag }}
-            </button>
-          </div>
-          <p v-if="fieldError('tags')" class="field-error-text">{{ fieldError('tags') }}</p>
-          <div class="form-field-shell mt-3">
-            <span class="form-field-head">
-              <span class="form-field-label">Custom Tag</span>
-            </span>
-            <div class="mt-2 flex gap-2">
+          <div class="execution-tag-panel p-3">
+            <p class="kicker-label">Tags</p>
+            <div class="chip-row mt-2">
+              <button
+                v-for="tag in reasonTagOptions"
+                :key="tag"
+                type="button"
+                class="chip-btn"
+                :class="{ active: form.tags.includes(tag) }"
+                @click="toggleTag(tag)"
+              >
+                {{ tag }}
+              </button>
+            </div>
+
+            <div class="mt-3 flex gap-2">
               <input
                 v-model="customTag"
                 type="text"
-                placeholder="discipline"
+                placeholder="custom tag"
                 class="field control-modern mt-0 w-full"
                 @keydown.enter.prevent="addCustomTag"
               />
               <button type="button" class="btn btn-ghost px-3 text-xs" @click="addCustomTag">Add</button>
             </div>
+
+            <div v-if="form.tags.length > 0" class="chip-row mt-3">
+              <span v-for="tag in form.tags" :key="`selected-${tag}`" class="pill pill-positive inline-flex items-center gap-1">
+                {{ tag }}
+                <button type="button" class="btn btn-ghost p-0 text-xs" @click="removeTag(tag)">x</button>
+              </span>
+            </div>
           </div>
-          <div v-if="form.tags.length > 0" class="chip-row mt-3">
-            <span v-for="tag in form.tags" :key="`selected-${tag}`" class="pill">
-              {{ tag }}
-              <button type="button" class="inline-flex items-center text-[var(--muted)]" @click="removeTag(tag)">
-                <X class="h-3 w-3" />
-              </button>
-            </span>
-          </div>
+          <p v-if="fieldError('tags')" class="field-error-text mt-2">{{ fieldError('tags') }}</p>
         </section>
 
         <section class="trade-form-section">
@@ -653,7 +651,7 @@ async function loadImage(file: File): Promise<HTMLImageElement> {
             <summary>Screenshots (Optional)</summary>
             <div class="mt-3">
               <TradeImageUploader
-                title="Missed Setup Screenshots"
+                title="Missed Trade Screenshots"
                 upload-hint="Max 5 images - jpg, jpeg, png, webp - 5MB each"
                 :existing-images="existingImages"
                 :pending-images="pendingImages"
@@ -694,7 +692,7 @@ async function loadImage(file: File): Promise<HTMLImageElement> {
                 ? 'Uploading images...'
                 : missedTradeStore.saving
                   ? 'Saving...'
-                  : isEditMode ? 'Update Setup' : 'Save Setup'
+                  : isEditMode ? 'Update Trade' : 'Save Trade'
             }}
           </button>
         </div>

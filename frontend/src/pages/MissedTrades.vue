@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { storeToRefs } from 'pinia'
-import { useRoute, useRouter } from 'vue-router'
+import { useRouter } from 'vue-router'
 import {
   AlertCircle,
   CalendarDays,
@@ -32,7 +32,6 @@ import type { MissedTrade, MissedTradeImage } from '@/types/trade'
 import { asDate } from '@/utils/format'
 
 const router = useRouter()
-const route = useRoute()
 const missedTradeStore = useMissedTradeStore()
 const uiStore = useUiStore()
 const { missedTrades, pagination, filters, loading, hasFilters } = storeToRefs(missedTradeStore)
@@ -43,9 +42,6 @@ const detailsImages = ref<MissedTradeImage[]>([])
 const detailImageIndex = ref(0)
 const activeDetailImage = computed(() => detailsImages.value[detailImageIndex.value] ?? null)
 const filtersExpanded = ref(false)
-type MissedQuickFocus = 'all' | 'action_required' | 'no_notes' | 'no_screenshot' | 'low_tags'
-const quickFocus = ref<MissedQuickFocus>('all')
-const focusOptions: MissedQuickFocus[] = ['all', 'action_required', 'no_notes', 'no_screenshot', 'low_tags']
 
 const activeFilterPills = computed(() => {
   const pills: string[] = []
@@ -65,31 +61,7 @@ const activeFilterPills = computed(() => {
   return pills
 })
 
-const actionRequiredCount = computed(() => missedTrades.value.filter((item) => needsRecoveryAction(item)).length)
-const noNotesCount = computed(() => missedTrades.value.filter((item) => hasThinRecoveryNotes(item)).length)
-const noScreenshotCount = computed(() => missedTrades.value.filter((item) => missedImageCount(item) === 0).length)
-const lowTagCount = computed(() => missedTrades.value.filter((item) => tagCount(item) < 2).length)
-const averageRecoveryScore = computed(() => {
-  if (missedTrades.value.length === 0) return 0
-  const total = missedTrades.value.reduce((sum, item) => sum + recoveryScore(item), 0)
-  return total / missedTrades.value.length
-})
-
-const visibleMissedTrades = computed(() => {
-  if (quickFocus.value === 'action_required') {
-    return missedTrades.value.filter((item) => needsRecoveryAction(item))
-  }
-  if (quickFocus.value === 'no_notes') {
-    return missedTrades.value.filter((item) => hasThinRecoveryNotes(item))
-  }
-  if (quickFocus.value === 'no_screenshot') {
-    return missedTrades.value.filter((item) => missedImageCount(item) === 0)
-  }
-  if (quickFocus.value === 'low_tags') {
-    return missedTrades.value.filter((item) => tagCount(item) < 2)
-  }
-  return missedTrades.value
-})
+const visibleMissedTrades = computed(() => missedTrades.value)
 
 const detailRecoveryScore = computed(() => {
   if (!detailsEntry.value) return 0
@@ -185,15 +157,6 @@ function cardDate(value: string) {
 function modelLabel(value: string | null | undefined) {
   const text = `${value ?? ''}`.trim()
   return text || 'No model'
-}
-
-function normalizeQuickFocus(value: unknown): MissedQuickFocus {
-  const normalized = `${value ?? ''}`.trim().toLowerCase()
-  return focusOptions.includes(normalized as MissedQuickFocus) ? (normalized as MissedQuickFocus) : 'all'
-}
-
-function applyQuickFocusFromRoute() {
-  quickFocus.value = normalizeQuickFocus(route.query.focus)
 }
 
 function primaryImage(item: MissedTrade): MissedTradeImage | null {
@@ -357,7 +320,6 @@ onMounted(async () => {
   try {
     await missedTradeStore.fetchMissedTrades()
     filtersExpanded.value = hasFilters.value
-    applyQuickFocusFromRoute()
   } catch {
     uiStore.toast({
       type: 'error',
@@ -366,68 +328,14 @@ onMounted(async () => {
     })
   }
 })
-
-watch(
-  () => route.query.focus,
-  () => {
-    applyQuickFocusFromRoute()
-  }
-)
-
-watch(quickFocus, (value) => {
-  const current = normalizeQuickFocus(route.query.focus)
-  if (value === current) return
-
-  const query = { ...route.query }
-  if (value === 'all') {
-    delete query.focus
-  } else {
-    query.focus = value
-  }
-
-  void router.replace({ query })
-})
 </script>
 
 <template>
   <div class="space-y-5 missed-list-minimal">
-    <section class="trade-review-strip grid grid-premium md:grid-cols-5 missed-summary-strip">
-      <GlassPanel class="trade-review-kpi">
-        <p class="kicker-label">Action Required</p>
-        <p class="trade-review-kpi-value value-display negative">
-          <AnimatedNumber :value="actionRequiredCount" />
-        </p>
-      </GlassPanel>
-      <GlassPanel class="trade-review-kpi">
-        <p class="kicker-label">No Notes</p>
-        <p class="trade-review-kpi-value value-display negative">
-          <AnimatedNumber :value="noNotesCount" />
-        </p>
-      </GlassPanel>
-      <GlassPanel class="trade-review-kpi">
-        <p class="kicker-label">No Screenshot</p>
-        <p class="trade-review-kpi-value value-display">
-          <AnimatedNumber :value="noScreenshotCount" />
-        </p>
-      </GlassPanel>
-      <GlassPanel class="trade-review-kpi">
-        <p class="kicker-label">Low Tag Quality</p>
-        <p class="trade-review-kpi-value value-display">
-          <AnimatedNumber :value="lowTagCount" />
-        </p>
-      </GlassPanel>
-      <GlassPanel class="trade-review-kpi">
-        <p class="kicker-label">Avg Recovery Score</p>
-        <p class="trade-review-kpi-value value-display">
-          <AnimatedNumber :value="averageRecoveryScore" :decimals="0" />
-        </p>
-      </GlassPanel>
-    </section>
-
     <GlassPanel class="missed-db-shell command-filter-shell">
       <div class="command-filter-bar">
         <div class="command-filter-left">
-          <h2 class="section-title">Missed Setups</h2>
+          <h2 class="section-title">Missed Trade Log</h2>
           <div class="filter-summary-strip">
             <span v-if="activeFilterPills.length === 0" class="section-note">No filters applied</span>
             <span v-for="pill in activeFilterPills" :key="`missed-pill-${pill}`" class="filter-chip-mini">{{ pill }}</span>
@@ -436,7 +344,7 @@ watch(quickFocus, (value) => {
         <div class="command-filter-right">
           <button class="btn btn-secondary inline-flex items-center gap-2 px-3 py-2 text-sm" @click="openQuickAddPage">
             <Plus class="h-4 w-4" />
-            Quick Add
+            New Missed
           </button>
           <button class="btn btn-ghost px-4 py-2 text-sm" @click="applyFilters">Apply</button>
           <button type="button" class="btn btn-ghost inline-flex items-center gap-2 px-3 py-2 text-sm" @click="filtersExpanded = !filtersExpanded">
@@ -476,41 +384,13 @@ watch(quickFocus, (value) => {
       </Transition>
     </GlassPanel>
 
-    <GlassPanel class="trade-focus-shell">
-      <div class="trade-focus-row">
-        <span class="section-note">Recovery focus</span>
-        <div class="trade-focus-actions">
-          <button type="button" class="chip-btn" :class="{ 'is-active': quickFocus === 'all' }" @click="quickFocus = 'all'">All</button>
-          <button
-            type="button"
-            class="chip-btn"
-            :class="{ 'is-active': quickFocus === 'action_required' }"
-            @click="quickFocus = 'action_required'"
-          >
-            Action Required
-          </button>
-          <button type="button" class="chip-btn" :class="{ 'is-active': quickFocus === 'no_notes' }" @click="quickFocus = 'no_notes'">No Notes</button>
-          <button
-            type="button"
-            class="chip-btn"
-            :class="{ 'is-active': quickFocus === 'no_screenshot' }"
-            @click="quickFocus = 'no_screenshot'"
-          >
-            No Screenshot
-          </button>
-          <button type="button" class="chip-btn" :class="{ 'is-active': quickFocus === 'low_tags' }" @click="quickFocus = 'low_tags'">Low Tags</button>
-        </div>
-      </div>
-    </GlassPanel>
-
     <section class="missed-db-shell panel p-4 md:p-5">
       <div class="section-head">
-        <h2 class="section-title">Missed Setup Log</h2>
+        <h2 class="section-title">Missed Trade Log</h2>
         <p class="section-note">
           <span v-if="loading">Loading...</span>
           <span v-else>
             <AnimatedNumber :value="visibleMissedTrades.length" /> shown
-            <template v-if="quickFocus !== 'all'"> of <AnimatedNumber :value="pagination.total" /></template>
           </span>
         </p>
       </div>
@@ -521,12 +401,10 @@ watch(quickFocus, (value) => {
 
       <EmptyState
         v-else-if="visibleMissedTrades.length === 0"
-        :title="quickFocus === 'all' ? 'No missed setups yet' : 'No setups in this focus'"
-        :description="quickFocus === 'all'
-          ? 'Capture missed setups with tags to improve execution.'
-          : 'Switch focus or widen filters to continue recovery review.'"
+        title="No missed trades yet"
+        description="Capture missed trades with tags to improve execution."
         :icon="CalendarX2"
-        cta-text="Quick Add"
+        cta-text="New Missed"
         @cta="openQuickAddPage"
       />
 
@@ -536,7 +414,7 @@ watch(quickFocus, (value) => {
             <img
               v-if="primaryImage(item)"
               :src="primaryImage(item)?.thumbnail_url || primaryImage(item)?.image_url"
-              :alt="`${item.pair} missed setup screenshot`"
+              :alt="`${item.pair} missed trade screenshot`"
               loading="lazy"
               class="trade-db-image"
               @error="setImageFallback($event, primaryImage(item)?.image_url)"
@@ -621,7 +499,7 @@ watch(quickFocus, (value) => {
       <div v-if="detailsOpen" class="trade-details-modal-backdrop" @click.self="closeDetails">
         <div class="trade-details-modal panel p-4">
           <div class="section-head">
-            <h3 class="section-title">Missed Setup Details</h3>
+            <h3 class="section-title">Missed Trade Details</h3>
             <button type="button" class="btn btn-ghost p-2" @click="closeDetails">
               <X class="h-4 w-4" />
             </button>
@@ -652,7 +530,7 @@ watch(quickFocus, (value) => {
                 <img
                   v-if="activeDetailImage"
                   :src="activeDetailImage.image_url"
-                  alt="Missed setup screenshot"
+                  alt="Missed trade screenshot"
                   class="trade-simple-image"
                   @error="setImageFallback($event, activeDetailImage.image_url)"
                 />

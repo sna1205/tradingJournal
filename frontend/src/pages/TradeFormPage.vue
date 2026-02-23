@@ -212,7 +212,7 @@ const isEditMode = computed(() => tradeId.value !== null)
 const pendingSubmitAction = ref<'save' | 'save_and_new'>('save')
 const loadingSmartDefaults = ref(false)
 const tradeCompleted = ref(true)
-const pageTitle = computed(() => (isEditMode.value ? 'Edit Execution' : 'New Execution'))
+const pageTitle = computed(() => (isEditMode.value ? 'Edit Execute' : 'New Execute'))
 const tradeFormId = 'trade-execution-form'
 const closeDateMax = computed(() => maxDateTime(nowLocalDateTime(), form.date || ''))
 const totalImageCount = computed(() => existingImages.value.length + pendingImages.value.length)
@@ -1416,7 +1416,7 @@ async function loadImage(file: File): Promise<HTMLImageElement> {
         <div class="execution-long-header">
           <div>
             <h2 class="section-title">{{ pageTitle }}</h2>
-            <p class="section-note">One long form from entry to exit, with lighter section borders.</p>
+            <p class="section-note">Minimal form for fast execution logging.</p>
           </div>
           <button type="button" class="btn btn-ghost inline-flex items-center gap-2 px-3 py-2 text-sm" @click="router.push('/trades')">
             <ArrowLeft class="h-4 w-4" />
@@ -1424,9 +1424,6 @@ async function loadImage(file: File): Promise<HTMLImageElement> {
           </button>
         </div>
 
-        <p class="trade-form-disclaimer">
-          Ctrl+S to save. Ctrl+Shift+S to save and open a fresh ticket.
-        </p>
         <p v-if="blockedSummary" class="field-error-text">{{ blockedSummary }}</p>
 
         <section class="trade-form-section execution-long-section">
@@ -1472,7 +1469,7 @@ async function loadImage(file: File): Promise<HTMLImageElement> {
               :max="closeDateMax"
               :error="fieldError('date')"
             />
-            <div class="panel execution-tag-panel">
+            <div class="execution-tag-panel">
               <p class="kicker-label">Tags</p>
               <BaseInput
                 v-model="form.tag_search"
@@ -1856,7 +1853,7 @@ async function loadImage(file: File): Promise<HTMLImageElement> {
                 ? 'Uploading images...'
                 : tradeStore.saving
                   ? 'Saving...'
-                  : isEditMode ? 'Update Execution' : 'Save Execution'
+                  : isEditMode ? 'Update Execute' : 'Save Execute'
             }}
           </button>
         </div>

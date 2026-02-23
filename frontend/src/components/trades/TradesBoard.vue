@@ -542,7 +542,7 @@ watch(quickFocus, (value) => {
     <GlassPanel class="command-filter-shell">
       <div class="command-filter-bar">
         <div class="command-filter-left">
-          <h2 class="section-title">Trade Log Filters</h2>
+          <h2 class="section-title">Execute Log Filters</h2>
           <div class="filter-summary-strip">
             <span v-if="activeFilterPills.length === 0" class="section-note">No filters applied</span>
             <span v-for="pill in activeFilterPills" :key="`trade-pill-${pill}`" class="filter-chip-mini">{{ pill }}</span>
@@ -562,7 +562,7 @@ watch(quickFocus, (value) => {
           <button class="btn btn-ghost px-3 py-2 text-sm" @click="exportCurrentCsv">Export CSV</button>
           <button class="btn btn-secondary inline-flex items-center gap-2 px-3 py-2 text-sm" @click="openQuickAddPage">
             <Plus class="h-4 w-4" />
-            Quick Add
+            New Execute
           </button>
           <button class="btn btn-ghost px-4 py-2 text-sm" @click="applyFilters">Apply</button>
           <button type="button" class="btn btn-ghost inline-flex items-center gap-2 px-3 py-2 text-sm" @click="filtersExpanded = !filtersExpanded">
@@ -702,7 +702,7 @@ watch(quickFocus, (value) => {
 
     <section class="trade-db-shell panel p-4 md:p-5">
       <div class="section-head">
-        <h2 class="section-title">Trade Log</h2>
+        <h2 class="section-title">Execute Log</h2>
         <p class="section-note">
           <span v-if="loading">Loading...</span>
           <span v-else>
@@ -723,7 +723,7 @@ watch(quickFocus, (value) => {
           ? 'Log your first execution or adjust filters to see results.'
           : 'Switch focus or broaden filters to keep review moving.'"
         :icon="BarChart3"
-        cta-text="Quick Add"
+        cta-text="New Execute"
         @cta="openQuickAddPage"
       />
 
