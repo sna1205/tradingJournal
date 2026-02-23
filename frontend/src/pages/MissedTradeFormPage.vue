@@ -81,54 +81,6 @@ const isEditMode = computed(() => missedTradeId.value !== null)
 const pageTitle = computed(() => (isEditMode.value ? 'Edit Missed Setup' : 'Log Missed Setup'))
 const missedSetupFormId = 'missed-setup-form'
 
-type WeeklyLoopStage = 'capture' | 'triage' | 'action_plan' | 'follow_up'
-
-const notesLength = computed(() => form.notes.trim().length)
-const captureComplete = computed(() => {
-  return form.pair.trim().length > 0
-    && form.model.trim().length > 0
-    && form.tags.length > 0
-})
-const triageComplete = computed(() => form.tags.length >= 2 || notesLength.value >= 24)
-const actionPlanComplete = computed(() => /action plan|next time|i will|prevent|if setup repeats/i.test(form.notes))
-const followUpComplete = computed(() => /follow[\s-]?up|revisit|check back/i.test(form.notes))
-const weeklyLoopScore = computed(() => {
-  const checks = [captureComplete.value, triageComplete.value, actionPlanComplete.value, followUpComplete.value]
-  return checks.filter(Boolean).length * 25
-})
-const suggestedFollowUpDate = computed(() => {
-  const tradeDate = parseLocalDateTime(form.date)
-  const anchor = tradeDate === null ? new Date() : new Date(tradeDate)
-  anchor.setDate(anchor.getDate() + 7)
-  return anchor.toISOString().slice(0, 10)
-})
-const weeklyLoopSteps = computed(() => ([
-  {
-    id: 'capture',
-    title: 'Capture',
-    helper: 'Record setup, model, and base reason.',
-    done: captureComplete.value,
-  },
-  {
-    id: 'triage',
-    title: 'Triage',
-    helper: 'Break down why the setup was missed.',
-    done: triageComplete.value,
-  },
-  {
-    id: 'action_plan',
-    title: 'Action Plan',
-    helper: 'Define trigger and execution response.',
-    done: actionPlanComplete.value,
-  },
-  {
-    id: 'follow_up',
-    title: 'Follow-up',
-    helper: `Set review date (${suggestedFollowUpDate.value}).`,
-    done: followUpComplete.value,
-  },
-]))
-
 const formErrors = computed<Record<string, string>>(() => {
   const errors: Record<string, string> = {}
 
@@ -187,56 +139,6 @@ function parseLocalDateTime(value: string): number | null {
   if (!value) return null
   const timestamp = new Date(value).getTime()
   return Number.isNaN(timestamp) ? null : timestamp
-}
-
-function appendNotesBlock(title: string, lines: string[]) {
-  if (form.notes.includes(`${title}:`)) {
-    uiStore.toast({
-      type: 'info',
-      title: `${title} already added`,
-      message: 'Update the existing section instead of duplicating it.',
-    })
-    return
-  }
-
-  const block = `${title}:\n${lines.join('\n')}`
-  const current = form.notes.trim()
-  form.notes = current ? `${current}\n\n${block}` : block
-}
-
-function insertWeeklyLoopTemplate(stage: WeeklyLoopStage) {
-  if (stage === 'capture') {
-    appendNotesBlock('Capture', [
-      '- Setup context:',
-      '- Miss trigger:',
-      '- What happened in real-time:',
-    ])
-    return
-  }
-
-  if (stage === 'triage') {
-    appendNotesBlock('Triage', [
-      '- Primary reason:',
-      '- Controllable vs uncontrollable:',
-      '- Confidence to execute next time (1-5):',
-    ])
-    return
-  }
-
-  if (stage === 'action_plan') {
-    appendNotesBlock('Action Plan', [
-      '- Trigger checklist:',
-      '- Alert or pre-session prep:',
-      '- Execution rule for next occurrence:',
-    ])
-    return
-  }
-
-  appendNotesBlock('Follow-up', [
-    `- Review date: ${suggestedFollowUpDate.value}`,
-    '- Did I execute when setup repeated?:',
-    '- Adjustment:',
-  ])
 }
 
 function toggleTag(tag: string) {
@@ -656,8 +558,7 @@ async function loadImage(file: File): Promise<HTMLImageElement> {
           <div class="form-command-chips">
             <span class="filter-chip-mini">Setup</span>
             <span class="filter-chip-mini">Tags</span>
-            <span class="filter-chip-mini">Notes</span>
-            <span class="filter-chip-mini">Images</span>
+            <span class="filter-chip-mini">Optional</span>
           </div>
         </div>
         <div class="form-command-right">
@@ -695,25 +596,10 @@ async function loadImage(file: File): Promise<HTMLImageElement> {
       <form v-else :id="missedSetupFormId" class="form-block space-y-4" @submit.prevent="submit">
         <section class="trade-form-section">
           <p class="trade-section-title">Setup Details</p>
-          <div class="grid grid-premium md:grid-cols-2 xl:grid-cols-4">
+          <div class="grid grid-premium md:grid-cols-2 xl:grid-cols-3">
             <BaseInput v-model="form.pair" label="Pair" required placeholder="EURUSD" :error="fieldError('pair')" />
             <BaseInput v-model="form.model" label="Model" required placeholder="Liquidity Sweep" :error="fieldError('model')" />
             <BaseDateTime v-model="form.date" label="Date" required :max="nowLocalDateTime()" :error="fieldError('date')" />
-            <div class="form-field-shell">
-              <span class="form-field-head">
-                <span class="form-field-label">Custom Tag</span>
-              </span>
-              <div class="mt-2 flex gap-2">
-                <input
-                  v-model="customTag"
-                  type="text"
-                  placeholder="discipline"
-                  class="field control-modern mt-0 w-full"
-                  @keydown.enter.prevent="addCustomTag"
-                />
-                <button type="button" class="btn btn-ghost px-3 text-xs" @click="addCustomTag">Add</button>
-              </div>
-            </div>
           </div>
         </section>
 
@@ -732,6 +618,21 @@ async function loadImage(file: File): Promise<HTMLImageElement> {
             </button>
           </div>
           <p v-if="fieldError('tags')" class="field-error-text">{{ fieldError('tags') }}</p>
+          <div class="form-field-shell mt-3">
+            <span class="form-field-head">
+              <span class="form-field-label">Custom Tag</span>
+            </span>
+            <div class="mt-2 flex gap-2">
+              <input
+                v-model="customTag"
+                type="text"
+                placeholder="discipline"
+                class="field control-modern mt-0 w-full"
+                @keydown.enter.prevent="addCustomTag"
+              />
+              <button type="button" class="btn btn-ghost px-3 text-xs" @click="addCustomTag">Add</button>
+            </div>
+          </div>
           <div v-if="form.tags.length > 0" class="chip-row mt-3">
             <span v-for="tag in form.tags" :key="`selected-${tag}`" class="pill">
               {{ tag }}
@@ -742,53 +643,33 @@ async function loadImage(file: File): Promise<HTMLImageElement> {
           </div>
         </section>
 
-        <section class="trade-form-section trade-workflow-loop">
-          <div class="section-head">
-            <p class="trade-section-title">Weekly Review Loop</p>
-            <span class="section-note">Capture -> Triage -> Action Plan -> Follow-up</span>
-          </div>
-
-          <div class="trade-loop-grid">
-            <article v-for="step in weeklyLoopSteps" :key="step.id" class="trade-loop-step" :class="{ 'is-done': step.done }">
-              <p class="trade-loop-step-title">{{ step.title }}</p>
-              <p class="section-note">{{ step.helper }}</p>
-              <span class="trade-loop-step-status">{{ step.done ? 'Ready' : 'Pending' }}</span>
-            </article>
-          </div>
-
-          <div class="trade-loop-actions">
-            <button type="button" class="chip-btn" @click="insertWeeklyLoopTemplate('capture')">Capture</button>
-            <button type="button" class="chip-btn" @click="insertWeeklyLoopTemplate('triage')">Triage</button>
-            <button type="button" class="chip-btn" @click="insertWeeklyLoopTemplate('action_plan')">Action Plan</button>
-            <button type="button" class="chip-btn" @click="insertWeeklyLoopTemplate('follow_up')">Follow-up</button>
-            <span class="section-note">Loop score: {{ weeklyLoopScore }}/100</span>
-          </div>
-        </section>
-
         <section class="trade-form-section">
           <p class="trade-section-title">Notes</p>
-          <p class="section-note">Use the loop templates to keep missed-setup review actionable.</p>
           <BaseInput v-model="form.notes" label="Notes" multiline :rows="4" />
         </section>
 
         <section class="trade-form-section">
-          <p class="trade-section-title">Screenshots</p>
-          <TradeImageUploader
-            title="Missed Setup Screenshots"
-            upload-hint="Max 5 images - jpg, jpeg, png, webp - 5MB each"
-            :existing-images="existingImages"
-            :pending-images="pendingImages"
-            :max-files="MAX_IMAGE_COUNT"
-            :uploading="uploadingImages"
-            :upload-progress="uploadProgressByPendingId"
-            :deleting-image-ids="deletingImageIds"
-            :error="imageUploadError"
-            @select-files="onSelectImageFiles"
-            @remove-pending="removePendingImage"
-            @remove-existing="removeExistingImage"
-            @reorder-pending="reorderPendingImages"
-            @update-pending-metadata="updatePendingImageMetadata"
-          />
+          <details class="trade-estimate-details">
+            <summary>Screenshots (Optional)</summary>
+            <div class="mt-3">
+              <TradeImageUploader
+                title="Missed Setup Screenshots"
+                upload-hint="Max 5 images - jpg, jpeg, png, webp - 5MB each"
+                :existing-images="existingImages"
+                :pending-images="pendingImages"
+                :max-files="MAX_IMAGE_COUNT"
+                :uploading="uploadingImages"
+                :upload-progress="uploadProgressByPendingId"
+                :deleting-image-ids="deletingImageIds"
+                :error="imageUploadError"
+                @select-files="onSelectImageFiles"
+                @remove-pending="removePendingImage"
+                @remove-existing="removeExistingImage"
+                @reorder-pending="reorderPendingImages"
+                @update-pending-metadata="updatePendingImageMetadata"
+              />
+            </div>
+          </details>
         </section>
 
         <div class="flex items-center justify-end gap-2">

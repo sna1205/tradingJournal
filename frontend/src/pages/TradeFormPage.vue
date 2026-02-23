@@ -2,13 +2,14 @@
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import type { AxiosError } from 'axios'
-import { ArrowLeft } from 'lucide-vue-next'
+import { ArrowLeft, DollarSign, TrendingUp } from 'lucide-vue-next'
 import { useRoute, useRouter } from 'vue-router'
 import GlassPanel from '@/components/layout/GlassPanel.vue'
 import BaseInput from '@/components/form/BaseInput.vue'
 import BaseSelect from '@/components/form/BaseSelect.vue'
 import BaseDateTime from '@/components/form/BaseDateTime.vue'
 import TradeImageUploader from '@/components/trades/TradeImageUploader.vue'
+import api from '@/services/api'
 import { useAccountStore } from '@/stores/accountStore'
 import {
   useTradeStore,
@@ -16,7 +17,7 @@ import {
   type TradePrecheckResult,
 } from '@/stores/tradeStore'
 import { useUiStore } from '@/stores/uiStore'
-import type { ImageContextTag, Instrument, SessionEnum, Trade, TradeEmotion, TradeImage, TradeLeg, TradePsychology } from '@/types/trade'
+import type { ImageContextTag, Instrument, Paginated, SessionEnum, Trade, TradeEmotion, TradeImage, TradeLeg, TradePsychology } from '@/types/trade'
 import { asCurrency, asSignedCurrency } from '@/utils/format'
 
 const router = useRouter()
@@ -29,7 +30,6 @@ const { instruments, strategyModels, setups, killzones, tradeTags, sessionOption
 
 const loadingTrade = ref(false)
 const submitAttempted = ref(false)
-const showAdvanced = ref(false)
 const emotionOptions: TradeEmotion[] = ['neutral', 'calm', 'confident', 'fearful', 'greedy', 'hesitant', 'revenge']
 const directionOptions = [
   { label: 'Buy', value: 'buy' },
@@ -153,6 +153,22 @@ interface ExitLegRow {
   notes: string
 }
 
+interface PrimaryExitRow {
+  price: number
+  quantity_lots: number
+  executed_at: string
+  fees: number
+  notes: string
+}
+
+const primaryExit = reactive<PrimaryExitRow>({
+  price: 0,
+  quantity_lots: 0,
+  executed_at: '',
+  fees: 0,
+  notes: '',
+})
+
 const exitLegs = ref<ExitLegRow[]>([])
 
 interface PendingTradeImage {
@@ -193,6 +209,9 @@ const tradeId = computed(() => {
   return Number.isInteger(value) && value > 0 ? value : null
 })
 const isEditMode = computed(() => tradeId.value !== null)
+const pendingSubmitAction = ref<'save' | 'save_and_new'>('save')
+const loadingSmartDefaults = ref(false)
+const tradeCompleted = ref(true)
 const pageTitle = computed(() => (isEditMode.value ? 'Edit Execution' : 'New Execution'))
 const tradeFormId = 'trade-execution-form'
 const closeDateMax = computed(() => maxDateTime(nowLocalDateTime(), form.date || ''))
@@ -223,10 +242,46 @@ const precheckError = ref('')
 const precheckResult = ref<TradePrecheckResult | null>(null)
 let precheckTimer: ReturnType<typeof setTimeout> | null = null
 const isSaveBlocked = computed(() => (precheckResult.value !== null) && !precheckResult.value.allowed)
-
-const validExitLegs = computed(() =>
-  exitLegs.value.filter((leg) => toNumber(leg.price) > 0 && toNumber(leg.quantity_lots) > 0)
+const isSubmittingDisabled = computed(() =>
+  tradeStore.saving || uploadingImages.value || precheckLoading.value || isSaveBlocked.value
 )
+const riskStatusLabel = computed(() => {
+  if (precheckLoading.value) return 'Checking'
+  if (precheckResult.value?.allowed) return 'Allowed'
+  if (precheckResult.value) return 'Blocked'
+  return 'Awaiting check'
+})
+const riskStatusClass = computed(() => {
+  if (precheckLoading.value) return ''
+  if (precheckResult.value?.allowed) return 'is-allowed'
+  if (precheckResult.value) return 'is-blocked'
+  return ''
+})
+const blockedSummary = computed(() => {
+  if (!submitAttempted.value || !isSaveBlocked.value) return ''
+  return 'Blocked by account risk policy. Resolve violations or provide override reason when allowed.'
+})
+
+const validExitLegs = computed(() => {
+  const rows: Array<{ price: number; quantity_lots: number; fees: number }> = []
+  if (toNumber(primaryExit.price) > 0 && toNumber(primaryExit.quantity_lots) > 0) {
+    rows.push({
+      price: toNumber(primaryExit.price),
+      quantity_lots: toNumber(primaryExit.quantity_lots),
+      fees: toNumber(primaryExit.fees),
+    })
+  }
+  for (const leg of exitLegs.value) {
+    if (toNumber(leg.price) > 0 && toNumber(leg.quantity_lots) > 0) {
+      rows.push({
+        price: toNumber(leg.price),
+        quantity_lots: toNumber(leg.quantity_lots),
+        fees: toNumber(leg.fees),
+      })
+    }
+  }
+  return rows
+})
 
 const exitLegSummary = computed(() => {
   const rows = validExitLegs.value
@@ -242,160 +297,32 @@ const exitLegSummary = computed(() => {
   }
 })
 
-const liveEstimate = computed(() => {
+function estimateLegPnl(leg: Pick<ExitLegRow, 'price' | 'quantity_lots' | 'fees'>) {
   const instrument = selectedInstrument.value
   const entry = toNumber(form.entry_price)
-  const stop = toNumber(form.stop_loss)
-  const take = toNumber(form.take_profit)
-  const lotSize = toNumber(form.position_size)
-  const commission = toNumber(form.commission)
-  const swap = toNumber(form.swap)
-  const spreadCost = toNumber(form.spread_cost)
-  const slippageCost = toNumber(form.slippage_cost)
-  const exits = validExitLegs.value
-  const legFeesTotal = exitLegSummary.value.fees
-  const costsTotal = commission + swap + spreadCost + slippageCost + legFeesTotal
-
-  if (!instrument) {
-    return {
-      ready: false as const,
-      error: 'Select an instrument to calculate broker-aligned P/L.',
-      riskAmount: 0,
-      targetGrossPnl: 0,
-      grossPnl: 0,
-      costsTotal: 0,
-      netPnl: 0,
-      rAtExit: 0,
-      rrPlan: 0,
-      weightedExitPrice: 0,
-      exitQuantity: 0,
-    }
-  }
-
-  if (!(entry > 0) || !(stop > 0) || !(take > 0) || !(lotSize > 0) || exits.length === 0) {
-    return {
-      ready: false as const,
-      error: '',
-      riskAmount: 0,
-      targetGrossPnl: 0,
-      grossPnl: 0,
-      costsTotal: 0,
-      netPnl: 0,
-      rAtExit: 0,
-      rrPlan: 0,
-      weightedExitPrice: 0,
-      exitQuantity: 0,
-    }
-  }
+  const exit = toNumber(leg.price)
+  const quantity = toNumber(leg.quantity_lots)
+  if (!(entry > 0) || !(exit > 0) || !(quantity > 0)) return 0
 
   const direction = form.direction === 'buy' ? 1 : -1
-  const riskMove = (entry - stop) * direction
-  const rewardMove = (take - entry) * direction
+  const move = (exit - entry) * direction
 
-  if (!(riskMove > 0)) {
-    return {
-      ready: false as const,
-      error: 'Stop loss placement is invalid for the selected direction.',
-      riskAmount: 0,
-      targetGrossPnl: 0,
-      grossPnl: 0,
-      costsTotal: 0,
-      netPnl: 0,
-      rAtExit: 0,
-      rrPlan: 0,
-      weightedExitPrice: 0,
-      exitQuantity: 0,
-    }
+  if (!instrument) {
+    return move * quantity - toNumber(leg.fees)
   }
 
   const tickSize = toNumber(instrument.tick_size)
   const tickValue = toNumber(instrument.tick_value)
-  const moveToValue = (move: number, quantityLots: number) => {
-    if (tickSize > 0 && tickValue > 0) {
-      return (move / tickSize) * tickValue * quantityLots
-    }
-    return move * quantityLots
-  }
+  const gross = tickSize > 0 && tickValue > 0
+    ? (move / tickSize) * tickValue * quantity
+    : move * quantity
 
-  const riskAmount = moveToValue(riskMove, lotSize)
-  const targetGrossPnl = moveToValue(rewardMove, lotSize)
-  const grossPnl = exits.reduce((sum, leg) => {
-    const liveMove = (toNumber(leg.price) - entry) * direction
-    return sum + moveToValue(liveMove, toNumber(leg.quantity_lots))
-  }, 0)
-  const netPnl = grossPnl - costsTotal
-  const rrPlan = rewardMove / riskMove
-  const rAtExit = riskAmount !== 0 ? netPnl / riskAmount : 0
-  const weightedExitPrice = exitLegSummary.value.weightedPrice
-  const exitQuantity = exitLegSummary.value.quantity
+  return gross - toNumber(leg.fees)
+}
 
-  return {
-    ready: true as const,
-    error: '',
-    riskAmount,
-    targetGrossPnl,
-    grossPnl,
-    costsTotal,
-    netPnl,
-    rAtExit,
-    rrPlan,
-    weightedExitPrice,
-    exitQuantity,
-  }
-})
-
-type WeeklyLoopStage = 'capture' | 'triage' | 'action_plan' | 'follow_up'
-
-const notesLength = computed(() => form.notes.trim().length)
-const captureComplete = computed(() => {
-  return form.symbol.trim().length > 0
-    && toNumber(form.entry_price) > 0
-    && toNumber(form.stop_loss) > 0
-    && toNumber(form.take_profit) > 0
-})
-const triageComplete = computed(() => {
-  return form.emotion !== 'neutral'
-    || form.followed_rules === false
-    || notesLength.value >= 24
-})
-const actionPlanComplete = computed(() => /action plan|next time|i will|prevent|if setup repeats/i.test(form.notes))
-const followUpComplete = computed(() => /follow[\s-]?up|revisit|check back/i.test(form.notes))
-const weeklyLoopScore = computed(() => {
-  const checks = [captureComplete.value, triageComplete.value, actionPlanComplete.value, followUpComplete.value]
-  return checks.filter(Boolean).length * 25
-})
-const suggestedFollowUpDate = computed(() => {
-  const closeDate = parseLocalDateTime(form.date)
-  const anchor = closeDate === null ? new Date() : new Date(closeDate)
-  anchor.setDate(anchor.getDate() + 7)
-  return anchor.toISOString().slice(0, 10)
-})
-const weeklyLoopSteps = computed(() => ([
-  {
-    id: 'capture',
-    title: 'Capture',
-    helper: 'Log setup facts and screenshot context.',
-    done: captureComplete.value,
-  },
-  {
-    id: 'triage',
-    title: 'Triage',
-    helper: 'State quality, mistakes, and rule status.',
-    done: triageComplete.value,
-  },
-  {
-    id: 'action_plan',
-    title: 'Action Plan',
-    helper: 'Write exactly what to do next time.',
-    done: actionPlanComplete.value,
-  },
-  {
-    id: 'follow_up',
-    title: 'Follow-up',
-    helper: `Set review date (${suggestedFollowUpDate.value}).`,
-    done: followUpComplete.value,
-  },
-]))
+function estimateLegPnlLabel(leg: Pick<ExitLegRow, 'price' | 'quantity_lots' | 'fees'>) {
+  return asSignedCurrency(estimateLegPnl(leg))
+}
 
 function toLocalDateTime(value: string) {
   const date = new Date(value)
@@ -426,21 +353,27 @@ function makeExitLeg(partial?: Partial<ExitLegRow>): ExitLegRow {
   }
 }
 
+function resetPrimaryExit(partial?: Partial<PrimaryExitRow>) {
+  primaryExit.price = partial?.price ?? toNumber(form.take_profit || form.entry_price)
+  primaryExit.quantity_lots = partial?.quantity_lots ?? toNumber(form.position_size)
+  primaryExit.executed_at = partial?.executed_at ?? (form.date || nowLocalDateTime())
+  primaryExit.fees = partial?.fees ?? 0
+  primaryExit.notes = partial?.notes ?? ''
+}
+
 function addExitLeg() {
-  const defaultQty = exitLegs.value.length > 0
-    ? Math.max(0.0001, toNumber(form.position_size) - exitLegSummary.value.quantity)
-    : toNumber(form.position_size)
+  const alreadyAllocated = toNumber(primaryExit.quantity_lots) + exitLegSummary.value.quantity
+  const defaultQty = Math.max(0.0001, toNumber(form.position_size) - alreadyAllocated)
   exitLegs.value = [...exitLegs.value, makeExitLeg({ quantity_lots: defaultQty > 0 ? defaultQty : 0.0001 })]
 }
 
 function removeExitLeg(id: string) {
-  if (exitLegs.value.length <= 1) return
   exitLegs.value = exitLegs.value.filter((leg) => leg.id !== id)
 }
 
 function ensureDefaultExitLeg() {
-  if (exitLegs.value.length > 0) return
-  exitLegs.value = [makeExitLeg()]
+  resetPrimaryExit()
+  exitLegs.value = []
 }
 
 function addTag(tagId: number) {
@@ -481,56 +414,6 @@ function setPsychologyFromPayload(payload?: TradePsychology | null) {
   psychology.fomo_flag = Boolean(payload?.fomo_flag)
   psychology.revenge_flag = Boolean(payload?.revenge_flag)
   psychology.notes = payload?.notes ?? ''
-}
-
-function appendNotesBlock(title: string, lines: string[]) {
-  if (form.notes.includes(`${title}:`)) {
-    uiStore.toast({
-      type: 'info',
-      title: `${title} already added`,
-      message: 'Update the existing section instead of duplicating it.',
-    })
-    return
-  }
-
-  const block = `${title}:\n${lines.join('\n')}`
-  const current = form.notes.trim()
-  form.notes = current ? `${current}\n\n${block}` : block
-}
-
-function insertWeeklyLoopTemplate(stage: WeeklyLoopStage) {
-  if (stage === 'capture') {
-    appendNotesBlock('Capture', [
-      '- Setup:',
-      '- Trigger:',
-      '- Market context:',
-    ])
-    return
-  }
-
-  if (stage === 'triage') {
-    appendNotesBlock('Triage', [
-      '- Setup quality (1-5):',
-      '- Rule adherence:',
-      '- Main execution mistake:',
-    ])
-    return
-  }
-
-  if (stage === 'action_plan') {
-    appendNotesBlock('Action Plan', [
-      '- If setup repeats, I will:',
-      '- Invalidation condition:',
-      '- Risk cap:',
-    ])
-    return
-  }
-
-  appendNotesBlock('Follow-up', [
-    `- Review date: ${suggestedFollowUpDate.value}`,
-    '- Check if plan was followed:',
-    '- Adjustment:',
-  ])
 }
 
 function parseLocalDateTime(value: string): number | null {
@@ -583,24 +466,123 @@ function setFormFromTrade(trade: Trade, legs: TradeLeg[] = [], tradePsychology?:
     }))
 
   if (exitRows.length > 0) {
-    exitLegs.value = exitRows
+    const [firstExit, ...partials] = exitRows
+    resetPrimaryExit({
+      price: toNumber(firstExit?.price),
+      quantity_lots: toNumber(firstExit?.quantity_lots),
+      executed_at: firstExit?.executed_at || form.date,
+      fees: toNumber(firstExit?.fees),
+      notes: firstExit?.notes ?? '',
+    })
+    exitLegs.value = partials
   } else {
-    exitLegs.value = [makeExitLeg({
+    resetPrimaryExit({
       price: Number(trade.actual_exit_price ?? trade.entry_price),
       quantity_lots: Number(trade.lot_size),
       executed_at: form.date,
-    })]
+    })
+    exitLegs.value = []
   }
   setPsychologyFromPayload(tradePsychology ?? trade.psychology ?? null)
 
-  showAdvanced.value = Boolean(
-    form.session_enum
-    || form.strategy_model_id
-    || form.setup_id
-    || form.killzone_id
-    || form.emotion !== 'neutral'
-    || form.followed_rules === false
+}
+
+function roundLot(value: number) {
+  return Math.max(0.0001, Math.round(value * 10_000) / 10_000)
+}
+
+function formatPriceField(field: 'entry_price' | 'stop_loss' | 'take_profit') {
+  const value = toNumber(form[field])
+  if (!(value > 0)) return
+  form[field] = Number(value.toFixed(6))
+}
+
+function formatLotField(field: 'position_size') {
+  const value = roundLot(toNumber(form[field]))
+  form[field] = value
+}
+
+function onQuickTicketEnter(event: KeyboardEvent) {
+  const target = event.target as HTMLElement | null
+  const currentTarget = event.currentTarget as HTMLElement | null
+  if (!target || !currentTarget) return
+  if (!(target instanceof HTMLInputElement)) return
+
+  const controls = Array.from(
+    currentTarget.querySelectorAll<HTMLInputElement>('input:not([disabled]):not([type="hidden"])')
   )
+  const index = controls.findIndex((control) => control === target)
+  if (index < 0) return
+
+  event.preventDefault()
+
+  const next = controls[index + 1]
+  if (!next) {
+    target.blur()
+    return
+  }
+
+  next.focus()
+  next.select()
+}
+
+async function applySmartDefaultsFromLastTrade() {
+  if (isEditMode.value || loadingSmartDefaults.value) return
+  loadingSmartDefaults.value = true
+
+  try {
+    const { data } = await api.get<Paginated<Trade>>('/trades', {
+      params: {
+        page: 1,
+        per_page: 10,
+      },
+    })
+
+    const latestTrade = (data.data ?? [])
+      .slice()
+      .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())[0]
+
+    if (!latestTrade) return
+
+    if (!form.account_id && latestTrade.account_id) {
+      form.account_id = String(latestTrade.account_id)
+    }
+    if (!form.strategy_model_id && latestTrade.strategy_model_id) {
+      form.strategy_model_id = String(latestTrade.strategy_model_id)
+    }
+    if (!form.setup_id && latestTrade.setup_id) {
+      form.setup_id = String(latestTrade.setup_id)
+    }
+    if (!form.killzone_id && latestTrade.killzone_id) {
+      form.killzone_id = String(latestTrade.killzone_id)
+    }
+    if (!form.session_enum && latestTrade.session_enum) {
+      form.session_enum = latestTrade.session_enum
+    }
+
+    if (toNumber(form.commission) === 0) {
+      form.commission = Number(latestTrade.commission ?? 0)
+    }
+    if (toNumber(form.swap) === 0) {
+      form.swap = Number(latestTrade.swap ?? 0)
+    }
+    if (toNumber(form.spread_cost) === 0) {
+      form.spread_cost = Number(latestTrade.spread_cost ?? 0)
+    }
+    if (toNumber(form.slippage_cost) === 0) {
+      form.slippage_cost = Number(latestTrade.slippage_cost ?? 0)
+    }
+
+    if (!form.instrument_id && latestTrade.instrument_id) {
+      form.instrument_id = String(latestTrade.instrument_id)
+    } else if (!form.instrument_id && latestTrade.pair) {
+      selectInstrumentBySymbol(latestTrade.pair)
+    }
+  } catch {
+    // Keep deterministic fallback defaults when no previous trade can be fetched.
+  } finally {
+    loadingSmartDefaults.value = false
+  }
 }
 
 function applyQuickDefaultsFromQuery() {
@@ -679,35 +661,51 @@ const formErrors = computed<Record<string, string>>(() => {
   if (commission < 0) errors.commission = 'Commission cannot be negative.'
   if (spreadCost < 0) errors.spread_cost = 'Spread cost cannot be negative.'
   if (slippageCost < 0) errors.slippage_cost = 'Slippage cost cannot be negative.'
+  if (totalImageCount.value === 0) errors.images = 'At least one screenshot is required.'
+  if (!tradeCompleted.value) errors.trade_completed = 'Mark trade as completed to log this execution.'
 
-  if (exitLegs.value.length === 0) {
-    errors.legs = 'Add at least one exit leg.'
-  }
+  if (tradeCompleted.value) {
+    const primaryPrice = toNumber(primaryExit.price)
+    const primaryQty = toNumber(primaryExit.quantity_lots)
+    const primaryDate = parseLocalDateTime(primaryExit.executed_at)
 
-  let exitQuantity = 0
-  for (let index = 0; index < exitLegs.value.length; index += 1) {
-    const leg = exitLegs.value[index]!
-    const price = toNumber(leg.price)
-    const quantity = toNumber(leg.quantity_lots)
-    const legDate = parseLocalDateTime(leg.executed_at)
-
-    if (!(price > 0)) {
-      errors[`legs.${index}.price`] = `Exit leg ${index + 1} price must be greater than 0.`
+    if (!(primaryPrice > 0)) {
+      errors.exit_price = 'Exit price must be greater than 0.'
     }
-    if (!(quantity > 0)) {
-      errors[`legs.${index}.quantity_lots`] = `Exit leg ${index + 1} quantity must be greater than 0.`
+    if (!(primaryQty > 0)) {
+      errors.exit_quantity = 'Exit size must be greater than 0.'
     }
-    if (legDate === null) {
-      errors[`legs.${index}.executed_at`] = `Exit leg ${index + 1} execution time is required.`
-    } else if (legDate > now + 60_000) {
-      errors[`legs.${index}.executed_at`] = `Exit leg ${index + 1} execution time cannot be in the future.`
+    if (primaryDate === null) {
+      errors.exit_time = 'Exit date/time is required.'
+    } else if (primaryDate > now + 60_000) {
+      errors.exit_time = 'Exit date/time cannot be in the future.'
     }
 
-    exitQuantity += quantity
-  }
+    let exitQuantity = primaryQty
+    for (let index = 0; index < exitLegs.value.length; index += 1) {
+      const leg = exitLegs.value[index]!
+      const price = toNumber(leg.price)
+      const quantity = toNumber(leg.quantity_lots)
+      const legDate = parseLocalDateTime(leg.executed_at)
 
-  if (positionSize > 0 && exitQuantity > (positionSize + 0.0001)) {
-    errors.legs = 'Total exit quantity cannot exceed position size.'
+      if (!(price > 0)) {
+        errors[`legs.${index}.price`] = `Partial exit ${index + 1} price must be greater than 0.`
+      }
+      if (!(quantity > 0)) {
+        errors[`legs.${index}.quantity_lots`] = `Partial exit ${index + 1} size must be greater than 0.`
+      }
+      if (legDate === null) {
+        errors[`legs.${index}.executed_at`] = `Partial exit ${index + 1} time is required.`
+      } else if (legDate > now + 60_000) {
+        errors[`legs.${index}.executed_at`] = `Partial exit ${index + 1} time cannot be in the future.`
+      }
+
+      exitQuantity += quantity
+    }
+
+    if (positionSize > 0 && exitQuantity > (positionSize + 0.0001)) {
+      errors.legs = 'Total exit size cannot exceed position size.'
+    }
   }
 
   if (entry > 0 && stop > 0 && entry === stop) {
@@ -746,6 +744,10 @@ function extractErrorMessage(error: unknown): string {
 }
 
 function buildPayload(): TradePayload {
+  if (!tradeCompleted.value) {
+    throw new Error('Trade must be marked complete before saving.')
+  }
+
   const closeDate = parseLocalDateTime(form.date)
   if (closeDate === null) {
     throw new Error('Close date is invalid.')
@@ -786,6 +788,14 @@ function buildPayload(): TradePayload {
       fees: 0,
       notes: null,
     },
+    {
+      leg_type: 'exit' as const,
+      price: Number(primaryExit.price),
+      quantity_lots: Number(primaryExit.quantity_lots),
+      executed_at: new Date(parseLocalDateTime(primaryExit.executed_at) ?? closeDate).toISOString(),
+      fees: Number(primaryExit.fees || 0),
+      notes: primaryExit.notes.trim() ? primaryExit.notes.trim() : null,
+    },
     ...exitLegs.value.map((leg) => {
       const executedAt = parseLocalDateTime(leg.executed_at)
       return {
@@ -803,7 +813,7 @@ function buildPayload(): TradePayload {
     .filter((leg) => leg.leg_type === 'exit')
     .reduce((sum, leg) => sum + leg.quantity_lots, 0)
   if (exitQuantity <= 0) {
-    throw new Error('At least one exit leg is required.')
+    throw new Error('Exit details are required.')
   }
 
   const weightedExitPrice = exitQuantity > 0
@@ -1080,15 +1090,46 @@ function buildPsychologyPayload() {
   }
 }
 
-async function submitForm() {
+function resetFormForNextExecution() {
+  submitAttempted.value = false
+  precheckError.value = ''
+  precheckResult.value = null
+  tradeCompleted.value = true
+
+  form.date = nowLocalDateTime()
+  form.entry_price = 0
+  form.stop_loss = 0
+  form.take_profit = 0
+  form.position_size = roundLot(Math.max(0.01, toNumber(form.position_size)))
+  form.risk_override_reason = ''
+  form.notes = ''
+  form.tag_ids = []
+  form.tag_search = ''
+  form.followed_rules = true
+  form.emotion = 'neutral'
+  setPsychologyFromPayload(null)
+
+  existingImages.value = []
+  clearPendingImages()
+  ensureDefaultExitLeg()
+}
+
+function handleGlobalHotkeys(event: KeyboardEvent) {
+  const key = event.key.toLowerCase()
+  if (!(event.ctrlKey || event.metaKey)) return
+
+  if (key === 's') {
+    event.preventDefault()
+    const action = (!isEditMode.value && event.shiftKey) ? 'save_and_new' : 'save'
+    void submitForm(action)
+  }
+}
+
+async function submitForm(action: 'save' | 'save_and_new' = 'save') {
+  pendingSubmitAction.value = action
   submitAttempted.value = true
   const firstError = Object.values(formErrors.value)[0]
   if (firstError) {
-    uiStore.toast({
-      type: 'error',
-      title: 'Invalid execution input',
-      message: firstError,
-    })
     return
   }
 
@@ -1102,11 +1143,6 @@ async function submitForm() {
   }
 
   if (isSaveBlocked.value) {
-    uiStore.toast({
-      type: 'error',
-      title: 'Trade blocked by risk policy',
-      message: 'Review risk violations or provide override reason if policy allows.',
-    })
     return
   }
 
@@ -1133,6 +1169,17 @@ async function submitForm() {
         : `${payload.symbol} has been saved to your execution journal.`,
     })
 
+    if (pendingSubmitAction.value === 'save_and_new' && !isEditMode.value) {
+      resetFormForNextExecution()
+      schedulePrecheck()
+      uiStore.toast({
+        type: 'success',
+        title: 'Ready for next execution',
+        message: 'Saved. Ticket reset with your smart defaults.',
+      })
+      return
+    }
+
     void router.push('/trades')
   } catch (error) {
     uiStore.toast({
@@ -1145,13 +1192,14 @@ async function submitForm() {
 
 async function loadTradeIfNeeded() {
   if (!isEditMode.value || tradeId.value === null) {
+    tradeCompleted.value = true
     form.date = nowLocalDateTime()
     ensureDefaultExitLeg()
     setPsychologyFromPayload(null)
-    showAdvanced.value = false
     return
   }
 
+  tradeCompleted.value = true
   loadingTrade.value = true
   try {
     const data = await tradeStore.fetchTradeDetails(tradeId.value)
@@ -1172,6 +1220,8 @@ async function loadTradeIfNeeded() {
 }
 
 onMounted(async () => {
+  window.addEventListener('keydown', handleGlobalHotkeys)
+
   try {
     await Promise.all([
       accountStore.fetchAccounts(),
@@ -1185,6 +1235,8 @@ onMounted(async () => {
       message: 'Please refresh and try again.',
     })
   }
+
+  await applySmartDefaultsFromLastTrade()
 
   if (!isEditMode.value && !form.account_id && accountSelectOptions.value.length > 0) {
     form.account_id = accountSelectOptions.value[0]?.value ?? ''
@@ -1258,6 +1310,11 @@ watch(
     form.spread_cost,
     form.slippage_cost,
     form.risk_override_reason,
+    tradeCompleted.value,
+    primaryExit.price,
+    primaryExit.quantity_lots,
+    primaryExit.executed_at,
+    primaryExit.fees,
   ],
   () => {
     schedulePrecheck()
@@ -1280,6 +1337,7 @@ watch(
 )
 
 onBeforeUnmount(() => {
+  window.removeEventListener('keydown', handleGlobalHotkeys)
   clearPendingImages()
   if (precheckTimer) {
     clearTimeout(precheckTimer)
@@ -1346,89 +1404,136 @@ async function loadImage(file: File): Promise<HTMLImageElement> {
 </script>
 
 <template>
-  <div class="space-y-4 trade-form-minimal">
-    <GlassPanel class="form-command-shell">
-      <div class="form-command-bar">
-        <div class="form-command-left">
-          <h2 class="section-title">{{ pageTitle }}</h2>
-          <p class="section-note">Minimal execution ticket with server-calculated results.</p>
-          <div class="form-command-chips">
-            <span class="filter-chip-mini">Entry</span>
-            <span class="filter-chip-mini">Exit</span>
-            <span class="filter-chip-mini">Notes</span>
-            <span class="filter-chip-mini">Images</span>
-          </div>
-        </div>
-        <div class="form-command-right">
-          <button type="button" class="btn btn-ghost inline-flex items-center gap-2 px-3 py-2 text-sm" @click="router.push('/trades')">
-            <ArrowLeft class="h-4 w-4" />
-            Back
-          </button>
-          <button
-            type="submit"
-            :form="tradeFormId"
-            class="btn btn-primary px-4 py-2 text-sm"
-            :disabled="tradeStore.saving || uploadingImages || loadingTrade || precheckLoading || isSaveBlocked"
-          >
-            {{
-              uploadingImages
-                ? 'Uploading...'
-                : tradeStore.saving
-                  ? 'Saving...'
-                  : isEditMode ? 'Update' : 'Save'
-            }}
-          </button>
-        </div>
-      </div>
-    </GlassPanel>
-
-    <GlassPanel class="form-shell-panel">
-
+  <div class="space-y-4 trade-form-minimal execution-long-page">
+    <GlassPanel class="form-shell-panel execution-long-shell">
       <div v-if="loadingTrade" class="space-y-3">
         <div class="skeleton-shimmer h-12 rounded-xl" />
         <div class="skeleton-shimmer h-12 rounded-xl" />
         <div class="skeleton-shimmer h-12 rounded-xl" />
       </div>
 
-      <form v-else :id="tradeFormId" class="form-block space-y-4" @submit.prevent="submitForm">
-        <p class="trade-form-disclaimer">
-          P/L, risk, and R are recalculated server-side on save.
-        </p>
+      <form v-else :id="tradeFormId" class="form-block space-y-4" @submit.prevent="submitForm('save')">
+        <div class="execution-long-header">
+          <div>
+            <h2 class="section-title">{{ pageTitle }}</h2>
+            <p class="section-note">One long form from entry to exit, with lighter section borders.</p>
+          </div>
+          <button type="button" class="btn btn-ghost inline-flex items-center gap-2 px-3 py-2 text-sm" @click="router.push('/trades')">
+            <ArrowLeft class="h-4 w-4" />
+            Back
+          </button>
+        </div>
 
-        <section class="trade-form-section">
-          <p class="trade-section-title">Entry</p>
-          <div class="grid grid-premium md:grid-cols-2 xl:grid-cols-3">
-            <BaseDateTime
-              v-model="form.date"
-              label="Date"
+        <p class="trade-form-disclaimer">
+          Ctrl+S to save. Ctrl+Shift+S to save and open a fresh ticket.
+        </p>
+        <p v-if="blockedSummary" class="field-error-text">{{ blockedSummary }}</p>
+
+        <section class="trade-form-section execution-long-section">
+          <div class="execution-section-heading">
+            <TrendingUp class="execution-section-icon h-5 w-5" />
+            <p class="section-title">Entry Details</p>
+          </div>
+
+          <div class="grid grid-premium md:grid-cols-2 execution-entry-grid" @keydown.enter="onQuickTicketEnter">
+            <BaseSelect
+              v-model="form.instrument_id"
+              label="Instrument / Pair"
               required
-              :max="closeDateMax"
-              :error="fieldError('date')"
+              searchable
+              search-placeholder="Search pair..."
+              :options="instrumentSelectOptions"
+              :error="fieldError('instrument_id')"
             />
             <BaseSelect
               v-model="form.account_id"
-              label="Account"
+              label="Accounts"
               required
               searchable
               search-placeholder="Search account..."
               :options="accountSelectOptions"
               :error="fieldError('account_id')"
             />
-            <BaseSelect
-              v-model="form.instrument_id"
-              label="Instrument"
+            <BaseInput
+              v-model="form.position_size"
+              label="Position Size (Units)"
+              type="number"
               required
-              searchable
-              search-placeholder="Search instrument..."
-              :options="instrumentSelectOptions"
-              :error="fieldError('instrument_id')"
+              min="0.0001"
+              step="0.0001"
+              :error="fieldError('position_size')"
+              @blur="formatLotField('position_size')"
+            />
+            <BaseSelect v-model="form.direction" label="Trade Type" :options="directionOptions" />
+            <BaseDateTime
+              v-model="form.date"
+              label="Date & Entry Time"
+              required
+              :max="closeDateMax"
+              :error="fieldError('date')"
+            />
+            <div class="panel execution-tag-panel">
+              <p class="kicker-label">Tags</p>
+              <BaseInput
+                v-model="form.tag_search"
+                class="mt-2 execution-tag-search"
+                label="Search Tags"
+                placeholder="Type to search tags..."
+              />
+              <div v-if="filteredTagOptions.length > 0" class="mt-2 flex flex-wrap gap-2">
+                <button
+                  v-for="tag in filteredTagOptions.slice(0, 10)"
+                  :key="`tag-option-${tag.id}`"
+                  type="button"
+                  class="chip-btn"
+                  @click="addTag(tag.id)"
+                >
+                  + {{ tag.name }}
+                </button>
+              </div>
+              <div class="mt-2 flex flex-wrap gap-2">
+                <span v-for="tag in selectedTags" :key="`selected-tag-${tag.id}`" class="pill pill-positive inline-flex items-center gap-1">
+                  {{ tag.name }}
+                  <button type="button" class="btn btn-ghost p-0 text-xs" @click="removeTag(tag.id)">x</button>
+                </span>
+              </div>
+            </div>
+            <BaseInput
+              v-model="form.entry_price"
+              label="Entry Price"
+              type="number"
+              required
+              min="0.000001"
+              step="0.000001"
+              :error="fieldError('entry_price')"
+              @blur="formatPriceField('entry_price')"
+            />
+            <BaseInput
+              v-model="form.stop_loss"
+              label="Stop Loss"
+              type="number"
+              required
+              min="0.000001"
+              step="0.000001"
+              :error="fieldError('stop_loss')"
+              @blur="formatPriceField('stop_loss')"
+            />
+            <BaseInput
+              v-model="form.take_profit"
+              label="Take Profit"
+              type="number"
+              required
+              min="0.000001"
+              step="0.000001"
+              :error="fieldError('take_profit')"
+              @blur="formatPriceField('take_profit')"
             />
             <BaseSelect
               v-model="form.strategy_model_id"
-              label="Strategy Model"
+              label="Strategy"
               required
               searchable
-              search-placeholder="Search strategy model..."
+              search-placeholder="Search strategy..."
               :options="strategyModelOptions"
               :error="fieldError('strategy_model_id')"
             />
@@ -1457,304 +1562,166 @@ async function loadImage(file: File): Promise<HTMLImageElement> {
               :options="sessionEnumOptions"
               :error="fieldError('session_enum')"
             />
-            <BaseInput
-              :model-value="instrumentSymbol"
-              label="Symbol"
-              readonly
-              placeholder="Select instrument"
-            />
-            <BaseSelect v-model="form.direction" label="Direction" :options="directionOptions" />
-            <BaseInput
-              v-model="form.entry_price"
-              label="Entry Price"
-              type="number"
-              required
-              min="0.000001"
-              step="0.000001"
-              :error="fieldError('entry_price')"
-            />
-            <BaseInput
-              v-model="form.position_size"
-              label="Position Size (Lot)"
-              type="number"
-              required
-              min="0.0001"
-              step="0.0001"
-              :error="fieldError('position_size')"
-            />
-          </div>
-
-          <div v-if="selectedInstrument" class="panel mt-3 p-3 text-xs">
-            <p class="kicker-label">Instrument Spec</p>
-            <div class="mt-2 grid grid-cols-2 gap-2 md:grid-cols-4">
-              <p>Class: <strong>{{ selectedInstrument.asset_class }}</strong></p>
-              <p>Contract: <strong>{{ selectedInstrument.contract_size }}</strong></p>
-              <p>Tick Size: <strong>{{ selectedInstrument.tick_size }}</strong></p>
-              <p>Tick Value: <strong>{{ selectedInstrument.tick_value }}</strong></p>
-            </div>
-          </div>
-
-          <div class="mt-3">
-            <button type="button" class="btn btn-ghost px-3 py-1.5 text-xs" @click="showAdvanced = !showAdvanced">
-              {{ showAdvanced ? 'Hide Advanced' : 'Advanced' }}
-            </button>
-          </div>
-
-          <Transition name="fade">
-            <div v-if="showAdvanced" class="mt-3 grid grid-premium md:grid-cols-2 xl:grid-cols-3">
-              <BaseSelect v-model="form.emotion" label="Emotion" :options="emotionSelectOptions" />
-              <label class="trade-checkbox-label">
-                <input v-model="form.followed_rules" type="checkbox" class="h-4 w-4" />
-                Followed Rules
-              </label>
-            </div>
-          </Transition>
-
-          <div class="panel mt-3 p-3">
-            <p class="kicker-label">Tags</p>
-            <div class="mt-2 flex flex-wrap gap-2">
-              <span v-for="tag in selectedTags" :key="`selected-tag-${tag.id}`" class="pill pill-positive inline-flex items-center gap-1">
-                {{ tag.name }}
-                <button type="button" class="btn btn-ghost p-0 text-xs" @click="removeTag(tag.id)">x</button>
-              </span>
-              <span v-if="selectedTags.length === 0" class="section-note">No tags selected</span>
-            </div>
-            <BaseInput
-              v-model="form.tag_search"
-              class="mt-2"
-              label="Search Tags"
-              placeholder="Type tag name..."
-            />
-            <div v-if="filteredTagOptions.length > 0" class="mt-2 flex flex-wrap gap-2">
-              <button
-                v-for="tag in filteredTagOptions.slice(0, 12)"
-                :key="`tag-option-${tag.id}`"
-                type="button"
-                class="chip-btn"
-                @click="addTag(tag.id)"
-              >
-                + {{ tag.name }}
-              </button>
-            </div>
+            <label class="trade-checkbox-label execution-checklist md:col-span-2">
+              <input v-model="form.followed_rules" type="checkbox" class="h-4 w-4" />
+              Rules Checklist: trade follows my plan
+            </label>
           </div>
         </section>
 
-        <section class="trade-form-section">
-          <p class="trade-section-title">Exit</p>
-          <div class="grid grid-premium md:grid-cols-2 xl:grid-cols-2">
-            <BaseInput
-              v-model="form.stop_loss"
-              label="Stop Loss"
-              type="number"
-              required
-              min="0.000001"
-              step="0.000001"
-              :error="fieldError('stop_loss')"
-            />
-            <BaseInput
-              v-model="form.take_profit"
-              label="Take Profit"
-              type="number"
-              required
-              min="0.000001"
-              step="0.000001"
-              :error="fieldError('take_profit')"
-            />
+        <section class="trade-form-section execution-long-section">
+          <div class="execution-section-heading">
+            <DollarSign class="execution-section-icon h-5 w-5" />
+            <p class="section-title">Exit Details</p>
           </div>
-          <p v-if="fieldError('legs')" class="field-error-text mt-2">{{ fieldError('legs') }}</p>
-          <div class="panel mt-3 p-3">
-            <div class="flex flex-wrap items-center justify-between gap-2">
-              <p class="kicker-label">Exit Legs (Partials)</p>
-              <button type="button" class="btn btn-ghost px-3 py-1.5 text-xs" @click="addExitLeg">
-                Add Exit Leg
-              </button>
-            </div>
 
-            <div class="mt-3 space-y-3">
-              <div v-for="(leg, index) in exitLegs" :key="leg.id" class="rounded-xl border border-white/10 p-3">
-                <div class="mb-2 flex items-center justify-between gap-2">
-                  <p class="text-sm font-semibold text-white/90">Leg {{ index + 1 }}</p>
-                  <button
-                    type="button"
-                    class="btn btn-ghost px-2 py-1 text-xs"
-                    :disabled="exitLegs.length <= 1"
-                    @click="removeExitLeg(leg.id)"
-                  >
-                    Remove
-                  </button>
-                </div>
-                <div class="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-                  <BaseInput
-                    v-model="leg.price"
-                    label="Exit Price"
-                    type="number"
-                    min="0.000001"
-                    step="0.000001"
-                    :error="fieldError(`legs.${index}.price`)"
-                  />
-                  <BaseInput
-                    v-model="leg.quantity_lots"
-                    label="Quantity (Lot)"
-                    type="number"
-                    min="0.0001"
-                    step="0.0001"
-                    :error="fieldError(`legs.${index}.quantity_lots`)"
-                  />
-                  <BaseDateTime
-                    v-model="leg.executed_at"
-                    label="Executed At"
-                    :max="closeDateMax"
-                    :error="fieldError(`legs.${index}.executed_at`)"
-                  />
-                  <BaseInput
-                    v-model="leg.fees"
-                    label="Leg Fees"
-                    type="number"
-                    step="0.01"
-                  />
-                </div>
+          <label class="trade-checkbox-label execution-inline-check">
+            <input v-model="tradeCompleted" type="checkbox" class="h-4 w-4" />
+            Trade is completed
+          </label>
+          <p v-if="fieldError('trade_completed')" class="field-error-text mt-2">{{ fieldError('trade_completed') }}</p>
+
+          <div v-if="tradeCompleted" class="execution-exit-stack">
+            <article class="panel execution-partial-card">
+              <div class="execution-partial-head">
+                <p class="text-sm font-semibold">Main Exit</p>
+                <button type="button" class="chip-btn" @click="void runPrecheck()">Recalculate</button>
+              </div>
+              <div class="grid grid-premium md:grid-cols-2 xl:grid-cols-4">
                 <BaseInput
-                  v-model="leg.notes"
-                  class="mt-2"
-                  label="Leg Note (Optional)"
+                  v-model="primaryExit.price"
+                  label="Exit Price"
+                  type="number"
+                  min="0.000001"
+                  step="0.000001"
+                  :error="fieldError('exit_price')"
+                />
+                <BaseInput
+                  v-model="primaryExit.quantity_lots"
+                  label="Exit Size"
+                  type="number"
+                  min="0.0001"
+                  step="0.0001"
+                  :error="fieldError('exit_quantity')"
+                />
+                <BaseInput
+                  v-model="primaryExit.fees"
+                  label="Commission Fee"
+                  type="number"
+                  step="0.01"
+                />
+                <BaseInput
+                  :model-value="estimateLegPnlLabel(primaryExit)"
+                  label="P&L"
+                  disabled
+                />
+                <BaseDateTime
+                  v-model="primaryExit.executed_at"
+                  label="Exit Date & Time"
+                  :max="closeDateMax"
+                  :show-quick-actions="false"
+                  :error="fieldError('exit_time')"
+                />
+                <BaseInput
+                  v-model="primaryExit.notes"
+                  label="Exit Note"
                   multiline
                   :rows="1"
-                  placeholder="Scale-out reason, execution quality..."
+                  placeholder="Optional note for the main exit..."
                 />
               </div>
-            </div>
-
-            <div class="mt-3 grid gap-2 text-xs md:grid-cols-3">
-              <p>Total Exit Qty: <strong>{{ exitLegSummary.quantity.toFixed(4) }}</strong> lot</p>
-              <p>Weighted Exit: <strong>{{ exitLegSummary.weightedPrice.toFixed(6) }}</strong></p>
-              <p>Leg Fees: <strong>{{ asCurrency(exitLegSummary.fees) }}</strong></p>
-            </div>
-          </div>
-        </section>
-
-        <section class="trade-form-section">
-          <p class="trade-section-title">Execution Costs</p>
-          <div class="grid grid-premium md:grid-cols-2 xl:grid-cols-4">
-            <BaseInput
-              v-model="form.commission"
-              label="Commission"
-              type="number"
-              min="0"
-              step="0.01"
-              :error="fieldError('commission')"
-            />
-            <BaseInput
-              v-model="form.swap"
-              label="Swap"
-              type="number"
-              step="0.01"
-            />
-            <BaseInput
-              v-model="form.spread_cost"
-              label="Spread Cost"
-              type="number"
-              min="0"
-              step="0.01"
-              :error="fieldError('spread_cost')"
-            />
-            <BaseInput
-              v-model="form.slippage_cost"
-              label="Slippage Cost"
-              type="number"
-              min="0"
-              step="0.01"
-              :error="fieldError('slippage_cost')"
-            />
-          </div>
-        </section>
-
-        <section class="trade-form-section trade-estimate-quiet">
-          <div class="section-head">
-            <p class="trade-section-title">Live Estimate</p>
-            <span class="section-note">Preview only</span>
-          </div>
-          <p v-if="liveEstimate.error" class="field-error-text">{{ liveEstimate.error }}</p>
-          <div v-else-if="liveEstimate.ready" class="trade-preview-stack">
-            <article class="trade-preview-primary">
-              <p>Net P/L</p>
-              <strong :class="liveEstimate.netPnl >= 0 ? 'positive' : 'negative'">
-                {{ asSignedCurrency(liveEstimate.netPnl) }}
-              </strong>
             </article>
 
-            <details class="trade-estimate-details">
-              <summary>Show gross/cost breakdown</summary>
-              <div class="trade-preview-secondary">
-                <article>
-                  <p>Risk</p>
-                  <strong class="negative">{{ asSignedCurrency(-Math.abs(liveEstimate.riskAmount)) }}</strong>
-                </article>
-                <article>
-                  <p>Target Gross</p>
-                  <strong :class="liveEstimate.targetGrossPnl >= 0 ? 'positive' : 'negative'">
-                    {{ asSignedCurrency(liveEstimate.targetGrossPnl) }}
-                  </strong>
-                </article>
-                <article>
-                  <p>Gross P/L</p>
-                  <strong :class="liveEstimate.grossPnl >= 0 ? 'positive' : 'negative'">
-                    {{ asSignedCurrency(liveEstimate.grossPnl) }}
-                  </strong>
-                </article>
-                <article>
-                  <p>Weighted Exit</p>
-                  <strong class="value-display">{{ liveEstimate.weightedExitPrice.toFixed(6) }}</strong>
-                </article>
-                <article>
-                  <p>Costs</p>
-                  <strong class="negative">
-                    {{ asSignedCurrency(-Math.abs(liveEstimate.costsTotal)) }}
-                  </strong>
-                </article>
-                <article>
-                  <p>Exit Qty</p>
-                  <strong class="value-display">{{ liveEstimate.exitQuantity.toFixed(4) }} lot</strong>
-                </article>
-                <article>
-                  <p>R @ Exit</p>
-                  <strong class="value-display">{{ liveEstimate.rAtExit.toFixed(2) }}R</strong>
-                </article>
-                <article>
-                  <p>Plan R:R</p>
-                  <strong class="value-display">{{ liveEstimate.rrPlan.toFixed(2) }}R</strong>
-                </article>
+            <div class="execution-exit-actions">
+              <p class="kicker-label m-0">Partial Exits (Optional)</p>
+              <button type="button" class="btn btn-ghost px-3 py-1.5 text-xs" @click="addExitLeg">
+                Add Partial Exit
+              </button>
+            </div>
+            <p v-if="fieldError('legs')" class="field-error-text">{{ fieldError('legs') }}</p>
+
+            <article v-for="(leg, index) in exitLegs" :key="leg.id" class="panel execution-partial-card">
+              <div class="execution-partial-head">
+                <p class="text-sm font-semibold">Partial Exit #{{ index + 1 }}</p>
+                <button
+                  type="button"
+                  class="btn btn-ghost px-2 py-1 text-xs"
+                  @click="removeExitLeg(leg.id)"
+                >
+                  Remove
+                </button>
               </div>
-            </details>
+              <div class="grid grid-premium md:grid-cols-2 xl:grid-cols-4">
+                <BaseInput
+                  v-model="leg.price"
+                  label="Exit Price"
+                  type="number"
+                  min="0.000001"
+                  step="0.000001"
+                  :error="fieldError(`legs.${index}.price`)"
+                />
+                <BaseInput
+                  v-model="leg.quantity_lots"
+                  label="Exit Size"
+                  type="number"
+                  min="0.0001"
+                  step="0.0001"
+                  :error="fieldError(`legs.${index}.quantity_lots`)"
+                />
+                <BaseInput
+                  v-model="leg.fees"
+                  label="Commission Fee"
+                  type="number"
+                  step="0.01"
+                />
+                <BaseInput
+                  :model-value="estimateLegPnlLabel(leg)"
+                  label="P&L"
+                  disabled
+                />
+                <BaseDateTime
+                  v-model="leg.executed_at"
+                  label="Exit Date & Time"
+                  :max="closeDateMax"
+                  :show-quick-actions="false"
+                  :error="fieldError(`legs.${index}.executed_at`)"
+                />
+                <BaseInput
+                  v-model="leg.notes"
+                  label="Exit Note"
+                  multiline
+                  :rows="1"
+                  placeholder="Optional note for this partial exit..."
+                />
+              </div>
+            </article>
+
+            <div class="execution-exit-summary">
+              <p>Total Exit Size: <strong>{{ exitLegSummary.quantity.toFixed(4) }}</strong></p>
+              <p>Average Exit Price: <strong>{{ exitLegSummary.weightedPrice.toFixed(6) }}</strong></p>
+              <p>Total Exit Fees: <strong>{{ asCurrency(exitLegSummary.fees) }}</strong></p>
+            </div>
           </div>
-          <p v-else class="section-note">Select instrument and enter Entry/SL/TP/Size plus at least one exit leg.</p>
         </section>
 
-        <section class="trade-form-section">
+        <section class="trade-form-section execution-long-section">
           <div class="section-head">
-            <p class="trade-section-title">Risk Policy Precheck</p>
-            <span class="section-note">
-              <template v-if="precheckLoading">Checking...</template>
-              <template v-else-if="precheckResult?.allowed">Allowed</template>
-              <template v-else-if="precheckResult">Blocked</template>
-              <template v-else>Awaiting inputs</template>
-            </span>
+            <p class="trade-section-title">Risk Check</p>
+            <span class="filter-chip-mini" :class="riskStatusClass">{{ riskStatusLabel }}</span>
           </div>
           <p v-if="precheckError" class="field-error-text">{{ precheckError }}</p>
           <div v-else-if="precheckResult" class="panel p-3 text-sm">
-            <p :class="precheckResult.allowed ? 'positive' : 'negative'">
-              {{ precheckResult.allowed ? 'Trade passes account policy.' : 'Trade violates account policy.' }}
-            </p>
+            <div class="grid grid-cols-2 gap-2 text-xs">
+              <p>Risk $: <strong>{{ asCurrency(precheckResult.stats.monetary_risk) }}</strong></p>
+              <p>Risk %: <strong>{{ precheckResult.stats.risk_percent.toFixed(2) }}%</strong></p>
+              <p>Projected Daily Loss %: <strong>{{ precheckResult.stats.projected_daily_loss_pct.toFixed(2) }}%</strong></p>
+              <p>R:R: <strong>{{ precheckResult.calculated.rr.toFixed(2) }}R</strong></p>
+            </div>
             <ul v-if="precheckResult.violations.length > 0" class="mt-2 list-disc pl-5">
               <li v-for="violation in precheckResult.violations" :key="violation.code">
-                {{ violation.message }} ({{ violation.actual.toFixed(2) }} vs limit {{ violation.limit.toFixed(2) }})
+                {{ violation.message }} ({{ violation.actual.toFixed(2) }} vs {{ violation.limit.toFixed(2) }})
               </li>
             </ul>
-            <div class="mt-2 grid grid-cols-2 gap-2 text-xs">
-              <p>Risk %: <strong>{{ precheckResult.stats.risk_percent.toFixed(2) }}%</strong></p>
-              <p>Monetary Risk: <strong>{{ asCurrency(precheckResult.stats.monetary_risk) }}</strong></p>
-              <p>Projected Daily Loss %: <strong>{{ precheckResult.stats.projected_daily_loss_pct.toFixed(2) }}%</strong></p>
-              <p>Projected DD %: <strong>{{ precheckResult.stats.projected_drawdown_pct.toFixed(2) }}%</strong></p>
-            </div>
           </div>
 
           <BaseInput
@@ -1768,87 +1735,8 @@ async function loadImage(file: File): Promise<HTMLImageElement> {
           />
         </section>
 
-        <section class="trade-form-section">
-          <div class="section-head">
-            <p class="trade-section-title">Psychology (Pre/Post)</p>
-            <span class="section-note">Used for expectancy correlation analytics.</span>
-          </div>
-          <div class="grid grid-premium md:grid-cols-2 xl:grid-cols-4">
-            <BaseInput v-model="psychology.pre_emotion" label="Pre Emotion" placeholder="calm / anxious" />
-            <BaseInput v-model="psychology.post_emotion" label="Post Emotion" placeholder="confident / tilted" />
-            <BaseInput
-              v-model="psychology.confidence_score"
-              label="Confidence (1-10)"
-              type="number"
-              min="1"
-              max="10"
-              step="1"
-            />
-            <BaseInput
-              v-model="psychology.stress_score"
-              label="Stress (1-10)"
-              type="number"
-              min="1"
-              max="10"
-              step="1"
-            />
-            <BaseInput
-              v-model="psychology.sleep_hours"
-              label="Sleep Hours"
-              type="number"
-              min="0"
-              max="24"
-              step="0.25"
-            />
-            <label class="trade-checkbox-label">
-              <input v-model="psychology.impulse_flag" type="checkbox" class="h-4 w-4" />
-              Impulse Flag
-            </label>
-            <label class="trade-checkbox-label">
-              <input v-model="psychology.fomo_flag" type="checkbox" class="h-4 w-4" />
-              FOMO Flag
-            </label>
-            <label class="trade-checkbox-label">
-              <input v-model="psychology.revenge_flag" type="checkbox" class="h-4 w-4" />
-              Revenge Flag
-            </label>
-          </div>
-          <BaseInput
-            v-model="psychology.notes"
-            class="mt-3"
-            label="Psychology Notes"
-            multiline
-            :rows="2"
-            placeholder="State trigger, self-talk, discipline notes..."
-          />
-        </section>
-
-        <section class="trade-form-section trade-workflow-loop">
-          <div class="section-head">
-            <p class="trade-section-title">Weekly Review Loop</p>
-            <span class="section-note">Capture -> Triage -> Action Plan -> Follow-up</span>
-          </div>
-
-          <div class="trade-loop-grid">
-            <article v-for="step in weeklyLoopSteps" :key="step.id" class="trade-loop-step" :class="{ 'is-done': step.done }">
-              <p class="trade-loop-step-title">{{ step.title }}</p>
-              <p class="section-note">{{ step.helper }}</p>
-              <span class="trade-loop-step-status">{{ step.done ? 'Ready' : 'Pending' }}</span>
-            </article>
-          </div>
-
-          <div class="trade-loop-actions">
-            <button type="button" class="chip-btn" @click="insertWeeklyLoopTemplate('capture')">Capture</button>
-            <button type="button" class="chip-btn" @click="insertWeeklyLoopTemplate('triage')">Triage</button>
-            <button type="button" class="chip-btn" @click="insertWeeklyLoopTemplate('action_plan')">Action Plan</button>
-            <button type="button" class="chip-btn" @click="insertWeeklyLoopTemplate('follow_up')">Follow-up</button>
-            <span class="section-note">Loop score: {{ weeklyLoopScore }}/100</span>
-          </div>
-        </section>
-
-        <section class="trade-form-section">
+        <section class="trade-form-section execution-long-section">
           <p class="trade-section-title">Notes</p>
-          <p class="section-note">Use the loop templates to keep weekly review consistent.</p>
           <BaseInput
             v-model="form.notes"
             label="Execution Notes"
@@ -1858,29 +1746,110 @@ async function loadImage(file: File): Promise<HTMLImageElement> {
           />
         </section>
 
-        <TradeImageUploader
-          :existing-images="existingImages"
-          :pending-images="pendingImages"
-          :max-files="MAX_IMAGE_COUNT"
-          :uploading="uploadingImages"
-          :upload-progress="uploadProgressByPendingId"
-          :deleting-image-ids="deletingImageIds"
-          :context-options="imageContextOptions"
-          :error="imageUploadError"
-          @select-files="onSelectImageFiles"
-          @remove-pending="removePendingImage"
-          @remove-existing="removeExistingImage"
-          @reorder-pending="reorderPendingImages"
-          @update-pending-metadata="updatePendingImageMetadata"
-          @update-existing-metadata="updateExistingImageMetadata"
-        />
+        <section class="trade-form-section execution-long-section">
+          <div class="section-head">
+            <p class="trade-section-title">Screenshots</p>
+            <span class="section-note">Required</span>
+          </div>
+          <TradeImageUploader
+            :existing-images="existingImages"
+            :pending-images="pendingImages"
+            :max-files="MAX_IMAGE_COUNT"
+            :uploading="uploadingImages"
+            :upload-progress="uploadProgressByPendingId"
+            :deleting-image-ids="deletingImageIds"
+            :context-options="imageContextOptions"
+            :error="imageUploadError || fieldError('images')"
+            @select-files="onSelectImageFiles"
+            @remove-pending="removePendingImage"
+            @remove-existing="removeExistingImage"
+            @reorder-pending="reorderPendingImages"
+            @update-pending-metadata="updatePendingImageMetadata"
+            @update-existing-metadata="updateExistingImageMetadata"
+          />
+        </section>
 
-        <div class="flex items-center justify-end gap-2 pt-2">
+        <section class="trade-form-section execution-long-section">
+          <details class="trade-estimate-details">
+            <summary>Advanced</summary>
+            <div class="mt-3 space-y-4">
+              <div class="grid grid-premium md:grid-cols-2 xl:grid-cols-4">
+                <BaseSelect v-model="form.emotion" label="Emotion" :options="emotionSelectOptions" />
+                <BaseInput
+                  v-model="form.commission"
+                  label="Commission"
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  :error="fieldError('commission')"
+                />
+                <BaseInput
+                  v-model="form.swap"
+                  label="Swap"
+                  type="number"
+                  step="0.01"
+                />
+                <BaseInput
+                  v-model="form.spread_cost"
+                  label="Spread Cost"
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  :error="fieldError('spread_cost')"
+                />
+                <BaseInput
+                  v-model="form.slippage_cost"
+                  label="Slippage Cost"
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  :error="fieldError('slippage_cost')"
+                />
+                <BaseInput v-model="psychology.pre_emotion" label="Pre Emotion" placeholder="calm / anxious" />
+                <BaseInput v-model="psychology.post_emotion" label="Post Emotion" placeholder="confident / tilted" />
+                <BaseInput
+                  v-model="psychology.confidence_score"
+                  label="Confidence (1-10)"
+                  type="number"
+                  min="1"
+                  max="10"
+                  step="1"
+                />
+                <BaseInput
+                  v-model="psychology.stress_score"
+                  label="Stress (1-10)"
+                  type="number"
+                  min="1"
+                  max="10"
+                  step="1"
+                />
+              </div>
+              <BaseInput
+                v-model="psychology.notes"
+                label="Psychology Notes"
+                multiline
+                :rows="2"
+                placeholder="State trigger, self-talk, discipline notes..."
+              />
+            </div>
+          </details>
+        </section>
+
+        <div class="execution-sticky-bar">
+          <span class="execution-status-chip" :class="riskStatusClass">{{ riskStatusLabel }}</span>
           <button type="button" class="btn btn-ghost px-4 py-2 text-sm" @click="router.push('/trades')">Cancel</button>
+          <button
+            type="button"
+            class="btn btn-secondary px-4 py-2 text-sm"
+            :disabled="isSubmittingDisabled || isEditMode"
+            @click="submitForm('save_and_new')"
+          >
+            Save & New
+          </button>
           <button
             type="submit"
             class="btn btn-primary px-4 py-2 text-sm"
-            :disabled="tradeStore.saving || uploadingImages || precheckLoading || isSaveBlocked"
+            :disabled="isSubmittingDisabled"
           >
             {{
               uploadingImages
