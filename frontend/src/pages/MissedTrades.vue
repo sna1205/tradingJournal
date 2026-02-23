@@ -26,15 +26,19 @@ import EmptyState from '@/components/layout/EmptyState.vue'
 import AnimatedNumber from '@/components/layout/AnimatedNumber.vue'
 import BaseInput from '@/components/form/BaseInput.vue'
 import BaseDateInput from '@/components/form/BaseDateInput.vue'
+import InstrumentPairSelect from '@/components/form/InstrumentPairSelect.vue'
 import { useMissedTradeStore } from '@/stores/missedTradeStore'
+import { useTradeStore } from '@/stores/tradeStore'
 import { useUiStore } from '@/stores/uiStore'
 import type { MissedTrade, MissedTradeImage } from '@/types/trade'
 import { asDate } from '@/utils/format'
 
 const router = useRouter()
 const missedTradeStore = useMissedTradeStore()
+const tradeStore = useTradeStore()
 const uiStore = useUiStore()
 const { missedTrades, pagination, filters, loading, hasFilters } = storeToRefs(missedTradeStore)
+const { instruments } = storeToRefs(tradeStore)
 const detailsOpen = ref(false)
 const detailsLoading = ref(false)
 const detailsEntry = ref<MissedTrade | null>(null)
@@ -42,6 +46,25 @@ const detailsImages = ref<MissedTradeImage[]>([])
 const detailImageIndex = ref(0)
 const activeDetailImage = computed(() => detailsImages.value[detailImageIndex.value] ?? null)
 const filtersExpanded = ref(false)
+
+const selectedFilterInstrumentId = computed({
+  get() {
+    const normalizedPair = filters.value.pair.trim().toUpperCase()
+    if (!normalizedPair) return ''
+    const match = instruments.value.find((instrument) => instrument.symbol === normalizedPair)
+    return match ? String(match.id) : ''
+  },
+  set(value: string) {
+    const id = Number(value)
+    if (!Number.isInteger(id) || id <= 0) {
+      filters.value.pair = ''
+      return
+    }
+
+    const match = instruments.value.find((instrument) => instrument.id === id)
+    filters.value.pair = match?.symbol ?? ''
+  },
+})
 
 const activeFilterPills = computed(() => {
   const pills: string[] = []
@@ -186,6 +209,19 @@ function addDays(value: Date, days: number) {
   return next
 }
 
+function todayLocalDate() {
+  return toLocalDateString(new Date())
+}
+
+const dateFromMax = computed(() => {
+  const today = todayLocalDate()
+  if (!filters.value.date_to) return today
+  return filters.value.date_to < today ? filters.value.date_to : today
+})
+
+const dateToMin = computed(() => filters.value.date_from || undefined)
+const dateToMax = computed(() => todayLocalDate())
+
 function openQuickAddPage() {
   const query: Record<string, string> = { quick: '1' }
   const pair = filters.value.pair.trim()
@@ -265,6 +301,19 @@ async function remove(id: number) {
 }
 
 async function applyFilters() {
+  const today = todayLocalDate()
+  if (
+    (filters.value.date_from && filters.value.date_from > today)
+    || (filters.value.date_to && filters.value.date_to > today)
+  ) {
+    uiStore.toast({
+      type: 'error',
+      title: 'Invalid date range',
+      message: 'Dates cannot be in the future.',
+    })
+    return
+  }
+
   if (filters.value.date_from && filters.value.date_to && filters.value.date_from > filters.value.date_to) {
     uiStore.toast({
       type: 'error',
@@ -278,7 +327,7 @@ async function applyFilters() {
   filtersExpanded.value = false
 }
 
-function setFilterPreset(preset: 'today' | '7d' | '30d' | 'clear') {
+function setFilterPreset(preset: 'today' | '7d' | '30d' | 'uptodate' | 'clear') {
   if (preset === 'clear') {
     filters.value.date_from = ''
     filters.value.date_to = ''
@@ -286,7 +335,15 @@ function setFilterPreset(preset: 'today' | '7d' | '30d' | 'clear') {
   }
 
   const now = new Date()
-  const today = toLocalDateString(now)
+  const today = todayLocalDate()
+
+  if (preset === 'uptodate') {
+    if (filters.value.date_from && filters.value.date_from > today) {
+      filters.value.date_from = today
+    }
+    filters.value.date_to = today
+    return
+  }
 
   if (preset === 'today') {
     filters.value.date_from = today
@@ -318,7 +375,10 @@ async function changePage(delta: number) {
 
 onMounted(async () => {
   try {
-    await missedTradeStore.fetchMissedTrades()
+    await Promise.all([
+      tradeStore.fetchInstruments(),
+      missedTradeStore.fetchMissedTrades(),
+    ])
     filtersExpanded.value = hasFilters.value
   } catch {
     uiStore.toast({
@@ -358,20 +418,30 @@ onMounted(async () => {
       <Transition name="drawer">
         <div v-if="filtersExpanded" class="filter-drawer">
           <div class="form-block mb-4 grid grid-premium md:grid-cols-2 xl:grid-cols-3">
-            <BaseInput v-model="filters.pair" label="Pair" type="text" placeholder="EURUSD" size="sm" />
+            <InstrumentPairSelect
+              v-model="selectedFilterInstrumentId"
+              label="Instrument / Pair"
+              :instruments="instruments"
+              size="sm"
+              clearable
+              all-label="All symbols"
+              placeholder="All symbols"
+              :show-label-help="false"
+            />
             <BaseInput v-model="filters.model" label="Model" type="text" placeholder="Breakout" size="sm" />
             <BaseInput v-model="filters.reason" label="Reason Tag" type="text" placeholder="session:london" size="sm" />
           </div>
 
           <div class="filter-drawer-row">
             <div class="trade-filter-date-grid form-block">
-              <BaseDateInput v-model="filters.date_from" label="Date From" size="sm" :max="filters.date_to || undefined" />
-              <BaseDateInput v-model="filters.date_to" label="Date To" size="sm" :min="filters.date_from || undefined" />
+              <BaseDateInput v-model="filters.date_from" label="Date From" size="sm" :max="dateFromMax" />
+              <BaseDateInput v-model="filters.date_to" label="Date To" size="sm" :min="dateToMin" :max="dateToMax" />
             </div>
             <div class="trade-filter-presets">
               <button type="button" class="chip-btn" @click="setFilterPreset('today')">Today</button>
               <button type="button" class="chip-btn" @click="setFilterPreset('7d')">Last 7D</button>
               <button type="button" class="chip-btn" @click="setFilterPreset('30d')">Last 30D</button>
+              <button type="button" class="chip-btn" @click="setFilterPreset('uptodate')">Up to Date</button>
               <button type="button" class="chip-btn" @click="setFilterPreset('clear')">Clear</button>
             </div>
           </div>

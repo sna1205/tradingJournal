@@ -53,12 +53,15 @@ interface AccountCardGroup {
   rows: AccountCardRow[]
 }
 
+type AccountMode = 'prop' | 'live' | 'demo'
+
 const accountStore = useAccountStore()
 const uiStore = useUiStore()
 const { accounts, loading, saving } = storeToRefs(accountStore)
 
 const analyticsRows = ref<AccountAnalyticsRow[]>([])
 const sparklineByAccountId = ref<Record<number, number[]>>({})
+const propPhaseByAccountId = ref<Record<number, string>>({})
 const loadingAnalytics = ref(false)
 
 const modalOpen = ref(false)
@@ -71,10 +74,17 @@ const challengeSaving = ref(false)
 const challengeSubmitAttempted = ref(false)
 const challengeAccount = ref<Account | null>(null)
 
-const accountTypeOptions = [
-  { label: 'Funded', value: 'funded' },
-  { label: 'Personal', value: 'personal' },
+const accountModeOptions = [
+  { label: 'Prop', value: 'prop' },
+  { label: 'Live', value: 'live' },
   { label: 'Demo', value: 'demo' },
+]
+
+const propPhaseOptions = [
+  { label: 'Phase 1', value: 'Phase 1' },
+  { label: 'Phase 2', value: 'Phase 2' },
+  { label: 'Phase 3', value: 'Phase 3' },
+  { label: 'Funded', value: 'Funded' },
 ]
 
 const statusOptions = [
@@ -92,7 +102,8 @@ const challengeStatusOptions = [
 const form = reactive({
   name: '',
   broker: '',
-  account_type: 'personal' as AccountType,
+  account_mode: 'live' as AccountMode,
+  prop_phase: 'Phase 1',
   starting_balance: 10000,
   currency: 'USD',
   is_active: true,
@@ -110,6 +121,13 @@ const challengeForm = reactive({
   status: 'active' as ChallengeStatus,
   passed_at: '',
   failed_at: '',
+})
+
+const challengePhaseOptions = computed(() => {
+  const current = challengeForm.phase.trim()
+  if (!current) return propPhaseOptions
+  if (propPhaseOptions.some((option) => option.value === current)) return propPhaseOptions
+  return [{ label: current, value: current }, ...propPhaseOptions]
 })
 
 const accountCards = computed<AccountCardRow[]>(() =>
@@ -151,6 +169,7 @@ const accountGroups = computed<AccountCardGroup[]>(() => {
 })
 
 const totalCardCount = computed(() => accountCards.value.length)
+const isPropCreateFlow = computed(() => !isEditing.value && form.account_mode === 'prop')
 
 const formErrors = computed<Record<string, string>>(() => {
   const errors: Record<string, string> = {}
@@ -160,6 +179,9 @@ const formErrors = computed<Record<string, string>>(() => {
   }
   if (!form.broker.trim()) {
     errors.broker = 'Broker is required.'
+  }
+  if (form.account_mode === 'prop' && !form.prop_phase.trim()) {
+    errors.prop_phase = 'Prop phase is required.'
   }
   if (!(Number(form.starting_balance) > 0)) {
     errors.starting_balance = 'Starting balance must be greater than 0.'
@@ -219,7 +241,8 @@ function challengeFieldError(name: string) {
 function resetForm() {
   form.name = ''
   form.broker = ''
-  form.account_type = 'personal'
+  form.account_mode = 'live'
+  form.prop_phase = 'Phase 1'
   form.starting_balance = 10000
   form.currency = 'USD'
   form.is_active = true
@@ -233,17 +256,29 @@ function openCreateModal() {
   modalOpen.value = true
 }
 
-function openEditModal(account: Account) {
+async function openEditModal(account: Account) {
   resetForm()
   isEditing.value = true
   editingId.value = account.id
   form.name = account.name
   form.broker = account.broker
-  form.account_type = account.account_type
+  form.account_mode = accountModeFromAccountType(account.account_type)
+  form.prop_phase = 'Phase 1'
   form.starting_balance = Number(account.starting_balance)
   form.currency = account.currency
   form.is_active = account.is_active
   modalOpen.value = true
+
+  if (form.account_mode !== 'prop') return
+
+  try {
+    const challenge = await accountStore.fetchAccountChallenge(account.id)
+    if (challenge?.phase?.trim()) {
+      form.prop_phase = challenge.phase.trim()
+    }
+  } catch {
+    // Keep modal open with default phase even if challenge fetch fails.
+  }
 }
 
 function closeModal() {
@@ -337,6 +372,7 @@ async function submitChallenge() {
     })
     uiStore.toast({ type: 'success', title: 'Challenge configuration saved' })
     closeChallengeModal()
+    await fetchAnalyticsData()
   } catch (error) {
     uiStore.toast({
       type: 'error',
@@ -352,7 +388,7 @@ function toPayload(): AccountPayload {
   return {
     name: form.name.trim(),
     broker: form.broker.trim(),
-    account_type: form.account_type,
+    account_type: accountTypeFromMode(form.account_mode),
     starting_balance: Number(form.starting_balance),
     currency: form.currency.trim().toUpperCase(),
     is_active: form.is_active,
@@ -373,16 +409,42 @@ async function submitAccount() {
 
   try {
     const payload = toPayload()
+    let savedAccount: Account
     if (isEditing.value && editingId.value !== null) {
-      await accountStore.updateAccount(editingId.value, payload)
+      savedAccount = await accountStore.updateAccount(editingId.value, payload)
       uiStore.toast({ type: 'success', title: 'Account updated' })
     } else {
-      await accountStore.createAccount(payload)
-      uiStore.toast({ type: 'success', title: 'Account created' })
+      savedAccount = await accountStore.createAccount(payload)
+      uiStore.toast({
+        type: 'success',
+        title: form.account_mode === 'prop' ? 'Account created - continue setup' : 'Account created',
+      })
+    }
+
+    if (form.account_mode === 'prop' && !isPropCreateFlow.value) {
+      try {
+        await accountStore.updateAccountChallenge(savedAccount.id, {
+          phase: form.prop_phase.trim(),
+        })
+      } catch {
+        uiStore.toast({
+          type: 'error',
+          title: 'Account saved, phase update failed',
+          message: 'Open the challenge config to set phase manually.',
+        })
+      }
+    }
+
+    await fetchAnalyticsData()
+
+    if (isPropCreateFlow.value) {
+      closeModal()
+      await openChallengeModal(savedAccount)
+      challengeForm.phase = form.prop_phase.trim() || 'Phase 1'
+      return
     }
 
     closeModal()
-    await fetchAnalyticsData()
   } catch (error) {
     uiStore.toast({
       type: 'error',
@@ -421,6 +483,7 @@ async function fetchAnalyticsData() {
     if (accounts.value.length === 0) {
       analyticsRows.value = []
       sparklineByAccountId.value = {}
+      propPhaseByAccountId.value = {}
       return
     }
 
@@ -466,6 +529,20 @@ async function fetchAnalyticsData() {
     )
 
     sparklineByAccountId.value = Object.fromEntries(sparklineEntries)
+
+    const phaseEntries = await Promise.all(
+      accounts.value
+        .filter((account) => account.account_type === 'funded')
+        .map(async (account) => {
+          try {
+            const challenge = await accountStore.fetchAccountChallenge(account.id)
+            return [account.id, normalizePhaseLabel(challenge?.phase)] as const
+          } catch {
+            return [account.id, 'Phase 1'] as const
+          }
+        })
+    )
+    propPhaseByAccountId.value = Object.fromEntries(phaseEntries)
   } finally {
     loadingAnalytics.value = false
   }
@@ -477,6 +554,26 @@ function accountTypeBadgeClass(type: AccountType) {
   return 'pill pill-badge-demo'
 }
 
+function accountBadgeLabel(row: AccountCardRow) {
+  if (row.account.account_type === 'funded') {
+    return normalizePhaseLabel(propPhaseByAccountId.value[row.account.id])
+  }
+  if (row.account.account_type === 'personal') return 'live'
+  return 'demo'
+}
+
+function accountModeFromAccountType(type: AccountType): AccountMode {
+  if (type === 'funded') return 'prop'
+  if (type === 'personal') return 'live'
+  return 'demo'
+}
+
+function accountTypeFromMode(mode: AccountMode): AccountType {
+  if (mode === 'prop') return 'funded'
+  if (mode === 'live') return 'personal'
+  return 'demo'
+}
+
 function accountCardClass(type: AccountType) {
   return type === 'funded' ? 'account-card-funded' : ''
 }
@@ -484,6 +581,19 @@ function accountCardClass(type: AccountType) {
 function asReturnPercent(netProfit: number, startingBalance: number) {
   if (startingBalance <= 0) return '0.00%'
   return `${((netProfit / startingBalance) * 100).toFixed(2)}%`
+}
+
+function normalizePhaseLabel(value: unknown) {
+  const raw = String(value ?? '').trim()
+  if (!raw) return 'Phase 1'
+
+  const normalized = raw.toLowerCase().replace(/[_-]+/g, ' ').replace(/\s+/g, ' ').trim()
+  if (normalized === 'phase 1' || normalized === 'p1') return 'Phase 1'
+  if (normalized === 'phase 2' || normalized === 'p2') return 'Phase 2'
+  if (normalized === 'phase 3' || normalized === 'p3') return 'Phase 3'
+  if (normalized === 'funded') return 'Funded'
+
+  return normalized.replace(/\b\w/g, (char) => char.toUpperCase())
 }
 
 function extractErrorMessage(error: unknown): string {
@@ -524,7 +634,7 @@ onMounted(async () => {
       <div class="section-head">
         <div>
           <h2 class="section-title">Account Center</h2>
-          <p class="section-note">Manage funded, personal, and demo accounts with isolated balance and performance tracking.</p>
+          <p class="section-note">Manage prop, live, and demo accounts with isolated balance and performance tracking.</p>
         </div>
         <button type="button" class="btn btn-primary inline-flex items-center gap-2 px-4 py-2 text-sm" @click="openCreateModal">
           <Plus class="h-4 w-4" />
@@ -568,7 +678,7 @@ onMounted(async () => {
                 <p class="text-base font-semibold">{{ row.account.name }}</p>
                 <p class="text-xs muted">{{ row.account.broker }}</p>
               </div>
-              <span :class="accountTypeBadgeClass(row.account.account_type)">{{ row.account.account_type }}</span>
+              <span :class="accountTypeBadgeClass(row.account.account_type)">{{ accountBadgeLabel(row) }}</span>
             </div>
 
             <div class="grid grid-cols-2 gap-3 text-sm">
@@ -642,7 +752,14 @@ onMounted(async () => {
             <div class="grid grid-premium md:grid-cols-2">
               <BaseInput v-model="form.name" label="Account Name" required placeholder="FTMO 100K" :error="fieldError('name')" />
               <BaseInput v-model="form.broker" label="Broker" required placeholder="FTMO" :error="fieldError('broker')" />
-              <BaseSelect v-model="form.account_type" label="Account Type" :options="accountTypeOptions" />
+              <BaseSelect v-model="form.account_mode" label="Account Type" :options="accountModeOptions" />
+              <BaseSelect
+                v-if="form.account_mode === 'prop'"
+                v-model="form.prop_phase"
+                label="Prop Phase"
+                :options="propPhaseOptions"
+                :error="fieldError('prop_phase')"
+              />
               <BaseSelect
                 :model-value="String(form.is_active)"
                 label="Status"
@@ -664,7 +781,13 @@ onMounted(async () => {
             <div class="flex items-center justify-end gap-2">
               <button type="button" class="btn btn-ghost px-4 py-2 text-sm" @click="closeModal">Cancel</button>
               <button type="submit" class="btn btn-primary px-4 py-2 text-sm" :disabled="saving">
-                {{ saving ? 'Saving...' : isEditing ? 'Update Account' : 'Create Account' }}
+                {{
+                  saving
+                    ? 'Saving...'
+                    : isEditing
+                      ? 'Update Account'
+                      : isPropCreateFlow ? 'Next' : 'Create Account'
+                }}
               </button>
             </div>
           </form>
@@ -689,7 +812,12 @@ onMounted(async () => {
           <form v-else class="form-block space-y-4" @submit.prevent="submitChallenge">
             <div class="grid grid-premium md:grid-cols-2">
               <BaseInput v-model="challengeForm.provider" label="Provider" required :error="challengeFieldError('provider')" />
-              <BaseInput v-model="challengeForm.phase" label="Phase" required :error="challengeFieldError('phase')" />
+              <BaseSelect
+                v-model="challengeForm.phase"
+                label="Phase"
+                :options="challengePhaseOptions"
+                :error="challengeFieldError('phase')"
+              />
               <BaseInput
                 v-model="challengeForm.starting_balance"
                 label="Challenge Starting Balance"

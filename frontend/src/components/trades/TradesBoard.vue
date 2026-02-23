@@ -27,6 +27,7 @@ import AnimatedNumber from '@/components/layout/AnimatedNumber.vue'
 import BaseInput from '@/components/form/BaseInput.vue'
 import BaseSelect from '@/components/form/BaseSelect.vue'
 import BaseDateInput from '@/components/form/BaseDateInput.vue'
+import InstrumentPairSelect from '@/components/form/InstrumentPairSelect.vue'
 import { useReportStore } from '@/stores/reportStore'
 import { useTradeStore } from '@/stores/tradeStore'
 import { useUiStore } from '@/stores/uiStore'
@@ -38,7 +39,7 @@ const route = useRoute()
 const tradeStore = useTradeStore()
 const reportStore = useReportStore()
 const uiStore = useUiStore()
-const { trades, pagination, filters, loading, hasFilters, strategyModels, setups, killzones, tradeTags, sessionOptions } = storeToRefs(tradeStore)
+const { trades, pagination, filters, loading, hasFilters, instruments, strategyModels, setups, killzones, tradeTags, sessionOptions } = storeToRefs(tradeStore)
 const { reports } = storeToRefs(reportStore)
 
 const detailsOpen = ref(false)
@@ -170,6 +171,25 @@ const selectedTagFilterIds = computed(() => {
   return new Set(values)
 })
 
+const selectedFilterInstrumentId = computed({
+  get() {
+    const normalizedPair = filters.value.pair.trim().toUpperCase()
+    if (!normalizedPair) return ''
+    const match = instruments.value.find((instrument) => instrument.symbol === normalizedPair)
+    return match ? String(match.id) : ''
+  },
+  set(value: string) {
+    const id = Number(value)
+    if (!Number.isInteger(id) || id <= 0) {
+      filters.value.pair = ''
+      return
+    }
+
+    const match = instruments.value.find((instrument) => instrument.id === id)
+    filters.value.pair = match?.symbol ?? ''
+  },
+})
+
 function toggleTagFilter(tagId: number) {
   const next = new Set(selectedTagFilterIds.value)
   if (next.has(tagId)) {
@@ -192,7 +212,20 @@ function addDays(value: Date, days: number) {
   return next
 }
 
-function setFilterPreset(preset: 'today' | '7d' | '30d' | 'clear') {
+function todayLocalDate() {
+  return toLocalDateString(new Date())
+}
+
+const dateFromMax = computed(() => {
+  const today = todayLocalDate()
+  if (!filters.value.date_to) return today
+  return filters.value.date_to < today ? filters.value.date_to : today
+})
+
+const dateToMin = computed(() => filters.value.date_from || undefined)
+const dateToMax = computed(() => todayLocalDate())
+
+function setFilterPreset(preset: 'today' | '7d' | '30d' | 'uptodate' | 'clear') {
   if (preset === 'clear') {
     filters.value.date_from = ''
     filters.value.date_to = ''
@@ -200,7 +233,15 @@ function setFilterPreset(preset: 'today' | '7d' | '30d' | 'clear') {
   }
 
   const now = new Date()
-  const today = toLocalDateString(now)
+  const today = todayLocalDate()
+
+  if (preset === 'uptodate') {
+    if (filters.value.date_from && filters.value.date_from > today) {
+      filters.value.date_from = today
+    }
+    filters.value.date_to = today
+    return
+  }
 
   if (preset === 'today') {
     filters.value.date_from = today
@@ -418,6 +459,19 @@ async function removeTrade(id: number) {
 }
 
 async function applyFilters() {
+  const today = todayLocalDate()
+  if (
+    (filters.value.date_from && filters.value.date_from > today)
+    || (filters.value.date_to && filters.value.date_to > today)
+  ) {
+    uiStore.toast({
+      type: 'error',
+      title: 'Invalid date range',
+      message: 'Dates cannot be in the future.',
+    })
+    return
+  }
+
   if (filters.value.date_from && filters.value.date_to && filters.value.date_from > filters.value.date_to) {
     uiStore.toast({
       type: 'error',
@@ -501,7 +555,10 @@ function exportCurrentCsv() {
 
 onMounted(async () => {
   try {
-    await tradeStore.fetchDictionaries()
+    await Promise.all([
+      tradeStore.fetchInstruments(),
+      tradeStore.fetchDictionaries(),
+    ])
     await tradeStore.fetchTrades()
     await loadSavedViews()
     filtersExpanded.value = hasFilters.value
@@ -576,7 +633,16 @@ watch(quickFocus, (value) => {
       <Transition name="drawer">
         <div v-if="filtersExpanded" class="filter-drawer">
           <div class="form-block grid grid-premium md:grid-cols-2 xl:grid-cols-4">
-            <BaseInput v-model="filters.pair" label="Symbol" placeholder="EURUSD" size="sm" />
+            <InstrumentPairSelect
+              v-model="selectedFilterInstrumentId"
+              label="Instrument / Pair"
+              :instruments="instruments"
+              size="sm"
+              clearable
+              all-label="All symbols"
+              placeholder="All symbols"
+              :show-label-help="false"
+            />
             <BaseInput v-model="filters.model" label="Strategy Model" placeholder="Breakout" size="sm" />
             <BaseSelect v-model="filters.direction" label="Direction" :options="filterDirectionOptions" size="sm" />
             <BaseSelect v-model="filters.strategy_model_id" label="Strategy Taxonomy" :options="strategyFilterOptions" size="sm" />
@@ -608,19 +674,21 @@ watch(quickFocus, (value) => {
                 v-model="filters.date_from"
                 label="Date From"
                 size="sm"
-                :max="filters.date_to || undefined"
+                :max="dateFromMax"
               />
               <BaseDateInput
                 v-model="filters.date_to"
                 label="Date To"
                 size="sm"
-                :min="filters.date_from || undefined"
+                :min="dateToMin"
+                :max="dateToMax"
               />
             </div>
             <div class="trade-filter-presets">
               <button type="button" class="chip-btn" @click="setFilterPreset('today')">Today</button>
               <button type="button" class="chip-btn" @click="setFilterPreset('7d')">Last 7D</button>
               <button type="button" class="chip-btn" @click="setFilterPreset('30d')">Last 30D</button>
+              <button type="button" class="chip-btn" @click="setFilterPreset('uptodate')">Up to Date</button>
               <button type="button" class="chip-btn" @click="setFilterPreset('clear')">Clear</button>
             </div>
           </div>

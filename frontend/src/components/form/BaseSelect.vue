@@ -143,8 +143,8 @@ function onSearchKeydown(event: KeyboardEvent) {
 
 function badgeClass(badge: string | undefined) {
   const tone = (badge ?? '').trim().toLowerCase()
-  if (tone === 'funded') return 'pill pill-badge-funded'
-  if (tone === 'personal') return 'pill pill-badge-personal'
+  if (tone === 'funded' || tone === 'prop' || /^phase\s*\d+$/.test(tone)) return 'pill pill-badge-funded'
+  if (tone === 'personal' || tone === 'live') return 'pill pill-badge-personal'
   if (tone === 'demo') return 'pill pill-badge-demo'
   if (tone === 'portfolio') return 'pill pill-badge-portfolio'
   return 'pill'

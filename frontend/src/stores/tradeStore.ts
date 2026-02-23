@@ -749,34 +749,167 @@ function toOptimisticTrade(payload: TradePayload, tempId: number): Trade {
 }
 
 function defaultInstrumentsFallback(): Instrument[] {
-  return [
-    {
-      id: 1,
-      symbol: 'EURUSD',
-      asset_class: 'forex',
-      base_currency: 'EUR',
-      quote_currency: 'USD',
-      contract_size: '100000.00000000',
-      tick_size: '0.0000100000',
-      tick_value: '1.00000000',
-      pip_size: '0.0001000000',
-      min_lot: '0.0100',
-      lot_step: '0.0100',
-      is_active: true,
-    },
-    {
-      id: 4,
-      symbol: 'XAUUSD',
-      asset_class: 'metal',
-      base_currency: 'XAU',
-      quote_currency: 'USD',
-      contract_size: '100.00000000',
-      tick_size: '0.0100000000',
-      tick_value: '1.00000000',
-      pip_size: '0.1000000000',
-      min_lot: '0.0100',
-      lot_step: '0.0100',
-      is_active: true,
-    },
+  type FallbackSeed = {
+    symbol: string
+    asset_class: string
+    base_currency: string
+    quote_currency: string
+    contract_size: number
+    tick_size: number
+    tick_value: number
+    pip_size: number
+    min_lot: number
+    lot_step: number
+  }
+
+  const forex = (symbol: string, base: string, quote: string): FallbackSeed => ({
+    symbol,
+    asset_class: 'forex',
+    base_currency: base,
+    quote_currency: quote,
+    contract_size: 100000,
+    tick_size: quote === 'JPY' ? 0.001 : 0.00001,
+    tick_value: 1,
+    pip_size: quote === 'JPY' ? 0.01 : 0.0001,
+    min_lot: 0.01,
+    lot_step: 0.01,
+  })
+
+  const crypto = (symbol: string, base: string, quote = 'USDT'): FallbackSeed => ({
+    symbol,
+    asset_class: 'crypto',
+    base_currency: base,
+    quote_currency: quote,
+    contract_size: 1,
+    tick_size: 0.01,
+    tick_value: 0.01,
+    pip_size: 1,
+    min_lot: 0.01,
+    lot_step: 0.01,
+  })
+
+  const stock = (symbol: string): FallbackSeed => ({
+    symbol,
+    asset_class: 'stocks',
+    base_currency: symbol,
+    quote_currency: 'USD',
+    contract_size: 1,
+    tick_size: 0.01,
+    tick_value: 0.01,
+    pip_size: 0.01,
+    min_lot: 1,
+    lot_step: 1,
+  })
+
+  const index = (symbol: string): FallbackSeed => ({
+    symbol,
+    asset_class: 'indices',
+    base_currency: symbol,
+    quote_currency: 'USD',
+    contract_size: 1,
+    tick_size: 0.1,
+    tick_value: 0.1,
+    pip_size: 1,
+    min_lot: 1,
+    lot_step: 1,
+  })
+
+  const future = (symbol: string): FallbackSeed => ({
+    symbol,
+    asset_class: 'futures',
+    base_currency: symbol,
+    quote_currency: 'USD',
+    contract_size: 1,
+    tick_size: 0.25,
+    tick_value: 0.25,
+    pip_size: 1,
+    min_lot: 1,
+    lot_step: 1,
+  })
+
+  const commodity = (symbol: string, base: string, quote = 'USD'): FallbackSeed => ({
+    symbol,
+    asset_class: 'commodities',
+    base_currency: base,
+    quote_currency: quote,
+    contract_size: base === 'XAU' || base === 'XAG' ? 100 : 1,
+    tick_size: base === 'XAU' || base === 'XAG' ? 0.01 : 0.01,
+    tick_value: 1,
+    pip_size: base === 'XAU' || base === 'XAG' ? 0.1 : 0.1,
+    min_lot: 0.01,
+    lot_step: 0.01,
+  })
+
+  const seeds: FallbackSeed[] = [
+    forex('EURUSD', 'EUR', 'USD'),
+    forex('GBPUSD', 'GBP', 'USD'),
+    forex('USDJPY', 'USD', 'JPY'),
+    forex('AUDUSD', 'AUD', 'USD'),
+    forex('NZDUSD', 'NZD', 'USD'),
+    forex('USDCAD', 'USD', 'CAD'),
+    forex('USDCHF', 'USD', 'CHF'),
+    forex('EURGBP', 'EUR', 'GBP'),
+    forex('EURJPY', 'EUR', 'JPY'),
+    forex('GBPJPY', 'GBP', 'JPY'),
+    forex('AUDJPY', 'AUD', 'JPY'),
+    forex('CHFJPY', 'CHF', 'JPY'),
+    forex('EURAUD', 'EUR', 'AUD'),
+    forex('EURNZD', 'EUR', 'NZD'),
+    forex('GBPAUD', 'GBP', 'AUD'),
+    forex('GBPCHF', 'GBP', 'CHF'),
+
+    crypto('BTCUSDT', 'BTC'),
+    crypto('ETHUSDT', 'ETH'),
+    crypto('SOLUSDT', 'SOL'),
+    crypto('BNBUSDT', 'BNB'),
+    crypto('XRPUSDT', 'XRP'),
+    crypto('ADAUSDT', 'ADA'),
+    crypto('DOGEUSDT', 'DOGE'),
+    crypto('LTCUSDT', 'LTC'),
+
+    stock('AAPL'),
+    stock('MSFT'),
+    stock('NVDA'),
+    stock('TSLA'),
+    stock('AMZN'),
+    stock('META'),
+    stock('GOOGL'),
+    stock('NFLX'),
+
+    index('US30'),
+    index('NAS100'),
+    index('SPX500'),
+    index('DAX40'),
+    index('UK100'),
+    index('JP225'),
+    index('HK50'),
+
+    future('NQ'),
+    future('ES'),
+    future('YM'),
+    future('CL'),
+    future('GC'),
+    future('SI'),
+
+    commodity('XAUUSD', 'XAU'),
+    commodity('XAGUSD', 'XAG'),
+    commodity('WTI', 'WTI'),
+    commodity('BRENT', 'BRENT'),
+    commodity('NATGAS', 'NATGAS'),
   ]
+
+  return seeds.map((seed, index) => ({
+    id: index + 1,
+    symbol: seed.symbol,
+    asset_class: seed.asset_class,
+    base_currency: seed.base_currency,
+    quote_currency: seed.quote_currency,
+    contract_size: seed.contract_size.toFixed(8),
+    tick_size: seed.tick_size.toFixed(10),
+    tick_value: seed.tick_value.toFixed(8),
+    pip_size: seed.pip_size.toFixed(10),
+    min_lot: seed.min_lot.toFixed(4),
+    lot_step: seed.lot_step.toFixed(4),
+    is_active: true,
+  }))
 }

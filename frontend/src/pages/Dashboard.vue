@@ -33,6 +33,7 @@ import { useSyncStatusStore } from '@/stores/syncStatusStore'
 import {
   isLiveAccountType,
   isPropAccountType,
+  type AccountType,
   type AccountChallengeStatusPayload,
 } from '@/types/account'
 import type { MissedTrade, Paginated, Trade } from '@/types/trade'
@@ -124,7 +125,12 @@ const scopeLabel = computed(() => {
 
 const scopeMetaLabel = computed(() => {
   const account = scopedSelectedAccount.value
-  if (account) return `${account.broker} | ${account.account_type}`
+  if (account) {
+    const phase = challengeStatus.value?.account_id === account.id
+      ? challengeStatus.value.phase
+      : null
+    return `${account.broker} | ${accountOptionBadgeLabel(account.account_type, phase)}`
+  }
   return dashboardMode.value === 'live'
     ? 'Create a personal/live account to use Live Journal.'
     : 'Create a funded account to track Prop Challenge status.'
@@ -135,7 +141,10 @@ const accountScopeOptions = computed(() =>
     label: account.name,
     value: String(account.id),
     subtitle: `${account.broker} - ${account.currency} ${Number(account.current_balance).toLocaleString()}${account.is_active ? '' : ' - inactive'}`,
-    badge: account.account_type,
+    badge: accountOptionBadgeLabel(
+      account.account_type,
+      challengeStatus.value?.account_id === account.id ? challengeStatus.value.phase : null
+    ),
   }))
 )
 
@@ -674,6 +683,25 @@ function ratioToPercent(partial: number, total: number): number {
   return clampPercent((Math.abs(partial) / Math.abs(total)) * 100)
 }
 
+function accountOptionBadgeLabel(type: AccountType, phase: unknown): string {
+  if (type === 'funded') return normalizePhaseLabel(phase)
+  if (type === 'personal') return 'live'
+  return 'demo'
+}
+
+function normalizePhaseLabel(value: unknown): string {
+  const raw = String(value ?? '').trim()
+  if (!raw) return 'Phase 1'
+
+  const normalized = raw.toLowerCase().replace(/[_-]+/g, ' ').replace(/\s+/g, ' ').trim()
+  if (normalized === 'phase 1' || normalized === 'p1') return 'Phase 1'
+  if (normalized === 'phase 2' || normalized === 'p2') return 'Phase 2'
+  if (normalized === 'phase 3' || normalized === 'p3') return 'Phase 3'
+  if (normalized === 'funded') return 'Funded'
+
+  return normalized.replace(/\b\w/g, (char) => char.toUpperCase())
+}
+
 function isWithinLastDays(value: string, days: number): boolean {
   const parsed = new Date(value)
   if (Number.isNaN(parsed.getTime())) return false
@@ -752,10 +780,11 @@ function setDashboardMode(mode: DashboardMode) {
       <section class="overview-top-row">
         <div class="overview-heading-block">
           <h1 class="overview-heading-title">Overview</h1>
+          <p class="overview-heading-subtitle">Control center</p>
         </div>
 
         <div class="overview-controls-wrap">
-          <div class="overview-tab-switch">
+          <div class="overview-tab-switch overview-tab-switch-primary">
             <button class="overview-tab-btn" :class="{ active: activeTab === 'overview' }" @click="activeTab = 'overview'">
               Overview
             </button>
@@ -767,7 +796,7 @@ function setDashboardMode(mode: DashboardMode) {
             </button>
           </div>
 
-          <div class="overview-tab-switch">
+          <div class="overview-tab-switch overview-tab-switch-mode">
             <button
               class="overview-tab-btn"
               :class="{ active: effectiveDashboardMode === 'live' }"
@@ -784,7 +813,7 @@ function setDashboardMode(mode: DashboardMode) {
             </button>
           </div>
 
-          <div class="overview-range-group">
+          <div class="overview-range-group overview-range-group-range">
             <button class="btn overview-range-btn" :class="{ active: rangePreset === '30d' }" @click="rangePreset = '30d'">
               <CalendarDays class="h-4 w-4" />
               30 Days
@@ -795,8 +824,8 @@ function setDashboardMode(mode: DashboardMode) {
             </button>
           </div>
 
-          <div class="overview-range-group">
-            <div class="min-w-[220px]">
+          <div class="overview-range-group overview-range-group-saved">
+            <div class="overview-saved-view-field">
               <BaseSelect
                 v-model="selectedDashboardReportId"
                 label="Saved View"
@@ -890,12 +919,22 @@ function setDashboardMode(mode: DashboardMode) {
         </div>
 
         <div v-else-if="challengeStatus" class="overview-challenge-layout">
-          <article class="overview-challenge-main">
-            <p class="kicker-label">Target Progress</p>
-            <p class="mt-1 text-2xl font-semibold value-display">
+          <article class="overview-challenge-main overview-challenge-card">
+            <header class="overview-challenge-card-head">
+              <span class="overview-challenge-card-icon is-primary">
+                <BarChartHorizontalBig class="h-4 w-4" />
+              </span>
+              <div>
+                <p class="kicker-label">Target Progress</p>
+                <p class="overview-challenge-card-hint">Net P/L vs challenge target</p>
+              </div>
+            </header>
+            <p class="overview-challenge-card-value value-display">
               <AnimatedNumber :value="challengeStatus.target_progress.progress_pct" :decimals="2" suffix="%" />
             </p>
-            <p class="muted text-xs">{{ asCurrency(challengeStatus.target_progress.net_profit) }} / {{ asCurrency(challengeStatus.target_progress.target_profit) }}</p>
+            <p class="overview-challenge-card-caption">
+              {{ asCurrency(challengeStatus.target_progress.net_profit) }} / {{ asCurrency(challengeStatus.target_progress.target_profit) }}
+            </p>
             <div class="overview-progress-track">
               <span class="overview-progress-fill is-primary" :style="{ width: `${challengeTargetProgressPct}%` }" />
             </div>
@@ -908,10 +947,21 @@ function setDashboardMode(mode: DashboardMode) {
           </article>
 
           <div class="overview-challenge-grid">
-            <article class="overview-challenge-stat">
-              <p class="kicker-label">Daily Loss Headroom</p>
-              <p class="mt-1 text-lg font-semibold value-display" :class="challengeStatus.daily_loss_headroom.breached ? 'negative' : 'positive'">
+            <article class="overview-challenge-stat overview-challenge-card">
+              <header class="overview-challenge-card-head">
+                <span class="overview-challenge-card-icon" :class="challengeStatus.daily_loss_headroom.breached ? 'is-danger' : 'is-safe'">
+                  <ShieldAlert class="h-4 w-4" />
+                </span>
+                <div>
+                  <p class="kicker-label">Daily Loss Headroom</p>
+                  <p class="overview-challenge-card-hint">Today's risk buffer</p>
+                </div>
+              </header>
+              <p class="overview-challenge-card-value value-display" :class="challengeStatus.daily_loss_headroom.breached ? 'negative' : 'positive'">
                 {{ asCurrency(challengeStatus.daily_loss_headroom.headroom) }}
+              </p>
+              <p class="overview-challenge-card-caption">
+                Used today: {{ asCurrency(challengeStatus.daily_loss_headroom.used) }} / {{ asCurrency(challengeStatus.daily_loss_headroom.limit) }}
               </p>
               <div class="overview-progress-track">
                 <span
@@ -920,15 +970,29 @@ function setDashboardMode(mode: DashboardMode) {
                   :style="{ width: `${challengeDailyUsagePct}%` }"
                 />
               </div>
-              <p class="muted text-xs">
-                Used today: {{ asCurrency(challengeStatus.daily_loss_headroom.used) }} / {{ asCurrency(challengeStatus.daily_loss_headroom.limit) }}
+              <p class="overview-progress-meta">
+                <span>{{ Math.round(challengeDailyUsagePct) }}% used</span>
+                <strong :class="challengeStatus.daily_loss_headroom.breached ? 'negative' : 'positive'">
+                  {{ challengeStatus.daily_loss_headroom.breached ? 'Breached' : 'Safe' }}
+                </strong>
               </p>
             </article>
 
-            <article class="overview-challenge-stat">
-              <p class="kicker-label">Total DD Headroom</p>
-              <p class="mt-1 text-lg font-semibold value-display" :class="challengeStatus.total_dd_headroom.breached ? 'negative' : 'positive'">
+            <article class="overview-challenge-stat overview-challenge-card">
+              <header class="overview-challenge-card-head">
+                <span class="overview-challenge-card-icon" :class="challengeStatus.total_dd_headroom.breached ? 'is-danger' : 'is-safe'">
+                  <ShieldAlert class="h-4 w-4" />
+                </span>
+                <div>
+                  <p class="kicker-label">Total DD Headroom</p>
+                  <p class="overview-challenge-card-hint">Overall drawdown buffer</p>
+                </div>
+              </header>
+              <p class="overview-challenge-card-value value-display" :class="challengeStatus.total_dd_headroom.breached ? 'negative' : 'positive'">
                 {{ asCurrency(challengeStatus.total_dd_headroom.headroom) }}
+              </p>
+              <p class="overview-challenge-card-caption">
+                Used: {{ asCurrency(challengeStatus.total_dd_headroom.used) }} / {{ asCurrency(challengeStatus.total_dd_headroom.limit) }}
               </p>
               <div class="overview-progress-track">
                 <span
@@ -937,20 +1001,37 @@ function setDashboardMode(mode: DashboardMode) {
                   :style="{ width: `${challengeTotalDdUsagePct}%` }"
                 />
               </div>
-              <p class="muted text-xs">
-                Used: {{ asCurrency(challengeStatus.total_dd_headroom.used) }} / {{ asCurrency(challengeStatus.total_dd_headroom.limit) }}
+              <p class="overview-progress-meta">
+                <span>{{ Math.round(challengeTotalDdUsagePct) }}% used</span>
+                <strong :class="challengeStatus.total_dd_headroom.breached ? 'negative' : 'positive'">
+                  {{ challengeStatus.total_dd_headroom.breached ? 'Breached' : 'Safe' }}
+                </strong>
               </p>
             </article>
 
-            <article class="overview-challenge-stat">
-              <p class="kicker-label">Min Trading Days</p>
-              <p class="mt-1 text-lg font-semibold value-display">
+            <article class="overview-challenge-stat overview-challenge-card">
+              <header class="overview-challenge-card-head">
+                <span class="overview-challenge-card-icon is-primary">
+                  <CalendarDays class="h-4 w-4" />
+                </span>
+                <div>
+                  <p class="kicker-label">Min Trading Days</p>
+                  <p class="overview-challenge-card-hint">Required activity progress</p>
+                </div>
+              </header>
+              <p class="overview-challenge-card-value value-display">
                 <AnimatedNumber :value="challengeStatus.min_days_progress.progress_pct" :decimals="2" suffix="%" />
+              </p>
+              <p class="overview-challenge-card-caption">
+                {{ challengeStatus.min_days_progress.actual }} / {{ challengeStatus.min_days_progress.required }} days
               </p>
               <div class="overview-progress-track">
                 <span class="overview-progress-fill is-primary" :style="{ width: `${challengeMinDaysProgressPct}%` }" />
               </div>
-              <p class="muted text-xs">{{ challengeStatus.min_days_progress.actual }} / {{ challengeStatus.min_days_progress.required }} days</p>
+              <p class="overview-progress-meta">
+                <span>Progress</span>
+                <strong class="value-display">{{ Math.round(challengeMinDaysProgressPct) }}%</strong>
+              </p>
             </article>
           </div>
         </div>
@@ -972,7 +1053,7 @@ function setDashboardMode(mode: DashboardMode) {
           <p class="section-note">Trading analytics below are secondary to challenge compliance in this view.</p>
         </section>
 
-        <section class="overview-kpi-grid">
+        <section v-if="effectiveDashboardMode !== 'prop'" class="overview-kpi-grid">
           <GlassPanel class="overview-kpi-card overview-kpi-card-performance">
             <header class="overview-kpi-head">
               <span class="overview-kpi-icon">
@@ -1083,14 +1164,14 @@ function setDashboardMode(mode: DashboardMode) {
             <div class="section-head">
               <div>
                 <h2 class="section-title">Weekly Review Loop</h2>
-                <p class="section-note">Capture -> Triage -> Action Plan -> Follow-up (last 7 days)</p>
+                <p class="section-note">Log -> Review -> Plan -> Follow-up (last 7 days)</p>
               </div>
               <div class="weekly-loop-links">
                 <RouterLink :to="{ path: '/trades', query: { focus: 'needs_review' } }" class="btn btn-ghost px-3 py-2 text-sm">
-                  Trade triage
+                  Review trades
                 </RouterLink>
                 <RouterLink :to="{ path: '/missed-trades', query: { focus: 'action_required' } }" class="btn btn-ghost px-3 py-2 text-sm">
-                  Missed triage
+                  Review missed
                 </RouterLink>
               </div>
             </div>
@@ -1101,42 +1182,42 @@ function setDashboardMode(mode: DashboardMode) {
 
             <div v-else class="weekly-loop-grid">
               <article class="weekly-loop-card">
-                <span class="kicker-label">Capture</span>
+                <span class="kicker-label">Logged</span>
                 <strong class="value-display">
                   <AnimatedNumber :value="weeklyCaptureRate" :decimals="0" suffix="%" />
                 </strong>
                 <p class="section-note">
-                  {{ weeklyCaptureCompleteCount }}/{{ weeklyReviewVolume }} entries captured
+                  {{ weeklyCaptureCompleteCount }}/{{ weeklyReviewVolume }} entries logged
                 </p>
               </article>
 
               <article class="weekly-loop-card">
-                <span class="kicker-label">Triage</span>
+                <span class="kicker-label">Needs Review</span>
                 <strong class="value-display" :class="weeklyTriageQueueCount > 0 ? 'negative' : 'positive'">
                   <AnimatedNumber :value="weeklyTriageQueueCount" />
                 </strong>
                 <p class="section-note">
-                  {{ weeklyTriageQueueCount > 0 ? 'Items need review now' : 'Queue is clear' }}
+                  {{ weeklyTriageQueueCount > 0 ? 'Items waiting for review' : 'Nothing waiting' }}
                 </p>
               </article>
 
               <article class="weekly-loop-card">
-                <span class="kicker-label">Action Plan</span>
+                <span class="kicker-label">Plan Ready</span>
                 <strong class="value-display">
                   <AnimatedNumber :value="weeklyActionPlanRate" :decimals="0" suffix="%" />
                 </strong>
                 <p class="section-note">
-                  {{ weeklyActionPlanCount }} of {{ weeklyReviewVolume }} entries planned
+                  {{ weeklyActionPlanCount }} of {{ weeklyReviewVolume }} with a plan
                 </p>
               </article>
 
               <article class="weekly-loop-card">
-                <span class="kicker-label">Follow-up</span>
+                <span class="kicker-label">Follow-up Due</span>
                 <strong class="value-display" :class="weeklyFollowUpPendingCount > 0 ? 'negative' : 'positive'">
                   <AnimatedNumber :value="weeklyFollowUpPendingCount" />
                 </strong>
                 <p class="section-note">
-                  {{ weeklyFollowUpDoneCount }} closed
+                  {{ weeklyFollowUpDoneCount }} completed
                 </p>
               </article>
             </div>

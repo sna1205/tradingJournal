@@ -113,51 +113,51 @@
 }
 
 [data-theme='dark'] {
-  --bg: #0b1220;
-  --bg-soft: #0b1220;
-  --panel: #111827;
-  --panel-soft: #111827;
-  --panel-strong: #111827;
-  --border: #273244;
-  --text: #e5e7eb;
-  --muted: #9ca3af;
-  --primary: #22c1b4;
-  --primary-soft: rgba(34, 193, 180, 0.14);
-  --danger: #f87171;
-  --danger-soft: rgba(248, 113, 113, 0.16);
-  --warning: #f59e0b;
-  --warning-soft: rgba(245, 158, 11, 0.18);
+  --bg: #030907;
+  --bg-soft: #06110d;
+  --panel: #0a1310;
+  --panel-soft: #0f1d18;
+  --panel-strong: #07100d;
+  --border: #1f3b31;
+  --text: #e8f5ec;
+  --muted: #8ea396;
+  --primary: #39d98a;
+  --primary-soft: rgba(57, 217, 138, 0.18);
+  --danger: #ff6b6b;
+  --danger-soft: rgba(255, 107, 107, 0.17);
+  --warning: #e3b341;
+  --warning-soft: rgba(227, 179, 65, 0.18);
 
-  --chart-grid: rgba(156, 163, 175, 0.14);
-  --chart-axis-line: rgba(156, 163, 175, 0.24);
+  --chart-grid: rgba(142, 163, 150, 0.14);
+  --chart-axis-line: rgba(142, 163, 150, 0.24);
   --chart-positive: var(--primary);
-  --chart-positive-soft: rgba(34, 193, 180, 0.32);
-  --chart-positive-fade: rgba(34, 193, 180, 0.08);
+  --chart-positive-soft: rgba(57, 217, 138, 0.34);
+  --chart-positive-fade: rgba(57, 217, 138, 0.09);
   --chart-negative: var(--danger);
-  --chart-negative-soft: rgba(248, 113, 113, 0.28);
-  --chart-negative-fade: rgba(248, 113, 113, 0.06);
-  --chart-cyan: #22d3ee;
-  --chart-cyan-soft: rgba(34, 211, 238, 0.35);
-  --chart-cyan-fade: rgba(34, 211, 238, 0.03);
-  --chart-radar-split-a: rgba(255, 255, 255, 0.12);
-  --chart-radar-split-b: rgba(31, 41, 55, 0.62);
+  --chart-negative-soft: rgba(255, 107, 107, 0.28);
+  --chart-negative-fade: rgba(255, 107, 107, 0.07);
+  --chart-cyan: #4ecdc4;
+  --chart-cyan-soft: rgba(78, 205, 196, 0.34);
+  --chart-cyan-fade: rgba(78, 205, 196, 0.04);
+  --chart-radar-split-a: rgba(255, 255, 255, 0.1);
+  --chart-radar-split-b: rgba(15, 31, 25, 0.65);
 
-  --shadow-soft: 0 10px 24px rgba(2, 6, 23, 0.36);
-  --shadow-hover: 0 12px 28px rgba(2, 6, 23, 0.46);
+  --shadow-soft: 0 10px 28px rgba(1, 6, 4, 0.44);
+  --shadow-hover: 0 14px 34px rgba(1, 6, 4, 0.56);
 
-  --trade-card-surface: #060c14;
-  --trade-card-media-surface: #02060d;
-  --trade-card-image-surface: #040a12;
-  --trade-card-title: #f4f7fb;
-  --trade-card-meta: #94a3b8;
-  --trade-card-pill-text: color-mix(in srgb, #5eead4 82%, #cbd5e1 18%);
-  --trade-card-footer-border: color-mix(in srgb, #1e293b 72%, transparent 28%);
-  --trade-card-review: #e2e8f0;
-  --trade-card-review-hover: #f8fafc;
-  --trade-card-icon: #94a3b8;
-  --trade-card-icon-hover-border: color-mix(in srgb, #334155 80%, transparent 20%);
-  --trade-card-icon-hover: #e2e8f0;
-  --trade-card-shadow: 0 10px 22px rgba(2, 6, 23, 0.32);
+  --trade-card-surface: #08120f;
+  --trade-card-media-surface: #060e0b;
+  --trade-card-image-surface: #091511;
+  --trade-card-title: #e9f6ee;
+  --trade-card-meta: #8ea396;
+  --trade-card-pill-text: color-mix(in srgb, #39d98a 84%, #d9f4e5 16%);
+  --trade-card-footer-border: color-mix(in srgb, #1f3b31 72%, transparent 28%);
+  --trade-card-review: #dcf6e7;
+  --trade-card-review-hover: #f3fff9;
+  --trade-card-icon: #8ea396;
+  --trade-card-icon-hover-border: color-mix(in srgb, #2b5848 78%, transparent 22%);
+  --trade-card-icon-hover: #dcf6e7;
+  --trade-card-shadow: 0 10px 24px rgba(1, 6, 4, 0.42);
 }
 
 [data-theme='forest'] {

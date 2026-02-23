@@ -2,12 +2,13 @@
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import type { AxiosError } from 'axios'
-import { ArrowLeft, DollarSign, TrendingUp } from 'lucide-vue-next'
+import { ArrowLeft, Check, DollarSign, TrendingUp } from 'lucide-vue-next'
 import { useRoute, useRouter } from 'vue-router'
 import GlassPanel from '@/components/layout/GlassPanel.vue'
 import BaseInput from '@/components/form/BaseInput.vue'
 import BaseSelect from '@/components/form/BaseSelect.vue'
 import BaseDateTime from '@/components/form/BaseDateTime.vue'
+import InstrumentPairSelect from '@/components/form/InstrumentPairSelect.vue'
 import TradeImageUploader from '@/components/trades/TradeImageUploader.vue'
 import api from '@/services/api'
 import { useAccountStore } from '@/stores/accountStore'
@@ -44,16 +45,10 @@ const accountSelectOptions = computed(() =>
     label: account.name,
     value: String(account.id),
     subtitle: `${account.currency} ${asCurrency(Number(account.current_balance))}`,
-    badge: account.account_type,
+    badge: account.account_type === 'funded'
+      ? 'Phase 1'
+      : (account.account_type === 'personal' ? 'live' : 'demo'),
     keywords: [account.broker, account.account_type, account.currency],
-  }))
-)
-const instrumentSelectOptions = computed(() =>
-  instruments.value.map((instrument) => ({
-    label: instrument.symbol,
-    value: String(instrument.id),
-    subtitle: `${instrument.asset_class} | ${instrument.base_currency}/${instrument.quote_currency}`,
-    keywords: [instrument.asset_class, instrument.base_currency, instrument.quote_currency],
   }))
 )
 const strategyModelOptions = computed(() =>
@@ -209,7 +204,6 @@ const tradeId = computed(() => {
   return Number.isInteger(value) && value > 0 ? value : null
 })
 const isEditMode = computed(() => tradeId.value !== null)
-const pendingSubmitAction = ref<'save' | 'save_and_new'>('save')
 const loadingSmartDefaults = ref(false)
 const tradeCompleted = ref(true)
 const pageTitle = computed(() => (isEditMode.value ? 'Edit Execute' : 'New Execute'))
@@ -661,7 +655,6 @@ const formErrors = computed<Record<string, string>>(() => {
   if (commission < 0) errors.commission = 'Commission cannot be negative.'
   if (spreadCost < 0) errors.spread_cost = 'Spread cost cannot be negative.'
   if (slippageCost < 0) errors.slippage_cost = 'Slippage cost cannot be negative.'
-  if (totalImageCount.value === 0) errors.images = 'At least one screenshot is required.'
   if (!tradeCompleted.value) errors.trade_completed = 'Mark trade as completed to log this execution.'
 
   if (tradeCompleted.value) {
@@ -1090,43 +1083,17 @@ function buildPsychologyPayload() {
   }
 }
 
-function resetFormForNextExecution() {
-  submitAttempted.value = false
-  precheckError.value = ''
-  precheckResult.value = null
-  tradeCompleted.value = true
-
-  form.date = nowLocalDateTime()
-  form.entry_price = 0
-  form.stop_loss = 0
-  form.take_profit = 0
-  form.position_size = roundLot(Math.max(0.01, toNumber(form.position_size)))
-  form.risk_override_reason = ''
-  form.notes = ''
-  form.tag_ids = []
-  form.tag_search = ''
-  form.followed_rules = true
-  form.emotion = 'neutral'
-  setPsychologyFromPayload(null)
-
-  existingImages.value = []
-  clearPendingImages()
-  ensureDefaultExitLeg()
-}
-
 function handleGlobalHotkeys(event: KeyboardEvent) {
   const key = event.key.toLowerCase()
   if (!(event.ctrlKey || event.metaKey)) return
 
   if (key === 's') {
     event.preventDefault()
-    const action = (!isEditMode.value && event.shiftKey) ? 'save_and_new' : 'save'
-    void submitForm(action)
+    void submitForm()
   }
 }
 
-async function submitForm(action: 'save' | 'save_and_new' = 'save') {
-  pendingSubmitAction.value = action
+async function submitForm() {
   submitAttempted.value = true
   const firstError = Object.values(formErrors.value)[0]
   if (firstError) {
@@ -1168,17 +1135,6 @@ async function submitForm(action: 'save' | 'save_and_new' = 'save') {
         ? `${payload.symbol} saved with images.`
         : `${payload.symbol} has been saved to your execution journal.`,
     })
-
-    if (pendingSubmitAction.value === 'save_and_new' && !isEditMode.value) {
-      resetFormForNextExecution()
-      schedulePrecheck()
-      uiStore.toast({
-        type: 'success',
-        title: 'Ready for next execution',
-        message: 'Saved. Ticket reset with your smart defaults.',
-      })
-      return
-    }
 
     void router.push('/trades')
   } catch (error) {
@@ -1241,8 +1197,8 @@ onMounted(async () => {
   if (!isEditMode.value && !form.account_id && accountSelectOptions.value.length > 0) {
     form.account_id = accountSelectOptions.value[0]?.value ?? ''
   }
-  if (!isEditMode.value && !form.instrument_id && instrumentSelectOptions.value.length > 0) {
-    form.instrument_id = instrumentSelectOptions.value[0]?.value ?? ''
+  if (!isEditMode.value && !form.instrument_id && instruments.value.length > 0) {
+    form.instrument_id = String(instruments.value[0]?.id ?? '')
   }
   if (!isEditMode.value && !form.strategy_model_id && strategyModelOptions.value.length > 0) {
     form.strategy_model_id = strategyModelOptions.value[0]?.value ?? ''
@@ -1405,14 +1361,14 @@ async function loadImage(file: File): Promise<HTMLImageElement> {
 
 <template>
   <div class="space-y-4 trade-form-minimal execution-long-page">
-    <GlassPanel class="form-shell-panel execution-long-shell">
+    <GlassPanel class="form-shell-panel execution-long-shell form-shell-unified">
       <div v-if="loadingTrade" class="space-y-3">
         <div class="skeleton-shimmer h-12 rounded-xl" />
         <div class="skeleton-shimmer h-12 rounded-xl" />
         <div class="skeleton-shimmer h-12 rounded-xl" />
       </div>
 
-      <form v-else :id="tradeFormId" class="form-block space-y-4" @submit.prevent="submitForm('save')">
+      <form v-else :id="tradeFormId" class="form-block space-y-4" @submit.prevent="submitForm">
         <div class="execution-long-header">
           <div>
             <h2 class="section-title">{{ pageTitle }}</h2>
@@ -1433,13 +1389,11 @@ async function loadImage(file: File): Promise<HTMLImageElement> {
           </div>
 
           <div class="grid grid-premium md:grid-cols-2 execution-entry-grid" @keydown.enter="onQuickTicketEnter">
-            <BaseSelect
+            <InstrumentPairSelect
               v-model="form.instrument_id"
               label="Instrument / Pair"
               required
-              searchable
-              search-placeholder="Search pair..."
-              :options="instrumentSelectOptions"
+              :instruments="instruments"
               :error="fieldError('instrument_id')"
             />
             <BaseSelect
@@ -1559,10 +1513,18 @@ async function loadImage(file: File): Promise<HTMLImageElement> {
               :options="sessionEnumOptions"
               :error="fieldError('session_enum')"
             />
-            <label class="trade-checkbox-label execution-checklist md:col-span-2">
-              <input v-model="form.followed_rules" type="checkbox" class="h-4 w-4" />
-              Rules Checklist: trade follows my plan
-            </label>
+            <button
+              type="button"
+              class="execution-complete-toggle execution-rule-toggle md:col-span-2"
+              :class="{ 'is-on': form.followed_rules }"
+              :aria-pressed="form.followed_rules"
+              @click="form.followed_rules = !form.followed_rules"
+            >
+              <span class="execution-complete-toggle-icon" aria-hidden="true">
+                <Check class="h-3.5 w-3.5" />
+              </span>
+              <span>Rules checklist follows my plan</span>
+            </button>
           </div>
         </section>
 
@@ -1572,10 +1534,18 @@ async function loadImage(file: File): Promise<HTMLImageElement> {
             <p class="section-title">Exit Details</p>
           </div>
 
-          <label class="trade-checkbox-label execution-inline-check">
-            <input v-model="tradeCompleted" type="checkbox" class="h-4 w-4" />
-            Trade is completed
-          </label>
+          <button
+            type="button"
+            class="execution-complete-toggle"
+            :class="{ 'is-on': tradeCompleted }"
+            :aria-pressed="tradeCompleted"
+            @click="tradeCompleted = !tradeCompleted"
+          >
+            <span class="execution-complete-toggle-icon" aria-hidden="true">
+              <Check class="h-3.5 w-3.5" />
+            </span>
+            <span>Trade is completed</span>
+          </button>
           <p v-if="fieldError('trade_completed')" class="field-error-text mt-2">{{ fieldError('trade_completed') }}</p>
 
           <div v-if="tradeCompleted" class="execution-exit-stack">
@@ -1621,10 +1591,11 @@ async function loadImage(file: File): Promise<HTMLImageElement> {
                 />
                 <BaseInput
                   v-model="primaryExit.notes"
+                  class="execution-exit-note"
                   label="Exit Note"
                   multiline
-                  :rows="1"
-                  placeholder="Optional note for the main exit..."
+                  :rows="2"
+                  placeholder="Optional note..."
                 />
               </div>
             </article>
@@ -1685,10 +1656,11 @@ async function loadImage(file: File): Promise<HTMLImageElement> {
                 />
                 <BaseInput
                   v-model="leg.notes"
+                  class="execution-exit-note"
                   label="Exit Note"
                   multiline
-                  :rows="1"
-                  placeholder="Optional note for this partial exit..."
+                  :rows="2"
+                  placeholder="Optional note..."
                 />
               </div>
             </article>
@@ -1743,28 +1715,23 @@ async function loadImage(file: File): Promise<HTMLImageElement> {
           />
         </section>
 
-        <section class="trade-form-section execution-long-section">
-          <div class="section-head">
-            <p class="trade-section-title">Screenshots</p>
-            <span class="section-note">Required</span>
-          </div>
-          <TradeImageUploader
-            :existing-images="existingImages"
-            :pending-images="pendingImages"
-            :max-files="MAX_IMAGE_COUNT"
-            :uploading="uploadingImages"
-            :upload-progress="uploadProgressByPendingId"
-            :deleting-image-ids="deletingImageIds"
-            :context-options="imageContextOptions"
-            :error="imageUploadError || fieldError('images')"
-            @select-files="onSelectImageFiles"
-            @remove-pending="removePendingImage"
-            @remove-existing="removeExistingImage"
-            @reorder-pending="reorderPendingImages"
-            @update-pending-metadata="updatePendingImageMetadata"
-            @update-existing-metadata="updateExistingImageMetadata"
-          />
-        </section>
+        <TradeImageUploader
+          title="Screenshots (Optional)"
+          :existing-images="existingImages"
+          :pending-images="pendingImages"
+          :max-files="MAX_IMAGE_COUNT"
+          :uploading="uploadingImages"
+          :upload-progress="uploadProgressByPendingId"
+          :deleting-image-ids="deletingImageIds"
+          :context-options="imageContextOptions"
+          :error="imageUploadError"
+          @select-files="onSelectImageFiles"
+          @remove-pending="removePendingImage"
+          @remove-existing="removeExistingImage"
+          @reorder-pending="reorderPendingImages"
+          @update-pending-metadata="updatePendingImageMetadata"
+          @update-existing-metadata="updateExistingImageMetadata"
+        />
 
         <section class="trade-form-section execution-long-section">
           <details class="trade-estimate-details">
@@ -1835,14 +1802,6 @@ async function loadImage(file: File): Promise<HTMLImageElement> {
         <div class="execution-sticky-bar">
           <span class="execution-status-chip" :class="riskStatusClass">{{ riskStatusLabel }}</span>
           <button type="button" class="btn btn-ghost px-4 py-2 text-sm" @click="router.push('/trades')">Cancel</button>
-          <button
-            type="button"
-            class="btn btn-secondary px-4 py-2 text-sm"
-            :disabled="isSubmittingDisabled || isEditMode"
-            @click="submitForm('save_and_new')"
-          >
-            Save & New
-          </button>
           <button
             type="submit"
             class="btn btn-primary px-4 py-2 text-sm"

@@ -1,20 +1,25 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
+import { storeToRefs } from 'pinia'
 import { useRoute, useRouter } from 'vue-router'
 import type { AxiosError } from 'axios'
 import { ArrowLeft, Plus, Trash2 } from 'lucide-vue-next'
 import GlassPanel from '@/components/layout/GlassPanel.vue'
 import BaseInput from '@/components/form/BaseInput.vue'
 import BaseDateTime from '@/components/form/BaseDateTime.vue'
+import InstrumentPairSelect from '@/components/form/InstrumentPairSelect.vue'
 import TradeImageUploader from '@/components/trades/TradeImageUploader.vue'
 import { useMissedTradeStore, type MissedTradePayload } from '@/stores/missedTradeStore'
+import { useTradeStore } from '@/stores/tradeStore'
 import { useUiStore } from '@/stores/uiStore'
 import type { MissedTrade, MissedTradeImage } from '@/types/trade'
 
 const route = useRoute()
 const router = useRouter()
 const missedTradeStore = useMissedTradeStore()
+const tradeStore = useTradeStore()
 const uiStore = useUiStore()
+const { instruments } = storeToRefs(tradeStore)
 
 const loadingEntry = ref(false)
 const submitAttempted = ref(false)
@@ -112,6 +117,25 @@ const formErrors = computed<Record<string, string>>(() => {
   }
 
   return errors
+})
+
+const selectedInstrumentId = computed({
+  get() {
+    const normalizedPair = form.pair.trim().toUpperCase()
+    if (!normalizedPair) return ''
+    const match = instruments.value.find((instrument) => instrument.symbol === normalizedPair)
+    return match ? String(match.id) : ''
+  },
+  set(value: string) {
+    const id = Number(value)
+    if (!Number.isInteger(id) || id <= 0) {
+      form.pair = ''
+      return
+    }
+
+    const match = instruments.value.find((instrument) => instrument.id === id)
+    form.pair = match?.symbol ?? ''
+  },
 })
 
 function fieldError(name: string) {
@@ -481,6 +505,15 @@ async function loadEntryIfNeeded() {
 }
 
 onMounted(async () => {
+  try {
+    await tradeStore.fetchInstruments()
+  } catch {
+    uiStore.toast({
+      type: 'error',
+      title: 'Failed to load instruments',
+      message: 'Please refresh and try again.',
+    })
+  }
   applyQuickDefaultsFromQuery()
   await loadEntryIfNeeded()
 })
@@ -585,7 +618,7 @@ async function loadImage(file: File): Promise<HTMLImageElement> {
       </div>
     </GlassPanel>
 
-    <GlassPanel class="form-shell-panel">
+    <GlassPanel class="form-shell-panel form-shell-unified">
 
       <div v-if="loadingEntry" class="space-y-3">
         <div class="skeleton-shimmer h-12 rounded-xl" />
@@ -597,7 +630,13 @@ async function loadImage(file: File): Promise<HTMLImageElement> {
         <section class="trade-form-section">
           <p class="trade-section-title">Setup Details</p>
           <div class="grid grid-premium md:grid-cols-2 xl:grid-cols-3">
-            <BaseInput v-model="form.pair" label="Pair" required placeholder="EURUSD" :error="fieldError('pair')" />
+            <InstrumentPairSelect
+              v-model="selectedInstrumentId"
+              label="Instrument / Pair"
+              required
+              :instruments="instruments"
+              :error="fieldError('pair')"
+            />
             <BaseInput v-model="form.model" label="Model" required placeholder="Liquidity Sweep" :error="fieldError('model')" />
             <BaseDateTime v-model="form.date" label="Date" required :max="nowLocalDateTime()" :error="fieldError('date')" />
           </div>

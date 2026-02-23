@@ -151,21 +151,6 @@ function onThemeSelect(event: Event) {
         </nav>
 
         <div class="workspace-sidebar-foot">
-          <div class="workspace-sidebar-theme">
-            <p class="workspace-nav-label">Theme</p>
-            <div class="theme-switcher theme-switcher-sidebar" aria-label="Theme switcher">
-              <button
-                v-for="option in uiStore.themeOptions"
-                :key="`theme-${option.value}`"
-                type="button"
-                class="chip-btn theme-switcher-btn"
-                :class="{ active: theme === option.value }"
-                @click="uiStore.setTheme(option.value)"
-              >
-                {{ option.label }}
-              </button>
-            </div>
-          </div>
           <span class="pill pill-positive">
             <Sparkles class="h-3.5 w-3.5" />
             Process over outcome
@@ -178,6 +163,21 @@ function onThemeSelect(event: Event) {
           <div class="topbar-kicker">
             <span class="kicker-label">Workspace</span>
             <span class="topbar-active">{{ currentItem.label }}</span>
+          </div>
+
+          <div class="topbar-theme-desktop">
+            <div class="theme-switcher" aria-label="Theme switcher">
+              <button
+                v-for="option in uiStore.themeOptions"
+                :key="`theme-${option.value}`"
+                type="button"
+                class="chip-btn theme-switcher-btn"
+                :class="{ active: theme === option.value }"
+                @click="uiStore.setTheme(option.value)"
+              >
+                {{ option.label }}
+              </button>
+            </div>
           </div>
 
           <div class="topbar-actions">
