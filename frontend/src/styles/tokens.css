@@ -69,6 +69,20 @@
   --shadow-soft: 0 6px 18px rgba(17, 24, 39, 0.06);
   --shadow-hover: 0 10px 24px rgba(17, 24, 39, 0.08);
 
+  --trade-card-surface: #f8fbff;
+  --trade-card-media-surface: #f3f8ff;
+  --trade-card-image-surface: #eef4ff;
+  --trade-card-title: #111827;
+  --trade-card-meta: #64748b;
+  --trade-card-pill-text: color-mix(in srgb, var(--primary) 74%, var(--text) 26%);
+  --trade-card-footer-border: color-mix(in srgb, var(--border) 82%, transparent 18%);
+  --trade-card-review: #1f2937;
+  --trade-card-review-hover: color-mix(in srgb, var(--primary) 76%, var(--text) 24%);
+  --trade-card-icon: #64748b;
+  --trade-card-icon-hover-border: color-mix(in srgb, var(--primary) 32%, var(--border) 68%);
+  --trade-card-icon-hover: #111827;
+  --trade-card-shadow: 0 10px 22px rgba(17, 24, 39, 0.12);
+
   --radius-sm: 0.5rem;
   --radius-md: 0.75rem;
   --radius-lg: 0.75rem;
@@ -130,4 +144,114 @@
 
   --shadow-soft: 0 10px 24px rgba(2, 6, 23, 0.36);
   --shadow-hover: 0 12px 28px rgba(2, 6, 23, 0.46);
+
+  --trade-card-surface: #060c14;
+  --trade-card-media-surface: #02060d;
+  --trade-card-image-surface: #040a12;
+  --trade-card-title: #f4f7fb;
+  --trade-card-meta: #94a3b8;
+  --trade-card-pill-text: color-mix(in srgb, #5eead4 82%, #cbd5e1 18%);
+  --trade-card-footer-border: color-mix(in srgb, #1e293b 72%, transparent 28%);
+  --trade-card-review: #e2e8f0;
+  --trade-card-review-hover: #f8fafc;
+  --trade-card-icon: #94a3b8;
+  --trade-card-icon-hover-border: color-mix(in srgb, #334155 80%, transparent 20%);
+  --trade-card-icon-hover: #e2e8f0;
+  --trade-card-shadow: 0 10px 22px rgba(2, 6, 23, 0.32);
+}
+
+[data-theme='forest'] {
+  --bg: #eef5ef;
+  --bg-soft: #eef5ef;
+  --panel: #f8fbf8;
+  --panel-soft: #f5faf6;
+  --panel-strong: #ffffff;
+  --border: #c9d9cd;
+  --text: #15211a;
+  --muted: #5f6f63;
+  --primary: #2f7a46;
+  --primary-soft: rgba(47, 122, 70, 0.14);
+  --danger: #b63d34;
+  --danger-soft: rgba(182, 61, 52, 0.13);
+  --warning: #9a6b20;
+  --warning-soft: rgba(154, 107, 32, 0.14);
+
+  --chart-grid: rgba(95, 111, 99, 0.2);
+  --chart-axis-line: rgba(95, 111, 99, 0.28);
+  --chart-positive: var(--primary);
+  --chart-positive-soft: rgba(47, 122, 70, 0.35);
+  --chart-positive-fade: rgba(47, 122, 70, 0.08);
+  --chart-negative: var(--danger);
+  --chart-negative-soft: rgba(182, 61, 52, 0.26);
+  --chart-negative-fade: rgba(182, 61, 52, 0.07);
+  --chart-cyan: #1f7a8c;
+  --chart-cyan-soft: rgba(31, 122, 140, 0.26);
+  --chart-cyan-fade: rgba(31, 122, 140, 0.06);
+  --chart-radar-split-a: rgba(255, 255, 255, 0.48);
+  --chart-radar-split-b: rgba(221, 233, 224, 0.6);
+
+  --shadow-soft: 0 7px 20px rgba(21, 33, 26, 0.08);
+  --shadow-hover: 0 10px 24px rgba(21, 33, 26, 0.11);
+
+  --trade-card-surface: #edf7ef;
+  --trade-card-media-surface: #e6f2e8;
+  --trade-card-image-surface: #dfecdf;
+  --trade-card-title: #15211a;
+  --trade-card-meta: #5f6f63;
+  --trade-card-pill-text: color-mix(in srgb, var(--primary) 76%, var(--text) 24%);
+  --trade-card-footer-border: color-mix(in srgb, var(--border) 84%, transparent 16%);
+  --trade-card-review: #1b2a20;
+  --trade-card-review-hover: color-mix(in srgb, var(--primary) 78%, var(--text) 22%);
+  --trade-card-icon: #5f6f63;
+  --trade-card-icon-hover-border: color-mix(in srgb, var(--primary) 36%, var(--border) 64%);
+  --trade-card-icon-hover: #15211a;
+  --trade-card-shadow: 0 10px 22px rgba(21, 33, 26, 0.14);
+}
+
+[data-theme='dawn'] {
+  --bg: #fff6ee;
+  --bg-soft: #fff6ee;
+  --panel: #fffdfb;
+  --panel-soft: #fff8f3;
+  --panel-strong: #ffffff;
+  --border: #efcfbc;
+  --text: #321d14;
+  --muted: #87695b;
+  --primary: #c56034;
+  --primary-soft: rgba(197, 96, 52, 0.14);
+  --danger: #c43f37;
+  --danger-soft: rgba(196, 63, 55, 0.14);
+  --warning: #b7791f;
+  --warning-soft: rgba(183, 121, 31, 0.14);
+
+  --chart-grid: rgba(135, 105, 91, 0.2);
+  --chart-axis-line: rgba(135, 105, 91, 0.28);
+  --chart-positive: var(--primary);
+  --chart-positive-soft: rgba(197, 96, 52, 0.34);
+  --chart-positive-fade: rgba(197, 96, 52, 0.08);
+  --chart-negative: var(--danger);
+  --chart-negative-soft: rgba(196, 63, 55, 0.28);
+  --chart-negative-fade: rgba(196, 63, 55, 0.07);
+  --chart-cyan: #0f766e;
+  --chart-cyan-soft: rgba(15, 118, 110, 0.24);
+  --chart-cyan-fade: rgba(15, 118, 110, 0.06);
+  --chart-radar-split-a: rgba(255, 255, 255, 0.52);
+  --chart-radar-split-b: rgba(253, 234, 220, 0.62);
+
+  --shadow-soft: 0 7px 20px rgba(80, 42, 27, 0.09);
+  --shadow-hover: 0 10px 24px rgba(80, 42, 27, 0.12);
+
+  --trade-card-surface: #fff4eb;
+  --trade-card-media-surface: #ffecdf;
+  --trade-card-image-surface: #ffe4d2;
+  --trade-card-title: #321d14;
+  --trade-card-meta: #87695b;
+  --trade-card-pill-text: color-mix(in srgb, var(--primary) 74%, var(--text) 26%);
+  --trade-card-footer-border: color-mix(in srgb, var(--border) 84%, transparent 16%);
+  --trade-card-review: #40241a;
+  --trade-card-review-hover: color-mix(in srgb, var(--primary) 76%, var(--text) 24%);
+  --trade-card-icon: #87695b;
+  --trade-card-icon-hover-border: color-mix(in srgb, var(--primary) 34%, var(--border) 66%);
+  --trade-card-icon-hover: #321d14;
+  --trade-card-shadow: 0 10px 22px rgba(80, 42, 27, 0.14);
 }

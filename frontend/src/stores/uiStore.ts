@@ -1,8 +1,14 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
 
-export type ThemeMode = 'dark' | 'light'
+export type ThemeMode = 'light' | 'dark' | 'forest' | 'dawn'
 export type ToastType = 'success' | 'error' | 'info'
+export const THEME_OPTIONS: Array<{ value: ThemeMode; label: string }> = [
+  { value: 'light', label: 'Light' },
+  { value: 'dark', label: 'Dark' },
+  { value: 'forest', label: 'Forest' },
+  { value: 'dawn', label: 'Dawn' },
+]
 
 interface ToastItem {
   id: number
@@ -36,20 +42,31 @@ export const useUiStore = defineStore('ui', () => {
     danger: false,
   })
 
+  function isThemeMode(value: string | null): value is ThemeMode {
+    if (!value) return false
+    return THEME_OPTIONS.some((option) => option.value === value)
+  }
+
   function applyTheme(mode: ThemeMode) {
     theme.value = mode
     document.documentElement.dataset.theme = mode
     localStorage.setItem('theme_mode', mode)
   }
 
+  function setTheme(mode: ThemeMode) {
+    applyTheme(mode)
+  }
+
   function initTheme() {
     const saved = localStorage.getItem('theme_mode')
-    const initial: ThemeMode = saved === 'dark' ? 'dark' : 'light'
+    const initial: ThemeMode = isThemeMode(saved) ? saved : 'light'
     applyTheme(initial)
   }
 
   function toggleTheme() {
-    applyTheme(theme.value === 'dark' ? 'light' : 'dark')
+    const currentIndex = THEME_OPTIONS.findIndex((option) => option.value === theme.value)
+    const nextIndex = (currentIndex + 1) % THEME_OPTIONS.length
+    applyTheme(THEME_OPTIONS[nextIndex]!.value)
   }
 
   function toast(payload: {
@@ -108,9 +125,11 @@ export const useUiStore = defineStore('ui', () => {
 
   return {
     theme,
+    themeOptions: THEME_OPTIONS,
     toasts,
     confirm,
     initTheme,
+    setTheme,
     toggleTheme,
     toast,
     removeToast,

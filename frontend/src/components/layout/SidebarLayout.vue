@@ -7,15 +7,13 @@ import {
   SearchCheck,
   Goal,
   LineChart,
-  Moon,
   Sparkles,
-  Sun,
   WalletCards,
   ChevronRight,
   WifiOff,
 } from 'lucide-vue-next'
 import { storeToRefs } from 'pinia'
-import { useUiStore } from '@/stores/uiStore'
+import { useUiStore, type ThemeMode } from '@/stores/uiStore'
 import { useSyncStatusStore } from '@/stores/syncStatusStore'
 
 const route = useRoute()
@@ -98,6 +96,15 @@ const currentItem = computed(() =>
 const showPageHero = computed(() => currentItem.value.to !== '/dashboard')
 const compactHeroRoutes = new Set(['/trades', '/missed-trades'])
 const useCompactHero = computed(() => compactHeroRoutes.has(route.path))
+
+function onThemeSelect(event: Event) {
+  const target = event.target
+  if (!(target instanceof HTMLSelectElement)) return
+  const value = target.value
+  const isValid = uiStore.themeOptions.some((option) => option.value === value)
+  if (!isValid) return
+  uiStore.setTheme(value as ThemeMode)
+}
 </script>
 
 <template>
@@ -144,6 +151,21 @@ const useCompactHero = computed(() => compactHeroRoutes.has(route.path))
         </nav>
 
         <div class="workspace-sidebar-foot">
+          <div class="workspace-sidebar-theme">
+            <p class="workspace-nav-label">Theme</p>
+            <div class="theme-switcher theme-switcher-sidebar" aria-label="Theme switcher">
+              <button
+                v-for="option in uiStore.themeOptions"
+                :key="`theme-${option.value}`"
+                type="button"
+                class="chip-btn theme-switcher-btn"
+                :class="{ active: theme === option.value }"
+                @click="uiStore.setTheme(option.value)"
+              >
+                {{ option.label }}
+              </button>
+            </div>
+          </div>
           <span class="pill pill-positive">
             <Sparkles class="h-3.5 w-3.5" />
             Process over outcome
@@ -164,11 +186,13 @@ const useCompactHero = computed(() => compactHeroRoutes.has(route.path))
               Local mode
               <small v-if="lastFallbackContext">{{ lastFallbackContext }}</small>
             </span>
-            <button class="btn btn-ghost inline-flex items-center gap-2 px-3 py-2 text-sm" @click="uiStore.toggleTheme()">
-              <Sun v-if="theme === 'dark'" class="h-4 w-4" />
-              <Moon v-else class="h-4 w-4" />
-              {{ theme === 'dark' ? 'Light' : 'Dark' }}
-            </button>
+            <div class="theme-switcher-mobile">
+              <select class="field field-sm theme-mobile-select" :value="theme" aria-label="Theme" @change="onThemeSelect">
+                <option v-for="option in uiStore.themeOptions" :key="`theme-mobile-${option.value}`" :value="option.value">
+                  {{ option.label }}
+                </option>
+              </select>
+            </div>
           </div>
         </header>
 
