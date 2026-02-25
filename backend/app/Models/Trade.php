@@ -49,6 +49,7 @@ class Trade extends Model
         'account_balance_before_trade',
         'account_balance_after_trade',
         'followed_rules',
+        'checklist_incomplete',
         'emotion',
         'risk_override_reason',
         'session',
@@ -89,6 +90,7 @@ class Trade extends Model
         'account_balance_before_trade' => 'decimal:2',
         'account_balance_after_trade' => 'decimal:2',
         'followed_rules' => 'boolean',
+        'checklist_incomplete' => 'boolean',
         'session_enum' => 'string',
         'date' => 'datetime',
         'deleted_at' => 'datetime',
@@ -192,5 +194,10 @@ class Trade extends Model
     public function psychology(): HasOne
     {
         return $this->hasOne(TradePsychology::class);
+    }
+
+    public function checklistResponses(): HasMany
+    {
+        return $this->hasMany(TradeChecklistResponse::class);
     }
 }

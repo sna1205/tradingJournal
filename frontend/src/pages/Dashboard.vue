@@ -1300,7 +1300,7 @@ function setDashboardMode(mode: DashboardMode) {
               />
             </div>
             <div v-else class="table-wrap">
-              <table class="table">
+              <table class="table overview-data-table overview-expectancy-table">
                 <thead>
                   <tr>
                     <th>Bucket</th>
@@ -1312,13 +1312,13 @@ function setDashboardMode(mode: DashboardMode) {
                 </thead>
                 <tbody>
                   <tr v-for="row in confidenceBuckets" :key="`confidence-${row.bucket}`">
-                    <td class="font-semibold">{{ row.bucket }}</td>
-                    <td>{{ row.total_trades }}</td>
-                    <td class="value-display" :class="Number(row.expectancy_money) >= 0 ? 'positive' : 'negative'">
+                    <td class="font-semibold" data-label="Bucket">{{ row.bucket }}</td>
+                    <td data-label="Trades">{{ row.total_trades }}</td>
+                    <td class="value-display" data-label="Expectancy" :class="Number(row.expectancy_money) >= 0 ? 'positive' : 'negative'">
                       {{ asSignedCurrency(row.expectancy_money) }}
                     </td>
-                    <td>{{ Number(row.win_rate).toFixed(2) }}%</td>
-                    <td>{{ Number(row.rule_break_rate).toFixed(2) }}%</td>
+                    <td data-label="Win Rate">{{ Number(row.win_rate).toFixed(2) }}%</td>
+                    <td data-label="Rule Breaks">{{ Number(row.rule_break_rate).toFixed(2) }}%</td>
                   </tr>
                 </tbody>
               </table>
@@ -1337,7 +1337,7 @@ function setDashboardMode(mode: DashboardMode) {
               />
             </div>
             <div v-else class="table-wrap">
-              <table class="table">
+              <table class="table overview-data-table overview-expectancy-table">
                 <thead>
                   <tr>
                     <th>Bucket</th>
@@ -1349,13 +1349,13 @@ function setDashboardMode(mode: DashboardMode) {
                 </thead>
                 <tbody>
                   <tr v-for="row in stressBuckets" :key="`stress-${row.bucket}`">
-                    <td class="font-semibold">{{ row.bucket }}</td>
-                    <td>{{ row.total_trades }}</td>
-                    <td class="value-display" :class="Number(row.expectancy_money) >= 0 ? 'positive' : 'negative'">
+                    <td class="font-semibold" data-label="Bucket">{{ row.bucket }}</td>
+                    <td data-label="Trades">{{ row.total_trades }}</td>
+                    <td class="value-display" data-label="Expectancy" :class="Number(row.expectancy_money) >= 0 ? 'positive' : 'negative'">
                       {{ asSignedCurrency(row.expectancy_money) }}
                     </td>
-                    <td>{{ Number(row.win_rate).toFixed(2) }}%</td>
-                    <td>{{ Number(row.rule_break_rate).toFixed(2) }}%</td>
+                    <td data-label="Win Rate">{{ Number(row.win_rate).toFixed(2) }}%</td>
+                    <td data-label="Rule Breaks">{{ Number(row.rule_break_rate).toFixed(2) }}%</td>
                   </tr>
                 </tbody>
               </table>
@@ -1373,7 +1373,7 @@ function setDashboardMode(mode: DashboardMode) {
               <EmptyState title="No strategy data" description="Add executions to rank strategy models." :icon="BarChartHorizontalBig" />
             </div>
             <div v-else class="table-wrap">
-              <table class="table">
+              <table class="table overview-data-table">
                 <thead>
                   <tr>
                     <th>Strategy Model</th>
@@ -1385,13 +1385,13 @@ function setDashboardMode(mode: DashboardMode) {
                 </thead>
                 <tbody>
                   <tr v-for="row in strategyRows" :key="row.strategy_model || 'unknown'">
-                    <td class="font-semibold">{{ row.strategy_model || 'Unknown' }}</td>
-                    <td>{{ row.total_trades }}</td>
-                    <td>{{ Number(row.win_rate).toFixed(2) }}%</td>
-                    <td class="value-display" :class="Number(row.expectancy) >= 0 ? 'positive' : 'negative'">
+                    <td class="font-semibold" data-label="Strategy">{{ row.strategy_model || 'Unknown' }}</td>
+                    <td data-label="Executions">{{ row.total_trades }}</td>
+                    <td data-label="Win Rate">{{ Number(row.win_rate).toFixed(2) }}%</td>
+                    <td class="value-display" data-label="Expectancy" :class="Number(row.expectancy) >= 0 ? 'positive' : 'negative'">
                       {{ Number(row.expectancy).toFixed(3) }}
                     </td>
-                    <td class="value-display" :class="Number(row.total_pnl) >= 0 ? 'positive' : 'negative'">
+                    <td class="value-display" data-label="Total P/L" :class="Number(row.total_pnl) >= 0 ? 'positive' : 'negative'">
                       {{ asCurrency(Number(row.total_pnl)) }}
                     </td>
                   </tr>

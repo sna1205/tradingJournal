@@ -65,6 +65,7 @@ export interface TradePayload {
   tag_ids?: number[]
   risk_override_reason?: string | null
   followed_rules: boolean
+  checklist_incomplete?: boolean
   emotion: TradeEmotion
   session?: string
   strategy_model?: string
@@ -321,6 +322,7 @@ export const useTradeStore = defineStore('trades', () => {
           ? payload.risk_override_reason
           : current.risk_override_reason,
         followed_rules: payload.followed_rules ?? current.followed_rules,
+        checklist_incomplete: payload.checklist_incomplete ?? current.checklist_incomplete,
         emotion: payload.emotion ?? current.emotion,
         session: payload.session ?? current.session,
         model: payload.strategy_model ?? current.model,
@@ -454,9 +456,22 @@ export const useTradeStore = defineStore('trades', () => {
 
   async function fetchInstruments() {
     try {
-      const { data } = await api.get<Instrument[]>('/instruments')
+      const { data } = await api.get<Instrument[] | { data?: Instrument[] }>('/instruments')
       syncStatusStore.markServerHealthy()
-      instruments.value = Array.isArray(data) ? data : []
+      const primary = Array.isArray(data) ? data : (Array.isArray(data?.data) ? data.data : [])
+      if (primary.length > 0) {
+        instruments.value = primary
+        return
+      }
+
+      const { data: secondaryData } = await api.get<Instrument[] | { data?: Instrument[] }>('/instruments', {
+        params: { include_inactive: true },
+      })
+      const secondary = Array.isArray(secondaryData)
+        ? secondaryData
+        : (Array.isArray(secondaryData?.data) ? secondaryData.data : [])
+
+      instruments.value = secondary.length > 0 ? secondary : defaultInstrumentsFallback()
     } catch (error) {
       if (!shouldUseLocalFallback(error)) {
         throw error
@@ -727,6 +742,7 @@ function toOptimisticTrade(payload: TradePayload, tempId: number): Trade {
     account_balance_before_trade: null,
     account_balance_after_trade: null,
     followed_rules: payload.followed_rules,
+    checklist_incomplete: payload.checklist_incomplete ?? false,
     emotion: payload.emotion,
     risk_override_reason: payload.risk_override_reason ?? null,
     session: payload.session ?? 'N/A',

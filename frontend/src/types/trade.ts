@@ -43,6 +43,7 @@ export interface Trade {
   account_balance_before_trade: string | null
   account_balance_after_trade: string | null
   followed_rules: boolean
+  checklist_incomplete?: boolean
   emotion: TradeEmotion
   risk_override_reason?: string | null
   session: string

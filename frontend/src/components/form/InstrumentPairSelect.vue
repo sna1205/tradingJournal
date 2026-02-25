@@ -75,12 +75,13 @@ const groupExpanded = ref<Record<GroupKey, boolean>>({
 const normalizedSearch = computed(() => searchTerm.value.trim().toLowerCase())
 const selectedId = computed(() => Number(props.modelValue || 0))
 
-const normalizedInstruments = computed(() =>
-  props.instruments
-    .filter((instrument) => instrument.is_active)
+const normalizedInstruments = computed(() => {
+  const active = props.instruments.filter((instrument) => isInstrumentActive(instrument))
+  const source = active.length > 0 ? active : props.instruments
+  return source
     .slice()
     .sort((a, b) => a.symbol.localeCompare(b.symbol))
-)
+})
 
 const selectedInstrument = computed(() =>
   normalizedInstruments.value.find((instrument) => instrument.id === selectedId.value) ?? null
@@ -236,6 +237,18 @@ function matchesInstrument(instrument: Instrument, term: string) {
     || instrument.base_currency.toLowerCase().includes(term)
     || instrument.quote_currency.toLowerCase().includes(term)
     || instrument.asset_class.toLowerCase().includes(term)
+}
+
+function isInstrumentActive(instrument: Instrument): boolean {
+  const value = (instrument as unknown as { is_active?: unknown }).is_active
+  if (value === undefined || value === null) return true
+  if (typeof value === 'boolean') return value
+  if (typeof value === 'number') return value !== 0
+  if (typeof value === 'string') {
+    const normalized = value.trim().toLowerCase()
+    return normalized !== '' && normalized !== '0' && normalized !== 'false' && normalized !== 'no'
+  }
+  return Boolean(value)
 }
 
 function readRecentIds(): number[] {

@@ -278,6 +278,7 @@ class TradeController extends Controller
             'slippage_cost' => ['sometimes', 'numeric', 'min:0'],
             'risk_override_reason' => ['nullable', 'string', 'max:2000'],
             'followed_rules' => [$required, 'boolean'],
+            'checklist_incomplete' => ['sometimes', 'boolean'],
             'emotion' => [$required, Rule::in(self::EMOTION_VALUES)],
             'session' => ['sometimes', 'string', 'max:60'],
             'model' => ['sometimes', 'string', 'max:120'],
@@ -423,8 +424,11 @@ class TradeController extends Controller
         if (!array_key_exists('date', $input) && array_key_exists('close_date', $input)) {
             $input['date'] = $input['close_date'];
         }
+        if (!array_key_exists('checklist_incomplete', $input) && array_key_exists('checklistIncomplete', $input)) {
+            $input['checklist_incomplete'] = $input['checklistIncomplete'];
+        }
 
-        unset($input['symbol'], $input['position_size'], $input['strategy_model'], $input['model_id'], $input['sessionEnum'], $input['tags'], $input['close_date']);
+        unset($input['symbol'], $input['position_size'], $input['strategy_model'], $input['model_id'], $input['sessionEnum'], $input['tags'], $input['close_date'], $input['checklistIncomplete']);
 
         return $input;
     }
@@ -513,6 +517,7 @@ class TradeController extends Controller
         $payload['swap'] = $payload['swap'] ?? 0;
         $payload['spread_cost'] = $payload['spread_cost'] ?? 0;
         $payload['slippage_cost'] = $payload['slippage_cost'] ?? 0;
+        $payload['checklist_incomplete'] = $payload['checklist_incomplete'] ?? false;
 
         return $payload;
     }
@@ -562,6 +567,7 @@ class TradeController extends Controller
             'spread_cost' => $payload['spread_cost'] ?? (float) ($existingTrade->spread_cost ?? 0),
             'slippage_cost' => $payload['slippage_cost'] ?? (float) ($existingTrade->slippage_cost ?? 0),
             'followed_rules' => $payload['followed_rules'] ?? (bool) $existingTrade->followed_rules,
+            'checklist_incomplete' => $payload['checklist_incomplete'] ?? (bool) ($existingTrade->checklist_incomplete ?? false),
             'emotion' => $payload['emotion'] ?? (string) $existingTrade->emotion,
             'risk_override_reason' => $payload['risk_override_reason'] ?? $existingTrade->risk_override_reason,
             'session' => $payload['session'] ?? (string) $existingTrade->session,

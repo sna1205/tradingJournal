@@ -10,6 +10,7 @@ import BaseSelect from '@/components/form/BaseSelect.vue'
 import BaseDateTime from '@/components/form/BaseDateTime.vue'
 import InstrumentPairSelect from '@/components/form/InstrumentPairSelect.vue'
 import TradeImageUploader from '@/components/trades/TradeImageUploader.vue'
+import TradeChecklistPanel from '@/components/checklists/TradeChecklistPanel.vue'
 import api from '@/services/api'
 import { useAccountStore } from '@/stores/accountStore'
 import {
@@ -17,6 +18,7 @@ import {
   type TradePayload,
   type TradePrecheckResult,
 } from '@/stores/tradeStore'
+import { useTradeChecklistStore } from '@/stores/tradeChecklistStore'
 import { useUiStore } from '@/stores/uiStore'
 import type { ImageContextTag, Instrument, Paginated, SessionEnum, Trade, TradeEmotion, TradeImage, TradeLeg, TradePsychology } from '@/types/trade'
 import { asCurrency, asSignedCurrency } from '@/utils/format'
@@ -24,10 +26,24 @@ import { asCurrency, asSignedCurrency } from '@/utils/format'
 const router = useRouter()
 const route = useRoute()
 const tradeStore = useTradeStore()
+const tradeChecklistStore = useTradeChecklistStore()
 const accountStore = useAccountStore()
 const uiStore = useUiStore()
 const { accounts } = storeToRefs(accountStore)
 const { instruments, strategyModels, setups, killzones, tradeTags, sessionOptions } = storeToRefs(tradeStore)
+const {
+  checklist: activeChecklist,
+  requiredItems: checklistRequiredItems,
+  optionalItems: checklistOptionalItems,
+  archivedResponses: checklistArchivedResponses,
+  readiness: checklistReadiness,
+  loading: checklistLoading,
+  saving: checklistSaving,
+  submitAttempted: checklistSubmitAttempted,
+  isStrict: checklistStrictMode,
+  checklistIncomplete,
+  hasChecklist,
+} = storeToRefs(tradeChecklistStore)
 
 const loadingTrade = ref(false)
 const submitAttempted = ref(false)
@@ -230,8 +246,20 @@ const precheckError = ref('')
 const precheckResult = ref<TradePrecheckResult | null>(null)
 let precheckTimer: ReturnType<typeof setTimeout> | null = null
 const isSaveBlocked = computed(() => (precheckResult.value !== null) && !precheckResult.value.allowed)
+const isChecklistStrictBlocked = computed(() =>
+  checklistStrictMode.value && hasChecklist.value && checklistIncomplete.value
+)
 const isSubmittingDisabled = computed(() =>
-  tradeStore.saving || uploadingImages.value || precheckLoading.value || isSaveBlocked.value
+  tradeStore.saving
+  || uploadingImages.value
+  || precheckLoading.value
+  || isSaveBlocked.value
+  || isChecklistStrictBlocked.value
+)
+const softChecklistWarning = computed(() =>
+  hasChecklist.value
+  && !checklistStrictMode.value
+  && checklistIncomplete.value
 )
 const riskStatusLabel = computed(() => {
   if (precheckLoading.value) return 'Checking'
@@ -847,6 +875,7 @@ function buildPayload(): TradePayload {
     legs,
     risk_override_reason: form.risk_override_reason.trim() ? form.risk_override_reason.trim() : null,
     followed_rules: form.followed_rules,
+    checklist_incomplete: checklistIncomplete.value,
     emotion: form.emotion,
     notes: form.notes.trim() ? form.notes.trim() : null,
   }
@@ -1055,6 +1084,7 @@ function handleGlobalHotkeys(event: KeyboardEvent) {
 
 async function submitForm() {
   submitAttempted.value = true
+  tradeChecklistStore.markSubmitAttempted(true)
   const firstError = Object.values(formErrors.value)[0]
   if (firstError) {
     return
@@ -1073,6 +1103,15 @@ async function submitForm() {
     return
   }
 
+  if (isChecklistStrictBlocked.value) {
+    uiStore.toast({
+      type: 'error',
+      title: 'Checklist incomplete',
+      message: 'Complete all required checklist items before saving.',
+    })
+    return
+  }
+
   try {
     const payload = buildPayload()
     const hadPendingImages = pendingImages.value.length > 0
@@ -1083,6 +1122,8 @@ async function submitForm() {
     } else {
       savedTrade = await tradeStore.addTrade(payload)
     }
+
+    await tradeChecklistStore.persistForTrade(savedTrade.id)
 
     await tradeStore.upsertTradePsychology(savedTrade.id, buildPsychologyPayload())
 
@@ -1096,6 +1137,7 @@ async function submitForm() {
         : `${payload.symbol} has been saved to your execution journal.`,
     })
 
+    tradeChecklistStore.clearSubmitAttempted()
     void router.push('/trades')
   } catch (error) {
     uiStore.toast({
@@ -1133,6 +1175,22 @@ async function loadTradeIfNeeded() {
   } finally {
     loadingTrade.value = false
   }
+}
+
+async function loadChecklistState() {
+  tradeChecklistStore.clearSubmitAttempted()
+
+  if (isEditMode.value && tradeId.value !== null) {
+    await tradeChecklistStore.loadForTrade(tradeId.value)
+    return
+  }
+
+  const accountId = Number(form.account_id)
+  await tradeChecklistStore.loadForCreate(Number.isInteger(accountId) && accountId > 0 ? accountId : null)
+}
+
+function onChecklistResponseChange(itemId: number, value: unknown) {
+  tradeChecklistStore.updateResponse(itemId, value, true)
 }
 
 onMounted(async () => {
@@ -1178,8 +1236,21 @@ onMounted(async () => {
   if (!form.instrument_id && form.symbol.trim()) {
     selectInstrumentBySymbol(form.symbol)
   }
+  await loadChecklistState()
   schedulePrecheck()
 })
+
+watch(
+  () => form.account_id,
+  (value, previous) => {
+    if (value === previous) return
+    if (!isEditMode.value) {
+      const accountId = Number(value)
+      void tradeChecklistStore.loadForCreate(Number.isInteger(accountId) && accountId > 0 ? accountId : null)
+    }
+    schedulePrecheck()
+  }
+)
 
 watch(
   () => form.instrument_id,
@@ -1255,6 +1326,7 @@ watch(
 onBeforeUnmount(() => {
   window.removeEventListener('keydown', handleGlobalHotkeys)
   clearPendingImages()
+  tradeChecklistStore.resetState()
   if (precheckTimer) {
     clearTimeout(precheckTimer)
   }
@@ -1328,7 +1400,8 @@ async function loadImage(file: File): Promise<HTMLImageElement> {
         <div class="skeleton-shimmer h-12 rounded-xl" />
       </div>
 
-      <form v-else :id="tradeFormId" class="form-block space-y-4" @submit.prevent="submitForm">
+      <div v-else class="trade-form-with-checklist">
+        <form :id="tradeFormId" class="form-block space-y-4 trade-form-main" @submit.prevent="submitForm">
         <div class="execution-long-header">
           <div>
             <h2 class="section-title">{{ pageTitle }}</h2>
@@ -1341,6 +1414,9 @@ async function loadImage(file: File): Promise<HTMLImageElement> {
         </div>
 
         <p v-if="blockedSummary" class="field-error-text">{{ blockedSummary }}</p>
+        <p v-if="softChecklistWarning" class="field-error-text">
+          Checklist is incomplete. Save is allowed in soft mode and this trade will be flagged.
+        </p>
 
         <section class="trade-form-section execution-long-section">
           <div class="execution-section-heading">
@@ -1487,6 +1563,20 @@ async function loadImage(file: File): Promise<HTMLImageElement> {
             </button>
           </div>
         </section>
+
+        <TradeChecklistPanel
+          mode="mobile"
+          :checklist="activeChecklist"
+          :required-items="checklistRequiredItems"
+          :optional-items="checklistOptionalItems"
+          :archived-responses="checklistArchivedResponses"
+          :readiness="checklistReadiness"
+          :loading="checklistLoading"
+          :saving="checklistSaving"
+          :submit-attempted="checklistSubmitAttempted || submitAttempted"
+          :strict-mode="checklistStrictMode"
+          @update-response="onChecklistResponseChange"
+        />
 
         <section class="trade-form-section execution-long-section">
           <div class="execution-section-heading">
@@ -1773,7 +1863,25 @@ async function loadImage(file: File): Promise<HTMLImageElement> {
             }}
           </button>
         </div>
-      </form>
+        <p v-if="isChecklistStrictBlocked" class="field-error-text mt-2">
+          Complete required checklist items to proceed.
+        </p>
+        </form>
+
+        <TradeChecklistPanel
+          mode="desktop"
+          :checklist="activeChecklist"
+          :required-items="checklistRequiredItems"
+          :optional-items="checklistOptionalItems"
+          :archived-responses="checklistArchivedResponses"
+          :readiness="checklistReadiness"
+          :loading="checklistLoading"
+          :saving="checklistSaving"
+          :submit-attempted="checklistSubmitAttempted || submitAttempted"
+          :strict-mode="checklistStrictMode"
+          @update-response="onChecklistResponseChange"
+        />
+      </div>
     </GlassPanel>
   </div>
 </template>
