@@ -7,6 +7,7 @@ import {
   SearchCheck,
   Goal,
   LineChart,
+  Plus,
   Sparkles,
   WalletCards,
   ChevronRight,
@@ -96,6 +97,8 @@ const currentItem = computed(() =>
 const showPageHero = computed(() => currentItem.value.to !== '/dashboard')
 const compactHeroRoutes = new Set(['/trades', '/missed-trades'])
 const useCompactHero = computed(() => compactHeroRoutes.has(route.path))
+const hideGlobalFabOnRoutes = new Set(['trades-new', 'trades-edit'])
+const showGlobalFab = computed(() => !hideGlobalFabOnRoutes.has(String(route.name ?? '')))
 
 function onThemeSelect(event: Event) {
   const target = event.target
@@ -211,6 +214,16 @@ function onThemeSelect(event: Event) {
         </main>
       </section>
     </div>
+
+    <RouterLink
+      v-if="showGlobalFab"
+      class="global-action-fab motion-fade-scale"
+      to="/trades/new"
+      title="New execution"
+      aria-label="Add new execution"
+    >
+      <Plus class="h-7 w-7" />
+    </RouterLink>
 
     <nav class="mobile-nav">
       <RouterLink

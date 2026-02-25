@@ -32,7 +32,7 @@ class TradeImageController extends Controller
     public function store(Request $request, Trade $trade)
     {
         $validated = Validator::make($request->all(), [
-            'image' => ['required', 'file', 'max:' . self::MAX_FILE_KB, 'mimes:jpg,jpeg,png,webp'],
+            'image' => ['required', 'file', 'max:' . self::MAX_FILE_KB, 'mimes:jpg,jpeg,png,webp,bmp'],
             'sort_order' => ['nullable', 'integer', 'min:0'],
             'context_tag' => ['nullable', 'in:' . implode(',', self::CONTEXT_TAGS)],
             'timeframe' => ['nullable', 'string', 'max:20'],
@@ -144,7 +144,7 @@ class TradeImageController extends Controller
 
         return match ($extension) {
             'jpeg' => 'jpg',
-            'jpg', 'png', 'webp' => $extension,
+            'jpg', 'png', 'webp', 'bmp' => $extension,
             default => 'jpg',
         };
     }
@@ -293,42 +293,39 @@ class TradeImageController extends Controller
 
     private function storageUrl(string $path, string $disk): string
     {
-        $requestBase = rtrim((string) (request()?->getSchemeAndHttpHost() ?: config('app.url')), '/');
-
-        if (str_starts_with($path, 'http://') || str_starts_with($path, 'https://')) {
-            return $this->normalizeLocalStorageUrl($path, $requestBase);
+        // Always prefer relative /storage URLs for local disks so frontend host/proxy
+        // differences (e.g. Vite 5173, Docker service hostnames) do not break images.
+        $relativeFromPath = $this->extractStoragePath($path);
+        if ($relativeFromPath !== null) {
+            return $relativeFromPath;
         }
 
         $url = Storage::disk($disk)->url($path);
-        if (str_starts_with($url, 'http://') || str_starts_with($url, 'https://')) {
-            return $this->normalizeLocalStorageUrl($url, $requestBase);
+        $relativeFromUrl = $this->extractStoragePath($url);
+        if ($relativeFromUrl !== null) {
+            return $relativeFromUrl;
         }
 
-        $base = $requestBase;
-        if (str_starts_with($url, '/')) {
-            return $base . $url;
-        }
-
-        return $base . '/' . ltrim($url, '/');
+        return $url;
     }
 
-    private function normalizeLocalStorageUrl(string $url, string $requestBase): string
+    private function extractStoragePath(string $value): ?string
     {
-        if ($requestBase === '') {
-            return $url;
+        if (str_starts_with($value, '/storage/')) {
+            return $value;
         }
 
-        $parts = parse_url($url);
+        $parts = parse_url($value);
         if (!is_array($parts)) {
-            return $url;
+            return null;
         }
 
         $path = $parts['path'] ?? null;
         if (!is_string($path) || !str_starts_with($path, '/storage/')) {
-            return $url;
+            return null;
         }
 
         $query = isset($parts['query']) ? ('?' . $parts['query']) : '';
-        return $requestBase . $path . $query;
+        return $path . $query;
     }
 }

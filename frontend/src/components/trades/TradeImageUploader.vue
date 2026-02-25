@@ -1,8 +1,6 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { GripVertical, ImagePlus, Loader2, Trash2, UploadCloud } from 'lucide-vue-next'
-import BaseInput from '@/components/form/BaseInput.vue'
-import BaseSelect from '@/components/form/BaseSelect.vue'
 import type { ImageContextTag, TradeImage } from '@/types/trade'
 
 export interface PendingTradeImage {
@@ -25,7 +23,6 @@ const props = withDefaults(
     error?: string
     title?: string
     uploadHint?: string
-    contextOptions?: Array<{ label: string; value: ImageContextTag }>
   }>(),
   {
     uploading: false,
@@ -34,14 +31,7 @@ const props = withDefaults(
     deletingImageIds: () => [],
     error: '',
     title: 'Execution Screenshots',
-    uploadHint: 'Max 5 images - jpg, jpeg, png, webp - 5MB each',
-    contextOptions: () => [
-      { label: 'Pre Entry', value: 'pre_entry' },
-      { label: 'Entry', value: 'entry' },
-      { label: 'Management', value: 'management' },
-      { label: 'Exit', value: 'exit' },
-      { label: 'Post Review', value: 'post_review' },
-    ],
+    uploadHint: 'Max 5 images - jpg, jpeg, png, webp, bmp - 5MB each - paste with Ctrl+V',
   }
 )
 
@@ -50,8 +40,6 @@ const emit = defineEmits<{
   (event: 'remove-pending', id: string): void
   (event: 'remove-existing', id: number): void
   (event: 'reorder-pending', payload: { from: number; to: number }): void
-  (event: 'update-pending-metadata', payload: { id: string; context_tag?: ImageContextTag; timeframe?: string; annotation_notes?: string }): void
-  (event: 'update-existing-metadata', payload: { id: number; context_tag?: ImageContextTag | null; timeframe?: string | null; annotation_notes?: string | null }): void
 }>()
 
 const inputRef = ref<HTMLInputElement | null>(null)
@@ -74,6 +62,16 @@ function onInputChange(event: Event) {
   }
 
   target.value = ''
+}
+
+async function onPaste(event: ClipboardEvent) {
+  if (!canSelectMore.value || props.uploading) return
+
+  const files = await extractImageFilesFromClipboard(event.clipboardData)
+  if (files.length === 0) return
+
+  event.preventDefault()
+  emit('select-files', files)
 }
 
 function onDrop(event: DragEvent) {
@@ -119,72 +117,149 @@ function isDeleting(imageId: number) {
   return props.deletingImageIds.includes(imageId)
 }
 
-function contextLabel(value: string | null | undefined): string {
-  const matched = props.contextOptions.find((option) => option.value === (value ?? ''))
-  return matched?.label ?? 'Unlabeled'
+async function extractImageFilesFromClipboard(clipboardData: DataTransfer | null): Promise<File[]> {
+  const files: File[] = []
+  const seenSignatures = new Set<string>()
+  const timestamp = Date.now()
+  let index = 0
+
+  const fileList = clipboardData?.files ? Array.from(clipboardData.files) : []
+  const items = clipboardData?.items ? Array.from(clipboardData.items) : []
+
+  for (const file of fileList) {
+    if (!file.type.startsWith('image/')) continue
+    if (isDuplicateClipboardFile(file, seenSignatures)) continue
+    files.push(normalizeClipboardFile(file, timestamp, index))
+    index += 1
+  }
+
+  for (const item of items) {
+    if (item.kind !== 'file' || !item.type.startsWith('image/')) continue
+    const file = item.getAsFile()
+    if (!file) continue
+
+    if (isDuplicateClipboardFile(file, seenSignatures)) continue
+    files.push(normalizeClipboardFile(file, timestamp, index))
+    index += 1
+  }
+
+  if (files.length === 0) {
+    const dataUrl = extractImageDataUrlFromClipboard(clipboardData)
+    if (dataUrl) {
+      const file = dataUrlToFile(dataUrl, timestamp, index)
+      if (file && !isDuplicateClipboardFile(file, seenSignatures)) {
+        files.push(file)
+        index += 1
+      }
+    }
+  }
+
+  if (files.length === 0) {
+    const clipboardApiFiles = await readClipboardApiImages(timestamp, index)
+    for (const file of clipboardApiFiles) {
+      if (isDuplicateClipboardFile(file, seenSignatures)) continue
+      files.push(file)
+      index += 1
+    }
+  }
+
+  return files
 }
 
-function normalizeTextValue(value: string | number): string {
-  return String(value ?? '')
+function extractImageDataUrlFromClipboard(clipboardData: DataTransfer | null): string | null {
+  if (!clipboardData) return null
+
+  const html = clipboardData.getData('text/html') || ''
+  const htmlMatch = html.match(/src=["'](data:image\/[^"']+)["']/i)
+  if (htmlMatch?.[1]) return htmlMatch[1]
+
+  const plainText = clipboardData.getData('text/plain') || ''
+  const normalized = plainText.trim()
+  if (normalized.startsWith('data:image/')) return normalized
+
+  return null
 }
 
-function isContextTag(value: string): value is ImageContextTag {
-  return value === 'pre_entry'
-    || value === 'entry'
-    || value === 'management'
-    || value === 'exit'
-    || value === 'post_review'
+function dataUrlToFile(dataUrl: string, timestamp: number, index: number): File | null {
+  const match = dataUrl.match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,(.+)$/)
+  if (!match?.[1] || !match?.[2]) return null
+
+  try {
+    const mimeType = match[1]
+    const base64Payload = match[2]
+    const binary = atob(base64Payload)
+    const bytes = new Uint8Array(binary.length)
+
+    for (let i = 0; i < binary.length; i += 1) {
+      bytes[i] = binary.charCodeAt(i)
+    }
+
+    const extension = extensionForMimeType(mimeType)
+    const name = `pasted-image-${timestamp}-${index}.${extension}`
+    return new File([bytes], name, { type: mimeType, lastModified: Date.now() })
+  } catch {
+    return null
+  }
 }
 
-function normalizeContextTag(value: string | number): ImageContextTag | undefined {
-  const text = String(value ?? '').trim()
-  return isContextTag(text) ? text : undefined
+async function readClipboardApiImages(timestamp: number, startIndex: number): Promise<File[]> {
+  if (!('clipboard' in navigator) || !navigator.clipboard?.read) return []
+
+  try {
+    const items = await navigator.clipboard.read()
+    const files: File[] = []
+    let index = startIndex
+
+    for (const item of items) {
+      const imageType = item.types.find((type) => type.startsWith('image/'))
+      if (!imageType) continue
+
+      const blob = await item.getType(imageType)
+      const extension = extensionForMimeType(imageType)
+      const name = `pasted-image-${timestamp}-${index}.${extension}`
+      files.push(new File([blob], name, { type: imageType, lastModified: Date.now() }))
+      index += 1
+    }
+
+    return files
+  } catch {
+    return []
+  }
 }
 
-function onExistingContextUpdate(imageId: number, value: string | number) {
-  emit('update-existing-metadata', {
-    id: imageId,
-    context_tag: normalizeContextTag(value) ?? null,
+function isDuplicateClipboardFile(file: File, seenSignatures: Set<string>): boolean {
+  const signature = `${file.type}|${file.size}|${file.lastModified}`
+  if (seenSignatures.has(signature)) return true
+  seenSignatures.add(signature)
+  return false
+}
+
+function normalizeClipboardFile(file: File, timestamp: number, index: number): File {
+  const extension = extensionForMimeType(file.type)
+  const generatedName = `pasted-image-${timestamp}-${index}.${extension}`
+  const fileName = file.name && file.name.trim().length > 0 ? file.name : generatedName
+
+  return new File([file], fileName, {
+    type: file.type,
+    lastModified: Date.now(),
   })
 }
 
-function onExistingTimeframeUpdate(imageId: number, value: string | number) {
-  emit('update-existing-metadata', {
-    id: imageId,
-    timeframe: normalizeTextValue(value),
-  })
+function extensionForMimeType(mimeType: string): string {
+  if (mimeType === 'image/png') return 'png'
+  if (mimeType === 'image/jpeg' || mimeType === 'image/jpg') return 'jpg'
+  if (mimeType === 'image/webp') return 'webp'
+  if (mimeType === 'image/bmp') return 'bmp'
+  return 'png'
 }
 
-function onExistingNotesUpdate(imageId: number, value: string | number) {
-  emit('update-existing-metadata', {
-    id: imageId,
-    annotation_notes: normalizeTextValue(value),
-  })
-}
+onMounted(() => {
+  document.addEventListener('paste', onPaste, true)
+})
 
-function onPendingContextUpdate(imageId: string, value: string | number) {
-  const tag = normalizeContextTag(value)
-  if (!tag) return
-
-  emit('update-pending-metadata', {
-    id: imageId,
-    context_tag: tag,
-  })
-}
-
-function onPendingTimeframeUpdate(imageId: string, value: string | number) {
-  emit('update-pending-metadata', {
-    id: imageId,
-    timeframe: normalizeTextValue(value),
-  })
-}
-
-function onPendingNotesUpdate(imageId: string, value: string | number) {
-  emit('update-pending-metadata', {
-    id: imageId,
-    annotation_notes: normalizeTextValue(value),
-  })
-}
+onBeforeUnmount(() => {
+  document.removeEventListener('paste', onPaste, true)
+})
 </script>
 
 <template>
@@ -206,7 +281,7 @@ function onPendingNotesUpdate(imageId: string, value: string | number) {
         ref="inputRef"
         type="file"
         class="hidden"
-        accept=".jpg,.jpeg,.png,.webp,image/jpeg,image/png,image/webp"
+        accept=".jpg,.jpeg,.png,.webp,.bmp,image/jpeg,image/png,image/webp,image/bmp"
         multiple
         :disabled="!canSelectMore || uploading"
         @change="onInputChange"
@@ -235,7 +310,7 @@ function onPendingNotesUpdate(imageId: string, value: string | number) {
           class="trade-image-thumb"
         />
         <div class="trade-image-card-top">
-          <span class="pill">{{ contextLabel(image.context_tag ?? null) }}</span>
+          <span class="pill">Saved</span>
           <button
             type="button"
             class="btn btn-ghost is-danger p-1.5"
@@ -245,29 +320,6 @@ function onPendingNotesUpdate(imageId: string, value: string | number) {
             <Loader2 v-if="isDeleting(image.id)" class="h-3.5 w-3.5 animate-spin" />
             <Trash2 v-else class="h-3.5 w-3.5" />
           </button>
-        </div>
-        <div class="mt-2 grid gap-2">
-          <BaseSelect
-            :model-value="image.context_tag ?? ''"
-            label="Context"
-            size="sm"
-            :options="contextOptions"
-            @update:model-value="(value) => onExistingContextUpdate(image.id, value)"
-          />
-          <BaseInput
-            :model-value="image.timeframe ?? ''"
-            label="Timeframe"
-            size="sm"
-            placeholder="M5 / H1"
-            @update:model-value="(value) => onExistingTimeframeUpdate(image.id, value)"
-          />
-          <BaseInput
-            :model-value="image.annotation_notes ?? ''"
-            label="Replay Note"
-            size="sm"
-            placeholder="What happened in this step..."
-            @update:model-value="(value) => onExistingNotesUpdate(image.id, value)"
-          />
         </div>
       </article>
 
@@ -299,29 +351,6 @@ function onPendingNotesUpdate(imageId: string, value: string | number) {
           >
             <Trash2 class="h-3.5 w-3.5" />
           </button>
-        </div>
-        <div class="mt-2 grid gap-2">
-          <BaseSelect
-            :model-value="image.context_tag"
-            label="Context"
-            size="sm"
-            :options="contextOptions"
-            @update:model-value="(value) => onPendingContextUpdate(image.id, value)"
-          />
-          <BaseInput
-            :model-value="image.timeframe"
-            label="Timeframe"
-            size="sm"
-            placeholder="M5 / H1"
-            @update:model-value="(value) => onPendingTimeframeUpdate(image.id, value)"
-          />
-          <BaseInput
-            :model-value="image.annotation_notes"
-            label="Replay Note"
-            size="sm"
-            placeholder="What happened in this step..."
-            @update:model-value="(value) => onPendingNotesUpdate(image.id, value)"
-          />
         </div>
 
         <div v-if="uploading" class="trade-image-progress">

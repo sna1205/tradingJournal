@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useRoute, useRouter } from 'vue-router'
 import {
@@ -48,6 +48,7 @@ const detailsTrade = ref<Trade | null>(null)
 const detailsImages = ref<TradeImage[]>([])
 const detailsPsychology = ref<TradePsychology | null>(null)
 const detailImageIndex = ref(0)
+const lightboxOpen = ref(false)
 const activeDetailImage = computed(() => detailsImages.value[detailImageIndex.value] ?? null)
 const filtersExpanded = ref(false)
 const selectedSavedReportId = ref('')
@@ -300,6 +301,16 @@ async function openDetails(trade: Trade) {
 
 function closeDetails() {
   detailsOpen.value = false
+  lightboxOpen.value = false
+}
+
+function openImageLightbox() {
+  if (!activeDetailImage.value) return
+  lightboxOpen.value = true
+}
+
+function closeImageLightbox() {
+  lightboxOpen.value = false
 }
 
 function nextDetailImage() {
@@ -423,6 +434,25 @@ function imageContextLabel(value: string | null | undefined) {
 function selectDetailImage(index: number) {
   if (index < 0 || index >= detailsImages.value.length) return
   detailImageIndex.value = index
+}
+
+function handleLightboxKeydown(event: KeyboardEvent) {
+  if (!detailsOpen.value) return
+  if (event.key === 'Escape' && lightboxOpen.value) {
+    event.preventDefault()
+    closeImageLightbox()
+    return
+  }
+  if (!lightboxOpen.value) return
+  if (event.key === 'ArrowLeft') {
+    event.preventDefault()
+    previousDetailImage()
+    return
+  }
+  if (event.key === 'ArrowRight') {
+    event.preventDefault()
+    nextDetailImage()
+  }
 }
 
 function normalizeQuickFocus(value: unknown): TradeQuickFocus {
@@ -554,6 +584,7 @@ function exportCurrentCsv() {
 }
 
 onMounted(async () => {
+  window.addEventListener('keydown', handleLightboxKeydown)
   try {
     await Promise.all([
       tradeStore.fetchInstruments(),
@@ -570,6 +601,10 @@ onMounted(async () => {
       message: 'Please refresh and try again.',
     })
   }
+})
+
+onBeforeUnmount(() => {
+  window.removeEventListener('keydown', handleLightboxKeydown)
 })
 
 watch(
@@ -919,7 +954,8 @@ watch(quickFocus, (value) => {
                   v-if="activeDetailImage"
                   :src="activeDetailImage.image_url"
                   alt="Execution screenshot"
-                  class="trade-simple-image"
+                  class="trade-simple-image is-zoomable"
+                  @click="openImageLightbox"
                   @error="setImageFallback($event, activeDetailImage.image_url)"
                 />
                 <div v-else class="trade-simple-image-empty">
@@ -1031,6 +1067,47 @@ watch(quickFocus, (value) => {
               <p class="section-note">{{ detailNextAction }}</p>
             </section>
           </div>
+        </div>
+      </div>
+    </Transition>
+
+    <Transition name="fade">
+      <div
+        v-if="lightboxOpen && activeDetailImage"
+        class="trade-lightbox-backdrop"
+        @click.self="closeImageLightbox"
+      >
+        <button type="button" class="trade-lightbox-close btn btn-ghost p-2" @click.stop="closeImageLightbox" aria-label="Close fullscreen image">
+          <X class="h-5 w-5" />
+        </button>
+        <button
+          v-if="detailsImages.length > 1"
+          type="button"
+          class="trade-lightbox-nav left"
+          @click.stop="previousDetailImage"
+          aria-label="Previous image"
+        >
+          <ChevronLeft class="h-5 w-5" />
+        </button>
+        <button
+          v-if="detailsImages.length > 1"
+          type="button"
+          class="trade-lightbox-nav right"
+          @click.stop="nextDetailImage"
+          aria-label="Next image"
+        >
+          <ChevronRight class="h-5 w-5" />
+        </button>
+        <div class="trade-lightbox-content">
+          <img
+            :src="activeDetailImage.image_url"
+            alt="Execution screenshot fullscreen"
+            class="trade-lightbox-image"
+            @error="setImageFallback($event, activeDetailImage.image_url)"
+          />
+        </div>
+        <div v-if="detailsImages.length > 1" class="trade-lightbox-zoom">
+          <span>{{ detailImageIndex + 1 }} / {{ detailsImages.length }}</span>
         </div>
       </div>
     </Transition>

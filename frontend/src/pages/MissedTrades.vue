@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useRouter } from 'vue-router'
 import {
@@ -44,6 +44,7 @@ const detailsLoading = ref(false)
 const detailsEntry = ref<MissedTrade | null>(null)
 const detailsImages = ref<MissedTradeImage[]>([])
 const detailImageIndex = ref(0)
+const lightboxOpen = ref(false)
 const activeDetailImage = computed(() => detailsImages.value[detailImageIndex.value] ?? null)
 const filtersExpanded = ref(false)
 
@@ -264,6 +265,16 @@ async function openDetails(item: MissedTrade) {
 
 function closeDetails() {
   detailsOpen.value = false
+  lightboxOpen.value = false
+}
+
+function openImageLightbox() {
+  if (!activeDetailImage.value) return
+  lightboxOpen.value = true
+}
+
+function closeImageLightbox() {
+  lightboxOpen.value = false
 }
 
 function nextDetailImage() {
@@ -274,6 +285,25 @@ function nextDetailImage() {
 function previousDetailImage() {
   if (detailsImages.value.length <= 1) return
   detailImageIndex.value = (detailImageIndex.value - 1 + detailsImages.value.length) % detailsImages.value.length
+}
+
+function handleLightboxKeydown(event: KeyboardEvent) {
+  if (!detailsOpen.value) return
+  if (event.key === 'Escape' && lightboxOpen.value) {
+    event.preventDefault()
+    closeImageLightbox()
+    return
+  }
+  if (!lightboxOpen.value) return
+  if (event.key === 'ArrowLeft') {
+    event.preventDefault()
+    previousDetailImage()
+    return
+  }
+  if (event.key === 'ArrowRight') {
+    event.preventDefault()
+    nextDetailImage()
+  }
 }
 
 async function remove(id: number) {
@@ -374,6 +404,7 @@ async function changePage(delta: number) {
 }
 
 onMounted(async () => {
+  window.addEventListener('keydown', handleLightboxKeydown)
   try {
     await Promise.all([
       tradeStore.fetchInstruments(),
@@ -387,6 +418,10 @@ onMounted(async () => {
       message: 'Please refresh and try again.',
     })
   }
+})
+
+onBeforeUnmount(() => {
+  window.removeEventListener('keydown', handleLightboxKeydown)
 })
 </script>
 
@@ -601,7 +636,8 @@ onMounted(async () => {
                   v-if="activeDetailImage"
                   :src="activeDetailImage.image_url"
                   alt="Missed trade screenshot"
-                  class="trade-simple-image"
+                  class="trade-simple-image is-zoomable"
+                  @click="openImageLightbox"
                   @error="setImageFallback($event, activeDetailImage.image_url)"
                 />
                 <div v-else class="trade-simple-image-empty">
@@ -666,6 +702,47 @@ onMounted(async () => {
               <p class="section-note">{{ detailRecoveryAction }}</p>
             </section>
           </div>
+        </div>
+      </div>
+    </Transition>
+
+    <Transition name="fade">
+      <div
+        v-if="lightboxOpen && activeDetailImage"
+        class="trade-lightbox-backdrop"
+        @click.self="closeImageLightbox"
+      >
+        <button type="button" class="trade-lightbox-close btn btn-ghost p-2" @click.stop="closeImageLightbox" aria-label="Close fullscreen image">
+          <X class="h-5 w-5" />
+        </button>
+        <button
+          v-if="detailsImages.length > 1"
+          type="button"
+          class="trade-lightbox-nav left"
+          @click.stop="previousDetailImage"
+          aria-label="Previous image"
+        >
+          <ChevronLeft class="h-5 w-5" />
+        </button>
+        <button
+          v-if="detailsImages.length > 1"
+          type="button"
+          class="trade-lightbox-nav right"
+          @click.stop="nextDetailImage"
+          aria-label="Next image"
+        >
+          <ChevronRight class="h-5 w-5" />
+        </button>
+        <div class="trade-lightbox-content">
+          <img
+            :src="activeDetailImage.image_url"
+            alt="Missed trade screenshot fullscreen"
+            class="trade-lightbox-image"
+            @error="setImageFallback($event, activeDetailImage.image_url)"
+          />
+        </div>
+        <div v-if="detailsImages.length > 1" class="trade-lightbox-zoom">
+          <span>{{ detailImageIndex + 1 }} / {{ detailsImages.length }}</span>
         </div>
       </div>
     </Transition>

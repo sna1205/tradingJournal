@@ -1715,17 +1715,19 @@ input[type='time'] {
   position: fixed;
   inset: 0;
   z-index: var(--z-modal);
-  background: rgba(2, 5, 4, 0.9);
+  background: rgba(2, 5, 4, 0.95);
   display: grid;
   place-items: center;
+  overflow: hidden;
 }
 
 .trade-lightbox-content {
-  width: min(92vw, 82rem);
-  height: min(88vh, 54rem);
+  position: relative;
+  width: 100vw;
+  height: 100vh;
   display: grid;
   place-items: center;
-  padding: 1rem 3.4rem;
+  padding: 3.5rem 4.5rem;
 }
 
 .trade-lightbox-image {
@@ -1742,27 +1744,30 @@ input[type='time'] {
   position: absolute;
   top: 50%;
   transform: translateY(-50%);
+  z-index: 2;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  height: 2.2rem;
-  width: 2.2rem;
+  height: 2.8rem;
+  width: 2.8rem;
   border-radius: 999px;
   border: 1px solid color-mix(in srgb, var(--border) 72%, transparent 28%);
-  background: color-mix(in srgb, var(--panel) 22%, transparent 78%);
+  background: color-mix(in srgb, var(--panel) 40%, transparent 60%);
   color: #f3f6f4;
+  cursor: pointer;
 }
 
 .trade-lightbox-nav.left {
-  left: 1rem;
+  left: 1.2rem;
 }
 
 .trade-lightbox-nav.right {
-  right: 1rem;
+  right: 1.2rem;
 }
 
 .trade-lightbox-close {
   position: absolute;
+  z-index: 2;
   right: 1rem;
   top: 1rem;
   color: #f3f6f4;
@@ -1770,6 +1775,7 @@ input[type='time'] {
 
 .trade-lightbox-zoom {
   position: absolute;
+  z-index: 2;
   left: 50%;
   bottom: 1rem;
   transform: translateX(-50%);
@@ -1781,6 +1787,17 @@ input[type='time'] {
   background: color-mix(in srgb, var(--panel) 20%, transparent 80%);
   padding: 0.2rem 0.3rem;
   color: #f3f6f4;
+}
+
+@media (max-width: 768px) {
+  .trade-lightbox-content {
+    padding: 3.8rem 1rem 3rem;
+  }
+
+  .trade-lightbox-nav {
+    height: 2.4rem;
+    width: 2.4rem;
+  }
 }
 
 .pill {
@@ -2761,23 +2778,32 @@ input[type='time'] {
   font-weight: 800;
 }
 
-.overview-calendar-fab {
-  position: absolute;
-  right: 1rem;
-  bottom: 1rem;
+.global-action-fab {
+  position: fixed;
+  right: 1.15rem;
+  bottom: 1.15rem;
   width: 4.1rem;
   height: 4.1rem;
   border-radius: 999px;
   display: inline-grid;
   place-items: center;
+  text-decoration: none;
   border: 1px solid color-mix(in srgb, var(--warning) 44%, var(--border) 56%);
   background: color-mix(in srgb, var(--warning-soft) 66%, var(--panel) 34%);
   color: color-mix(in srgb, var(--warning) 84%, var(--text) 16%);
   box-shadow: var(--shadow-soft);
+  z-index: var(--z-toast);
+  transition: transform var(--transition-fast), box-shadow var(--transition-fast);
 }
 
-.overview-calendar-fab:hover {
+.global-action-fab:hover {
   transform: translateY(-1px);
+  box-shadow: var(--shadow-hover);
+}
+
+.global-action-fab:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--warning) 72%, #fff 28%);
+  outline-offset: 3px;
 }
 
 @media (min-width: 768px) {
@@ -2892,11 +2918,9 @@ input[type='time'] {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
-  .overview-calendar-fab {
-    position: fixed;
+  .global-action-fab {
     right: 1.15rem;
-    bottom: 6rem;
-    z-index: var(--z-dropdown);
+    bottom: calc(5.8rem + env(safe-area-inset-bottom, 0px));
   }
 
   .mobile-nav {
@@ -3631,7 +3655,7 @@ textarea:focus {
 .dashboard-minimal .overview-range-btn.active,
 .dashboard-minimal .overview-kpi-icon,
 .dashboard-minimal .overview-account-icon,
-.dashboard-minimal .overview-calendar-fab,
+.dashboard-minimal .global-action-fab,
 .accounts-minimal .account-card article.panel,
 .missed-list-minimal .metric-card,
 .missed-list-minimal .missed-db-image-empty,
@@ -4901,6 +4925,10 @@ textarea:focus {
   height: 100%;
   max-height: 26rem;
   object-fit: contain;
+}
+
+.trade-simple-image.is-zoomable {
+  cursor: zoom-in;
 }
 
 .trade-simple-image-empty {

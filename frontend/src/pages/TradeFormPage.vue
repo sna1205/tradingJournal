@@ -183,14 +183,8 @@ const allowedImageTypes = new Set([
   'image/jpg',
   'image/png',
   'image/webp',
+  'image/bmp',
 ])
-const imageContextOptions: Array<{ label: string; value: ImageContextTag }> = [
-  { label: 'Pre Entry', value: 'pre_entry' },
-  { label: 'Entry', value: 'entry' },
-  { label: 'Management', value: 'management' },
-  { label: 'Exit', value: 'exit' },
-  { label: 'Post Review', value: 'post_review' },
-]
 
 const existingImages = ref<TradeImage[]>([])
 const pendingImages = ref<PendingTradeImage[]>([])
@@ -380,14 +374,6 @@ function removeTag(tagId: number) {
   form.tag_ids = form.tag_ids.filter((value) => value !== tagId)
 }
 
-function isImageContextTag(value: string): value is ImageContextTag {
-  return value === 'pre_entry'
-    || value === 'entry'
-    || value === 'management'
-    || value === 'exit'
-    || value === 'post_review'
-}
-
 const selectedTags = computed(() =>
   tradeTags.value.filter((tag) => selectedTagIds.value.has(tag.id))
 )
@@ -568,7 +554,12 @@ async function applySmartDefaultsFromLastTrade() {
     }
 
     if (!form.instrument_id && latestTrade.instrument_id) {
-      form.instrument_id = String(latestTrade.instrument_id)
+      const hasInstrument = instruments.value.some((instrument) => instrument.id === Number(latestTrade.instrument_id))
+      if (hasInstrument) {
+        form.instrument_id = String(latestTrade.instrument_id)
+      } else if (latestTrade.pair) {
+        selectInstrumentBySymbol(latestTrade.pair)
+      }
     } else if (!form.instrument_id && latestTrade.pair) {
       selectInstrumentBySymbol(latestTrade.pair)
     }
@@ -609,6 +600,12 @@ function selectInstrumentBySymbol(symbol: string) {
   form.symbol = match.symbol
 }
 
+function findInstrumentById(value: string): Instrument | null {
+  const id = Number(value)
+  if (!Number.isInteger(id) || id <= 0) return null
+  return instruments.value.find((instrument) => instrument.id === id) ?? null
+}
+
 const formErrors = computed<Record<string, string>>(() => {
   const errors: Record<string, string> = {}
   const closeDate = parseLocalDateTime(form.date)
@@ -628,6 +625,8 @@ const formErrors = computed<Record<string, string>>(() => {
 
   if (!form.instrument_id) {
     errors.instrument_id = 'Instrument is required.'
+  } else if (!findInstrumentById(form.instrument_id)) {
+    errors.instrument_id = 'Please select a valid instrument from the list.'
   }
   if (!form.strategy_model_id) {
     errors.strategy_model_id = 'Strategy model is required.'
@@ -745,9 +744,17 @@ function buildPayload(): TradePayload {
   if (closeDate === null) {
     throw new Error('Close date is invalid.')
   }
-  const instrumentId = Number(form.instrument_id)
-  if (!Number.isInteger(instrumentId) || instrumentId <= 0) {
-    throw new Error('Instrument is required.')
+  let instrument = findInstrumentById(form.instrument_id)
+  if (!instrument && form.symbol.trim()) {
+    const symbolMatch = instruments.value.find((item) => item.symbol.toUpperCase() === form.symbol.trim().toUpperCase())
+    if (symbolMatch) {
+      form.instrument_id = String(symbolMatch.id)
+      form.symbol = symbolMatch.symbol
+      instrument = symbolMatch
+    }
+  }
+  if (!instrument) {
+    throw new Error('Please select a valid instrument from the list.')
   }
   const strategyModelId = Number(form.strategy_model_id)
   const setupId = Number(form.setup_id)
@@ -817,7 +824,7 @@ function buildPayload(): TradePayload {
 
   return {
     account_id: Number(form.account_id),
-    instrument_id: instrumentId,
+    instrument_id: instrument.id,
     strategy_model_id: strategyModelId,
     setup_id: setupId,
     killzone_id: killzoneId,
@@ -919,53 +926,6 @@ function reorderPendingImages(payload: { from: number; to: number }) {
   pendingImages.value = items
 }
 
-function updatePendingImageMetadata(payload: {
-  id: string
-  context_tag?: string
-  timeframe?: string
-  annotation_notes?: string
-}) {
-  pendingImages.value = pendingImages.value.map((image) => {
-    if (image.id !== payload.id) return image
-    const nextContextTag = payload.context_tag && isImageContextTag(payload.context_tag)
-      ? payload.context_tag
-      : image.context_tag
-
-    return {
-      ...image,
-      context_tag: nextContextTag,
-      timeframe: payload.timeframe ?? image.timeframe,
-      annotation_notes: payload.annotation_notes ?? image.annotation_notes,
-    }
-  })
-}
-
-async function updateExistingImageMetadata(payload: {
-  id: number
-  context_tag?: string | null
-  timeframe?: string | null
-  annotation_notes?: string | null
-}) {
-  const contextTag = payload.context_tag && isImageContextTag(payload.context_tag)
-    ? payload.context_tag
-    : null
-
-  try {
-    const updated = await tradeStore.updateTradeImageMetadata(payload.id, {
-      context_tag: contextTag,
-      timeframe: payload.timeframe ?? null,
-      annotation_notes: payload.annotation_notes ?? null,
-    })
-    existingImages.value = existingImages.value.map((image) => image.id === payload.id ? updated : image)
-  } catch (error) {
-    uiStore.toast({
-      type: 'error',
-      title: 'Failed to save screenshot metadata',
-      message: extractErrorMessage(error),
-    })
-  }
-}
-
 async function onSelectImageFiles(files: File[]) {
   imageUploadError.value = ''
   if (files.length === 0) return
@@ -981,7 +941,7 @@ async function onSelectImageFiles(files: File[]) {
 
   for (const file of selected) {
     if (!allowedImageTypes.has(file.type)) {
-      imageUploadError.value = 'Only jpg, jpeg, png, and webp files are allowed.'
+      imageUploadError.value = 'Only jpg, jpeg, png, webp, and bmp files are allowed.'
       continue
     }
 
@@ -1723,14 +1683,11 @@ async function loadImage(file: File): Promise<HTMLImageElement> {
           :uploading="uploadingImages"
           :upload-progress="uploadProgressByPendingId"
           :deleting-image-ids="deletingImageIds"
-          :context-options="imageContextOptions"
           :error="imageUploadError"
           @select-files="onSelectImageFiles"
           @remove-pending="removePendingImage"
           @remove-existing="removeExistingImage"
           @reorder-pending="reorderPendingImages"
-          @update-pending-metadata="updatePendingImageMetadata"
-          @update-existing-metadata="updateExistingImageMetadata"
         />
 
         <section class="trade-form-section execution-long-section">

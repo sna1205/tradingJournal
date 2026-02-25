@@ -9,7 +9,6 @@ import {
   ChevronRight,
   LayoutGrid,
   ListChecks,
-  Plus,
   ShieldAlert,
   Wallet,
 } from 'lucide-vue-next'
@@ -1503,9 +1502,6 @@ function setDashboardMode(mode: DashboardMode) {
             </GlassPanel>
           </aside>
 
-          <RouterLink class="overview-calendar-fab" to="/trades/new" title="New execution">
-            <Plus class="h-7 w-7" />
-          </RouterLink>
         </section>
       </div>
     </div>

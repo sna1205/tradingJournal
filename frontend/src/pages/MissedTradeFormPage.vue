@@ -62,6 +62,7 @@ const allowedImageTypes = new Set([
   'image/jpg',
   'image/png',
   'image/webp',
+  'image/bmp',
 ])
 
 const existingImages = ref<MissedTradeImage[]>([])
@@ -270,23 +271,6 @@ function reorderPendingImages(payload: { from: number; to: number }) {
   pendingImages.value = items
 }
 
-function updatePendingImageMetadata(payload: {
-  id: string
-  context_tag?: string
-  timeframe?: string
-  annotation_notes?: string
-}) {
-  pendingImages.value = pendingImages.value.map((image) => {
-    if (image.id !== payload.id) return image
-    return {
-      ...image,
-      context_tag: (payload.context_tag as PendingMissedTradeImage['context_tag'] | undefined) ?? image.context_tag,
-      timeframe: payload.timeframe ?? image.timeframe,
-      annotation_notes: payload.annotation_notes ?? image.annotation_notes,
-    }
-  })
-}
-
 async function removeExistingImage(imageId: number) {
   if (!isEditMode.value || missedTradeId.value === null) return
   if (deletingImageIds.value.includes(imageId)) return
@@ -321,7 +305,7 @@ async function onSelectImageFiles(files: File[]) {
 
   for (const file of selected) {
     if (!allowedImageTypes.has(file.type)) {
-      imageUploadError.value = 'Only jpg, jpeg, png, and webp files are allowed.'
+      imageUploadError.value = 'Only jpg, jpeg, png, webp, and bmp files are allowed.'
       continue
     }
 
@@ -691,7 +675,7 @@ async function loadImage(file: File): Promise<HTMLImageElement> {
             <div class="mt-3">
               <TradeImageUploader
                 title="Missed Trade Screenshots"
-                upload-hint="Max 5 images - jpg, jpeg, png, webp - 5MB each"
+                upload-hint="Max 5 images - jpg, jpeg, png, webp, bmp - 5MB each - paste with Ctrl+V"
                 :existing-images="existingImages"
                 :pending-images="pendingImages"
                 :max-files="MAX_IMAGE_COUNT"
@@ -703,7 +687,6 @@ async function loadImage(file: File): Promise<HTMLImageElement> {
                 @remove-pending="removePendingImage"
                 @remove-existing="removeExistingImage"
                 @reorder-pending="reorderPendingImages"
-                @update-pending-metadata="updatePendingImageMetadata"
               />
             </div>
           </details>
