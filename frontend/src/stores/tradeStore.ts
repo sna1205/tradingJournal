@@ -58,6 +58,9 @@ export interface TradePayload {
   swap?: number
   spread_cost?: number
   slippage_cost?: number
+  fx_rate_quote_to_usd?: number | null
+  fx_symbol_used?: string | null
+  fx_rate_timestamp?: string | null
   legs?: TradeLegPayload[]
   strategy_model_id?: number | null
   setup_id?: number | null
@@ -124,6 +127,9 @@ export interface TradePrecheckResult {
     avg_entry_price: number
     avg_exit_price: number
     rr: number
+    fx_rate_quote_to_usd?: number | null
+    fx_symbol_used?: string | null
+    fx_rate_timestamp?: string | null
   }
 }
 

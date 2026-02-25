@@ -1,12 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import type { FxRateLike } from '@/services/fxToUsdService'
 import { calculateLotSize, type LotSizeInstrumentSpec } from '@/utils/lotSizeEngine'
-
-const FX_RATES: FxRateLike[] = [
-  { from_currency: 'USD', to_currency: 'JPY', rate: '150.0000000000' },
-  { from_currency: 'GBP', to_currency: 'USD', rate: '1.2700000000' },
-  { from_currency: 'EUR', to_currency: 'USD', rate: '1.0800000000' },
-]
 
 const BASE_INPUT = {
   account_balance: '10000',
@@ -73,14 +66,24 @@ function runCase(
   instrument: LotSizeInstrumentSpec,
   entry_price: string,
   stop_loss: string,
-  fx_rates: FxRateLike[] = FX_RATES
+  conversion?: {
+    rate: number
+    symbolUsed: string | null
+    method: 'identity' | 'direct' | 'inverse' | 'pivot'
+    ts: number | null
+    mode?: 'mid' | 'conservative'
+  }
 ) {
   return calculateLotSize({
     ...BASE_INPUT,
     entry_price,
     stop_loss,
     instrument,
-    fx_rates,
+    fx_rate_quote_to_usd: conversion?.rate ?? null,
+    fx_symbol_used: conversion?.symbolUsed ?? null,
+    fx_conversion_method: conversion?.method ?? null,
+    fx_rate_timestamp: conversion?.ts ?? null,
+    fx_rate_mode: conversion?.mode ?? 'mid',
   })
 }
 
@@ -96,23 +99,57 @@ describe('calculateLotSize FX-aware sizing', () => {
   })
 
   it('EURJPY uses inverse USDJPY conversion', () => {
-    const result = runCase(EURJPY, '160.00', '159.50')
+    const result = runCase(EURJPY, '160.00', '159.50', {
+      rate: 1 / 150,
+      symbolUsed: 'USDJPY',
+      method: 'inverse',
+      ts: 1700000000000,
+      mode: 'mid',
+    })
 
     expect(result.valid).toBe(true)
+    expect(result.conversion_symbol_used).toBe('USDJPY')
     expect(result.conversion_rate_quote_to_usd ?? 0).toBeCloseTo(1 / 150, 8)
     expect(result.risk_per_one_lot).toBeCloseTo(333.333, 3)
     expect(result.lot_size).toBeCloseTo(0.3, 8)
     expect(result.actual_risk_at_stop).toBeCloseTo(100, 2)
+    expect(result.actual_risk_at_stop).toBeLessThanOrEqual(result.target_risk_amount + 0.01)
+  })
+
+  it('updates lot size when FX quote changes', () => {
+    const first = runCase(EURJPY, '160.00', '159.50', {
+      rate: 1 / 150,
+      symbolUsed: 'USDJPY',
+      method: 'inverse',
+      ts: 1700000000000,
+    })
+    const second = runCase(EURJPY, '160.00', '159.50', {
+      rate: 1 / 155,
+      symbolUsed: 'USDJPY',
+      method: 'inverse',
+      ts: 1700000000100,
+    })
+
+    expect(first.lot_size).not.toBe(second.lot_size)
+    expect(second.lot_size).toBeGreaterThan(first.lot_size)
   })
 
   it('EURGBP uses direct GBPUSD conversion', () => {
-    const result = runCase(EURGBP, '0.8600', '0.8580')
+    const result = runCase(EURGBP, '0.8600', '0.8580', {
+      rate: 1.27,
+      symbolUsed: 'GBPUSD',
+      method: 'direct',
+      ts: 1700000000000,
+      mode: 'mid',
+    })
 
     expect(result.valid).toBe(true)
+    expect(result.conversion_symbol_used).toBe('GBPUSD')
     expect(result.conversion_rate_quote_to_usd).toBeCloseTo(1.27, 8)
     expect(result.risk_per_one_lot).toBeCloseTo(254, 6)
     expect(result.lot_size).toBeCloseTo(0.39, 8)
     expect(result.actual_risk_at_stop).toBeCloseTo(99.06, 2)
+    expect(result.actual_risk_at_stop).toBeLessThanOrEqual(result.target_risk_amount + 1)
     expect(result.if_sl_hits_text).toBe('If SL hits -> -$99.06')
   })
 
@@ -127,12 +164,10 @@ describe('calculateLotSize FX-aware sizing', () => {
   })
 
   it('blocks lot calculation when quote->USD rate is missing', () => {
-    const result = runCase(EURGBP, '0.8600', '0.8580', [
-      { from_currency: 'USD', to_currency: 'JPY', rate: '150.0000000000' },
-    ])
+    const result = runCase(EURGBP, '0.8600', '0.8580')
 
     expect(result.valid).toBe(false)
     expect(result.lot_size).toBe(0)
-    expect(result.warnings).toContain('Missing FX rate to convert GBP->USD')
+    expect(result.warnings).toContain('Missing live FX quote to convert GBP->USD')
   })
 })

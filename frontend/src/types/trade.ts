@@ -35,6 +35,9 @@ export interface Trade {
   swap?: string | null
   spread_cost?: string | null
   slippage_cost?: string | null
+  fx_rate_quote_to_usd?: string | null
+  fx_symbol_used?: string | null
+  fx_rate_timestamp?: string | null
   profit_loss: string
   rr: string
   r_multiple: string | null

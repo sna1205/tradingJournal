@@ -1,6 +1,7 @@
-import type { FxRateLike } from '@/services/fxToUsdService'
-import { FxToUsdService } from '@/services/fxToUsdService'
 import { asCurrency } from '@/utils/format'
+
+export type FxRateMode = 'mid' | 'conservative'
+export type FxResolutionMethod = 'identity' | 'direct' | 'inverse' | 'pivot'
 
 export type RiskMode = 'percent' | 'fixed'
 export type TradeDirection = 'long' | 'short'
@@ -38,7 +39,11 @@ export interface LotSizeInput {
   slippage_ticks?: string
   leverage?: string
   instrument: LotSizeInstrumentSpec | null
-  fx_rates: FxRateLike[]
+  fx_rate_quote_to_usd?: string | number | null
+  fx_symbol_used?: string | null
+  fx_rate_timestamp?: number | null
+  fx_conversion_method?: FxResolutionMethod | null
+  fx_rate_mode?: FxRateMode
   policy_max_risk_pct?: number | null
   tight_stop_ticks_threshold?: number
   extreme_lot_multiplier_threshold?: number
@@ -60,6 +65,10 @@ export interface LotSizeResult {
   risk_currency: 'USD'
   quote_currency: string | null
   conversion_rate_quote_to_usd: number | null
+  conversion_symbol_used: string | null
+  conversion_method: FxResolutionMethod | null
+  conversion_rate_mode: FxRateMode
+  conversion_timestamp: number | null
   target_risk_amount: number
   target_risk_percent: number
   stop_distance: number
@@ -146,31 +155,43 @@ export function calculateLotSize(input: LotSizeInput): LotSizeResult {
     return emptyResult(fieldErrors, warnings, quoteCurrency)
   }
 
-  const fxResolver = new FxToUsdService(input.fx_rates)
-  const rateQuoteToUsdValue = fxResolver.getRate(quoteCurrency)
-  if (rateQuoteToUsdValue === null || rateQuoteToUsdValue <= 0) {
-    const message = `Missing FX rate to convert ${quoteCurrency}->USD`
+  const conversionMode: FxRateMode = input.fx_rate_mode ?? 'mid'
+  const conversionMethod: FxResolutionMethod | null = quoteCurrency === 'USD'
+    ? 'identity'
+    : (input.fx_conversion_method ?? null)
+  const conversionSymbolUsed = quoteCurrency === 'USD'
+    ? null
+    : (input.fx_symbol_used ?? null)
+  const conversionTimestamp = quoteCurrency === 'USD'
+    ? null
+    : (input.fx_rate_timestamp ?? null)
+
+  const rateQuoteToUsdValue = quoteCurrency === 'USD'
+    ? 1
+    : Number(input.fx_rate_quote_to_usd ?? 0)
+  if (!(rateQuoteToUsdValue > 0)) {
+    const message = `Missing live FX quote to convert ${quoteCurrency}->USD`
     fieldErrors.instrument = message
     warnings.push(message)
-    return emptyResult(fieldErrors, warnings, quoteCurrency)
+    return emptyResult(fieldErrors, warnings, quoteCurrency, null, conversionSymbolUsed, conversionMethod, conversionMode, conversionTimestamp)
   }
 
   const rateQuoteToUsd = parseFixed(String(rateQuoteToUsdValue))
   if (rateQuoteToUsd === null || rateQuoteToUsd <= 0n) {
     fieldErrors.instrument = 'FX conversion rate is invalid.'
-    return emptyResult(fieldErrors, warnings, quoteCurrency)
+    return emptyResult(fieldErrors, warnings, quoteCurrency, null, conversionSymbolUsed, conversionMethod, conversionMode, conversionTimestamp)
   }
 
   const stopDistance = absFixed(entry - stop)
   if (stopDistance === 0n) {
     fieldErrors.stop_loss = 'Stop loss must differ from entry.'
-    return emptyResult(fieldErrors, warnings, quoteCurrency, rateQuoteToUsdValue)
+    return emptyResult(fieldErrors, warnings, quoteCurrency, rateQuoteToUsdValue, conversionSymbolUsed, conversionMethod, conversionMode, conversionTimestamp)
   }
 
   const stopTicks = divFixed(stopDistance, tickSize)
   if (stopTicks <= 0n) {
     fieldErrors.stop_loss = 'Stop distance is too small for selected instrument tick size.'
-    return emptyResult(fieldErrors, warnings, quoteCurrency, rateQuoteToUsdValue)
+    return emptyResult(fieldErrors, warnings, quoteCurrency, rateQuoteToUsdValue, conversionSymbolUsed, conversionMethod, conversionMode, conversionTimestamp)
   }
 
   const pipValuePerLotQuote = pipSize !== null && pipSize > 0n
@@ -184,13 +205,13 @@ export function calculateLotSize(input: LotSizeInput): LotSizeResult {
 
   if (riskPerOneLotQuote <= 0n) {
     fieldErrors.stop_loss = 'Unable to compute risk per lot.'
-    return emptyResult(fieldErrors, warnings, quoteCurrency, rateQuoteToUsdValue)
+    return emptyResult(fieldErrors, warnings, quoteCurrency, rateQuoteToUsdValue, conversionSymbolUsed, conversionMethod, conversionMode, conversionTimestamp)
   }
 
   const riskPerOneLotUsd = mulFixed(riskPerOneLotQuote, rateQuoteToUsd)
   if (riskPerOneLotUsd <= 0n) {
     fieldErrors.stop_loss = 'Unable to convert risk per lot to USD.'
-    return emptyResult(fieldErrors, warnings, quoteCurrency, rateQuoteToUsdValue)
+    return emptyResult(fieldErrors, warnings, quoteCurrency, rateQuoteToUsdValue, conversionSymbolUsed, conversionMethod, conversionMode, conversionTimestamp)
   }
 
   const lotRaw = divFixed(targetRiskAmount, riskPerOneLotUsd)
@@ -295,6 +316,10 @@ export function calculateLotSize(input: LotSizeInput): LotSizeResult {
     risk_currency: 'USD',
     quote_currency: quoteCurrency,
     conversion_rate_quote_to_usd: rateQuoteToUsdValue,
+    conversion_symbol_used: conversionSymbolUsed,
+    conversion_method: conversionMethod,
+    conversion_rate_mode: conversionMode,
+    conversion_timestamp: conversionTimestamp,
     target_risk_amount: toNumber(targetRiskAmount, 6),
     target_risk_percent: toNumber(targetRiskPercent, 6),
     stop_distance: toNumber(stopDistance, 8),
@@ -324,7 +349,11 @@ function emptyResult(
   fieldErrors: Partial<Record<LotSizeFieldErrorKey, string>>,
   warnings: string[],
   quoteCurrency: string | null = null,
-  conversionRate: number | null = null
+  conversionRate: number | null = null,
+  conversionSymbolUsed: string | null = null,
+  conversionMethod: FxResolutionMethod | null = null,
+  conversionMode: FxRateMode = 'mid',
+  conversionTimestamp: number | null = null
 ): LotSizeResult {
   return {
     valid: Object.keys(fieldErrors).length === 0,
@@ -333,6 +362,10 @@ function emptyResult(
     risk_currency: 'USD',
     quote_currency: quoteCurrency,
     conversion_rate_quote_to_usd: conversionRate,
+    conversion_symbol_used: conversionSymbolUsed,
+    conversion_method: conversionMethod,
+    conversion_rate_mode: conversionMode,
+    conversion_timestamp: conversionTimestamp,
     target_risk_amount: 0,
     target_risk_percent: 0,
     stop_distance: 0,

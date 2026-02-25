@@ -5,6 +5,7 @@ use App\Http\Controllers\Api\AccountController;
 use App\Http\Controllers\Api\DictionaryController;
 use App\Http\Controllers\Api\FxRateController;
 use App\Http\Controllers\Api\InstrumentController;
+use App\Http\Controllers\Api\PriceFeedController;
 use App\Http\Controllers\Api\ChecklistController;
 use App\Http\Controllers\Api\ChecklistItemController;
 use App\Http\Controllers\Api\MissedTradeController;
@@ -32,6 +33,7 @@ Route::put('accounts/{account}/challenge', [AccountController::class, 'upsertCha
 Route::get('accounts/{account}/challenge-status', [AccountController::class, 'challengeStatus']);
 Route::get('instruments', [InstrumentController::class, 'index']);
 Route::get('fx-rates', [FxRateController::class, 'index']);
+Route::get('price-feed/quotes', [PriceFeedController::class, 'quotes']);
 Route::get('checklists', [ChecklistController::class, 'index']);
 Route::post('checklists', [ChecklistController::class, 'store']);
 Route::put('checklists/{checklist}', [ChecklistController::class, 'update']);

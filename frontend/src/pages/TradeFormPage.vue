@@ -12,6 +12,8 @@ import InstrumentPairSelect from '@/components/form/InstrumentPairSelect.vue'
 import TradeImageUploader from '@/components/trades/TradeImageUploader.vue'
 import TradeChecklistPanel from '@/components/checklists/TradeChecklistPanel.vue'
 import api from '@/services/api'
+import { FxRateResolutionError, FxToUsdService, type FxQuoteToUsdResolution } from '@/services/fxToUsdService'
+import { livePriceFeedService } from '@/services/priceFeedService'
 import { useAccountStore } from '@/stores/accountStore'
 import {
   useTradeStore,
@@ -230,6 +232,27 @@ const selectedInstrument = computed<Instrument | null>(() => {
   if (!Number.isInteger(id) || id <= 0) return null
   return instruments.value.find((instrument) => instrument.id === id) ?? null
 })
+const fxResolver = new FxToUsdService(livePriceFeedService)
+const quoteTickVersion = ref(0)
+let stopTrackingFxSymbols: (() => void) | null = null
+let unsubscribeFxListeners: Array<() => void> = []
+const liveFxConversion = ref<FxQuoteToUsdResolution | null>(null)
+const liveFxLoading = ref(false)
+const liveFxAttemptedSymbols = ref<string[]>([])
+const liveFxConversionErrorMessage = ref('')
+let liveFxResolveRequestId = 0
+const isFxPending = computed(() => {
+  const instrument = selectedInstrument.value
+  return Boolean(
+    instrument
+    && instrument.quote_currency.toUpperCase() !== 'USD'
+    && liveFxLoading.value
+  )
+})
+const liveFxConversionError = computed(() => {
+  if (isFxPending.value) return ''
+  return liveFxConversionErrorMessage.value
+})
 const selectedStrategyModel = computed(() => {
   const id = Number(form.strategy_model_id)
   if (!Number.isInteger(id) || id <= 0) return null
@@ -245,7 +268,11 @@ const precheckLoading = ref(false)
 const precheckError = ref('')
 const precheckResult = ref<TradePrecheckResult | null>(null)
 let precheckTimer: ReturnType<typeof setTimeout> | null = null
-const isSaveBlocked = computed(() => (precheckResult.value !== null) && !precheckResult.value.allowed)
+const isSaveBlocked = computed(() =>
+  isFxPending.value
+  || ((precheckResult.value !== null) && !precheckResult.value.allowed)
+  || Boolean(liveFxConversionError.value)
+)
 const isChecklistStrictBlocked = computed(() =>
   checklistStrictMode.value && hasChecklist.value && checklistIncomplete.value
 )
@@ -263,20 +290,80 @@ const softChecklistWarning = computed(() =>
 )
 const riskStatusLabel = computed(() => {
   if (precheckLoading.value) return 'Checking'
+  if (isFxPending.value) return 'Fetching FX'
+  if (liveFxConversionError.value) return 'Blocked'
   if (precheckResult.value?.allowed) return 'Allowed'
   if (precheckResult.value) return 'Blocked'
   return 'Awaiting check'
 })
 const riskStatusClass = computed(() => {
   if (precheckLoading.value) return ''
+  if (isFxPending.value) return ''
+  if (liveFxConversionError.value) return 'is-blocked'
   if (precheckResult.value?.allowed) return 'is-allowed'
   if (precheckResult.value) return 'is-blocked'
   return ''
 })
 const blockedSummary = computed(() => {
   if (!submitAttempted.value || !isSaveBlocked.value) return ''
+  if (isFxPending.value) return 'Fetching FX quote...'
+  if (liveFxConversionError.value) return liveFxConversionError.value
   return 'Blocked by account risk policy. Resolve violations or provide override reason when allowed.'
 })
+
+async function refreshLiveFxConversion() {
+  const instrument = selectedInstrument.value
+  if (!instrument) {
+    liveFxConversion.value = null
+    liveFxConversionErrorMessage.value = ''
+    liveFxAttemptedSymbols.value = []
+    liveFxLoading.value = false
+    return
+  }
+
+  const quoteCurrency = instrument.quote_currency.toUpperCase()
+  if (quoteCurrency === 'USD') {
+    liveFxConversion.value = {
+      rate: 1,
+      symbolUsed: null,
+      method: 'identity',
+      mode: 'mid',
+      ts: null,
+      attemptedSymbols: [],
+    }
+    liveFxConversionErrorMessage.value = ''
+    liveFxAttemptedSymbols.value = []
+    liveFxLoading.value = false
+    return
+  }
+
+  const requestId = ++liveFxResolveRequestId
+  liveFxLoading.value = true
+  liveFxConversionErrorMessage.value = ''
+  liveFxAttemptedSymbols.value = []
+
+  try {
+    const rate = await fxResolver.getRate(quoteCurrency, 'mid')
+    if (requestId !== liveFxResolveRequestId) return
+    liveFxConversion.value = rate
+    liveFxConversionErrorMessage.value = ''
+    liveFxAttemptedSymbols.value = []
+  } catch (error) {
+    if (requestId !== liveFxResolveRequestId) return
+    liveFxConversion.value = null
+    if (error instanceof FxRateResolutionError) {
+      liveFxAttemptedSymbols.value = error.attemptedSymbols
+      liveFxConversionErrorMessage.value = error.message
+    } else {
+      liveFxAttemptedSymbols.value = []
+      liveFxConversionErrorMessage.value = `Missing live FX quote to convert ${quoteCurrency}->USD`
+    }
+  } finally {
+    if (requestId === liveFxResolveRequestId) {
+      liveFxLoading.value = false
+    }
+  }
+}
 
 const validExitLegs = computed(() => {
   const rows: Array<{ price: number; quantity_lots: number; fees: number }> = []
@@ -784,6 +871,14 @@ function buildPayload(): TradePayload {
   if (!instrument) {
     throw new Error('Please select a valid instrument from the list.')
   }
+  if (instrument.quote_currency.toUpperCase() !== 'USD') {
+    if (liveFxLoading.value) {
+      throw new Error('Fetching FX quote...')
+    }
+    if (liveFxConversion.value === null) {
+      throw new Error(liveFxConversionError.value || `Missing live FX quote to convert ${instrument.quote_currency.toUpperCase()}->USD`)
+    }
+  }
   const strategyModelId = Number(form.strategy_model_id)
   const setupId = Number(form.setup_id)
   const killzoneId = Number(form.killzone_id)
@@ -872,6 +967,9 @@ function buildPayload(): TradePayload {
     swap: Number(form.swap || 0),
     spread_cost: Number(form.spread_cost || 0),
     slippage_cost: Number(form.slippage_cost || 0),
+    fx_rate_quote_to_usd: liveFxConversion.value?.rate ?? (instrument.quote_currency.toUpperCase() === 'USD' ? 1 : null),
+    fx_symbol_used: liveFxConversion.value?.symbolUsed ?? null,
+    fx_rate_timestamp: liveFxConversion.value?.ts ? new Date(liveFxConversion.value.ts).toISOString() : null,
     legs,
     risk_override_reason: form.risk_override_reason.trim() ? form.risk_override_reason.trim() : null,
     followed_rules: form.followed_rules,
@@ -887,6 +985,7 @@ async function runPrecheck() {
 
   const firstError = Object.values(formErrors.value)[0]
   if (firstError) return
+  if (isFxPending.value) return
 
   try {
     const payload = buildPayload()
@@ -1253,6 +1352,46 @@ watch(
 )
 
 watch(
+  () => selectedInstrument.value?.quote_currency ?? '',
+  (quoteCurrency) => {
+    for (const unsubscribe of unsubscribeFxListeners) {
+      unsubscribe()
+    }
+    unsubscribeFxListeners = []
+    if (stopTrackingFxSymbols) {
+      stopTrackingFxSymbols()
+      stopTrackingFxSymbols = null
+    }
+
+    const symbols = fxResolver.getTrackedSymbolsForQuoteCurrency(quoteCurrency)
+    if (symbols.length === 0) {
+      quoteTickVersion.value += 1
+      void refreshLiveFxConversion()
+      return
+    }
+
+    stopTrackingFxSymbols = livePriceFeedService.trackSymbols(symbols)
+    unsubscribeFxListeners = symbols.map((symbol) =>
+      livePriceFeedService.subscribe(symbol, () => {
+        quoteTickVersion.value += 1
+        schedulePrecheck()
+      })
+    )
+    quoteTickVersion.value += 1
+    void refreshLiveFxConversion()
+    schedulePrecheck()
+  },
+  { immediate: true }
+)
+
+watch(
+  () => quoteTickVersion.value,
+  () => {
+    void refreshLiveFxConversion()
+  }
+)
+
+watch(
   () => form.instrument_id,
   (value) => {
     const id = Number(value)
@@ -1263,6 +1402,7 @@ watch(
         form.position_size = toNumber(instrument.min_lot)
       }
     }
+    void refreshLiveFxConversion()
     schedulePrecheck()
   }
 )
@@ -1329,6 +1469,14 @@ onBeforeUnmount(() => {
   tradeChecklistStore.resetState()
   if (precheckTimer) {
     clearTimeout(precheckTimer)
+  }
+  for (const unsubscribe of unsubscribeFxListeners) {
+    unsubscribe()
+  }
+  unsubscribeFxListeners = []
+  if (stopTrackingFxSymbols) {
+    stopTrackingFxSymbols()
+    stopTrackingFxSymbols = null
   }
 })
 
@@ -1728,6 +1876,12 @@ async function loadImage(file: File): Promise<HTMLImageElement> {
             <p class="trade-section-title">Risk Check</p>
             <span class="filter-chip-mini" :class="riskStatusClass">{{ riskStatusLabel }}</span>
           </div>
+          <p v-if="isFxPending" class="text-xs muted">Fetching FX quote...</p>
+          <p v-if="liveFxConversionError" class="field-error-text">{{ liveFxConversionError }}</p>
+          <details v-if="liveFxConversionError && liveFxAttemptedSymbols.length > 0" class="mt-1 text-xs muted">
+            <summary>Tried symbols</summary>
+            <p class="mt-1">{{ liveFxAttemptedSymbols.join(', ') }}</p>
+          </details>
           <p v-if="precheckError" class="field-error-text">{{ precheckError }}</p>
           <div v-else-if="precheckResult" class="panel p-3 text-sm">
             <div class="grid grid-cols-2 gap-2 text-xs">
@@ -1735,6 +1889,19 @@ async function loadImage(file: File): Promise<HTMLImageElement> {
               <p>Risk %: <strong>{{ precheckResult.stats.risk_percent.toFixed(2) }}%</strong></p>
               <p>Projected Daily Loss %: <strong>{{ precheckResult.stats.projected_daily_loss_pct.toFixed(2) }}%</strong></p>
               <p>R:R: <strong>{{ precheckResult.calculated.rr.toFixed(2) }}R</strong></p>
+              <p>Risk Currency: <strong>USD</strong></p>
+              <p>
+                FX:
+                <strong>
+                  {{
+                    isFxPending
+                      ? 'Fetching quote...'
+                      : liveFxConversion
+                        ? `${selectedInstrument?.quote_currency ?? ''}->USD via ${liveFxConversion.symbolUsed ?? 'identity'} (${liveFxConversion.method}) @ ${liveFxConversion.rate.toFixed(6)} (${liveFxConversion.mode})`
+                        : (selectedInstrument?.quote_currency?.toUpperCase() === 'USD' ? 'USD->USD @ 1 (identity)' : '-')
+                  }}
+                </strong>
+              </p>
             </div>
             <ul v-if="precheckResult.violations.length > 0" class="mt-2 list-disc pl-5">
               <li v-for="violation in precheckResult.violations" :key="violation.code">
