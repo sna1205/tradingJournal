@@ -73,6 +73,8 @@ export interface Trade {
   created_at: string
   updated_at: string
   deleted_at?: string | null
+  local_sync_status?: 'draft_local' | 'pending_sync' | 'synced' | 'conflict'
+  risk_validation_status?: 'verified' | 'unverified'
 }
 
 export interface TradeLeg {

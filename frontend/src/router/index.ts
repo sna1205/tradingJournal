@@ -1,15 +1,33 @@
-import { createRouter, createWebHistory } from 'vue-router'
-import Dashboard from '@/pages/Dashboard.vue'
-import Trades from '@/pages/Trades.vue'
-import TradeFormPage from '@/pages/TradeFormPage.vue'
-import MissedTrades from '@/pages/MissedTrades.vue'
-import MissedTradeFormPage from '@/pages/MissedTradeFormPage.vue'
-import Milestones from '@/pages/Milestones.vue'
-import Accounts from '@/pages/Accounts.vue'
-import PreTradeCheckPage from '@/pages/PreTradeCheckPage.vue'
-import LotsCalculatorPage from '@/pages/LotsCalculatorPage.vue'
-import UiRegressionPage from '@/pages/UiRegressionPage.vue'
-import ChecklistBuilderPage from '@/pages/ChecklistBuilderPage.vue'
+import { createRouter, createWebHistory, type RouteRecordRaw } from 'vue-router'
+import { useAuthStore } from '@/stores/authStore'
+
+const Dashboard = () => import('@/pages/Dashboard.vue')
+const Trades = () => import('@/pages/Trades.vue')
+const TradeFormPage = () => import('@/pages/TradeFormPage.vue')
+const MissedTrades = () => import('@/pages/MissedTrades.vue')
+const MissedTradeFormPage = () => import('@/pages/MissedTradeFormPage.vue')
+const Milestones = () => import('@/pages/Milestones.vue')
+const Accounts = () => import('@/pages/Accounts.vue')
+const PreTradeCheckPage = () => import('@/pages/PreTradeCheckPage.vue')
+const LotsCalculatorPage = () => import('@/pages/LotsCalculatorPage.vue')
+const ChecklistBuilderPage = () => import('@/pages/ChecklistBuilderPage.vue')
+const LoginPage = () => import('@/pages/LoginPage.vue')
+const UiRegressionPage = () => import('@/pages/UiRegressionPage.vue')
+
+const includeVisualRoutes = import.meta.env.DEV || import.meta.env.VITE_ENABLE_VISUAL_ROUTES === '1'
+const visualRoutes: RouteRecordRaw[] = includeVisualRoutes
+  ? [
+      {
+        path: '/__visual-regression',
+        name: 'visual-regression',
+        component: UiRegressionPage,
+        meta: {
+          public: true,
+          layout: 'auth',
+        },
+      },
+    ]
+  : []
 
 const router = createRouter({
   history: createWebHistory(),
@@ -17,6 +35,15 @@ const router = createRouter({
     {
       path: '/',
       redirect: '/overview',
+    },
+    {
+      path: '/login',
+      name: 'login',
+      component: LoginPage,
+      meta: {
+        layout: 'auth',
+        guestOnly: true,
+      },
     },
     {
       path: '/overview',
@@ -86,12 +113,40 @@ const router = createRouter({
       name: 'progress',
       component: Milestones,
     },
-    {
-      path: '/__visual-regression',
-      name: 'visual-regression',
-      component: UiRegressionPage,
-    },
+    ...visualRoutes,
   ],
+})
+
+router.beforeEach(async (to) => {
+  const isLocalVisualHarness = typeof window !== 'undefined'
+    && ['localhost', '127.0.0.1'].includes(window.location.hostname)
+  const bypassAuthForVisualTests = isLocalVisualHarness && to.query.visual === '1'
+  if (bypassAuthForVisualTests) {
+    return true
+  }
+
+  const authStore = useAuthStore()
+  if (!authStore.initialized) {
+    await authStore.initialize()
+  }
+
+  const isGuestOnly = to.matched.some((record) => record.meta.guestOnly)
+  if (isGuestOnly && authStore.isAuthenticated) {
+    const redirectTarget = typeof to.query.redirect === 'string' && to.query.redirect !== ''
+      ? to.query.redirect
+      : '/dashboard'
+    return redirectTarget
+  }
+
+  const isPublic = to.matched.some((record) => record.meta.public)
+  if (!isPublic && !isGuestOnly && !authStore.isAuthenticated) {
+    return {
+      path: '/login',
+      query: { redirect: to.fullPath },
+    }
+  }
+
+  return true
 })
 
 export default router

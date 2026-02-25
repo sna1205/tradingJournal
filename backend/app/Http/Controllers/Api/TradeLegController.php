@@ -21,6 +21,8 @@ class TradeLegController extends Controller
 
     public function index(Trade $trade)
     {
+        $this->authorize('view', $trade);
+
         $legs = $trade->legs()
             ->orderBy('executed_at')
             ->orderBy('id')
@@ -31,6 +33,7 @@ class TradeLegController extends Controller
 
     public function store(Request $request, Trade $trade)
     {
+        $this->authorize('update', $trade);
         $payload = $this->validateLegPayload($request);
 
         $created = DB::transaction(function () use ($trade, $payload): TradeLeg {
@@ -47,6 +50,9 @@ class TradeLegController extends Controller
 
     public function update(Request $request, TradeLeg $tradeLeg)
     {
+        $trade = $tradeLeg->trade()->firstOrFail();
+        $this->authorize('update', $trade);
+
         $payload = $this->validateLegPayload($request);
 
         $updated = DB::transaction(function () use ($tradeLeg, $payload): TradeLeg {
@@ -64,6 +70,9 @@ class TradeLegController extends Controller
 
     public function destroy(TradeLeg $tradeLeg)
     {
+        $trade = $tradeLeg->trade()->firstOrFail();
+        $this->authorize('delete', $trade);
+
         DB::transaction(function () use ($tradeLeg): void {
             $trade = $tradeLeg->trade()->firstOrFail();
             $accountId = (int) $trade->account_id;

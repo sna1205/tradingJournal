@@ -3,6 +3,7 @@
 namespace Database\Factories;
 
 use App\Models\MissedTrade;
+use App\Models\User;
 use Illuminate\Database\Eloquent\Factories\Factory;
 use Illuminate\Support\Carbon;
 
@@ -16,6 +17,7 @@ class MissedTradeFactory extends Factory
     public function definition(): array
     {
         return [
+            'user_id' => User::factory(),
             'pair' => fake()->randomElement(['EURUSD', 'GBPUSD', 'USDJPY', 'XAUUSD', 'BTCUSD', 'ETHUSD']),
             'model' => fake()->randomElement(['Breakout', 'Pullback', 'Liquidity Sweep', 'Reversal']),
             'reason' => fake()->randomElement([

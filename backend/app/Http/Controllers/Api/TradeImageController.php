@@ -31,6 +31,8 @@ class TradeImageController extends Controller
      */
     public function store(Request $request, Trade $trade)
     {
+        $this->authorize('update', $trade);
+
         $validated = Validator::make($request->all(), [
             'image' => ['required', 'file', 'max:' . self::MAX_FILE_KB, 'mimes:jpg,jpeg,png,webp,bmp'],
             'sort_order' => ['nullable', 'integer', 'min:0'],
@@ -98,6 +100,9 @@ class TradeImageController extends Controller
      */
     public function update(Request $request, TradeImage $tradeImage)
     {
+        $trade = $tradeImage->trade()->firstOrFail();
+        $this->authorize('update', $trade);
+
         $validated = Validator::make($request->all(), [
             'context_tag' => ['nullable', 'in:' . implode(',', self::CONTEXT_TAGS)],
             'timeframe' => ['nullable', 'string', 'max:20'],
@@ -123,6 +128,9 @@ class TradeImageController extends Controller
 
     public function destroy(TradeImage $tradeImage)
     {
+        $trade = $tradeImage->trade()->firstOrFail();
+        $this->authorize('delete', $trade);
+
         $disk = (string) config('filesystems.trade_images_disk', 'public');
 
         Storage::disk($disk)->delete([

@@ -145,12 +145,7 @@ class ChecklistItemController extends Controller
 
     private function abortIfUnauthorizedChecklist(Request $request, Checklist $checklist): void
     {
-        $userId = $this->resolveUserId($request);
-
-        $query = Checklist::query()->whereKey((int) $checklist->id);
-        $this->checklistService->applyUserScope($query, $userId);
-
-        abort_unless($query->exists(), 404);
+        $this->authorize('view', $checklist);
     }
 
     private function abortIfUnauthorizedItem(Request $request, ChecklistItem $item): void
@@ -159,26 +154,4 @@ class ChecklistItemController extends Controller
         abort_unless($checklist !== null, 404);
         $this->abortIfUnauthorizedChecklist($request, $checklist);
     }
-
-    private function resolveUserId(Request $request): ?int
-    {
-        $fromAuth = $request->user()?->id;
-        if (is_int($fromAuth) && $fromAuth > 0) {
-            return $fromAuth;
-        }
-
-        $headerRaw = $request->header('X-User-Id');
-        $fromHeader = is_numeric($headerRaw) ? (int) $headerRaw : 0;
-        if ($fromHeader > 0) {
-            return $fromHeader;
-        }
-
-        $fromQuery = (int) $request->integer('user_id', 0);
-        if ($fromQuery > 0) {
-            return $fromQuery;
-        }
-
-        return null;
-    }
 }
-

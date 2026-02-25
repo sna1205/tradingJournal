@@ -629,7 +629,7 @@ onMounted(async () => {
 </script>
 
 <template>
-  <div class="space-y-5 accounts-minimal">
+  <div class="space-y-5 accounts-minimal" data-testid="accounts-page">
     <GlassPanel>
       <div class="section-head">
         <div>

@@ -393,6 +393,7 @@ body {
   display: inline-flex;
   align-items: center;
   gap: 0.35rem;
+  cursor: pointer;
   border: 1px solid color-mix(in srgb, var(--warning) 42%, var(--border) 58%);
   border-radius: 999px;
   padding: 0.3rem 0.6rem;
@@ -405,6 +406,62 @@ body {
 .topbar-fallback-indicator small {
   color: var(--muted);
   font-weight: var(--fw-500);
+}
+
+.sync-conflict-modal {
+  width: min(960px, 100%);
+  max-height: min(80vh, 720px);
+  overflow: auto;
+  padding: 1rem;
+}
+
+.sync-conflict-item pre {
+  margin: 0;
+  max-height: 190px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 0.7rem;
+  background: color-mix(in srgb, var(--panel-soft) 72%, var(--panel) 28%);
+  padding: 0.65rem;
+  font-size: 0.72rem;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.sync-conflict-grid {
+  display: grid;
+  gap: 0.8rem;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.sync-conflict-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.55rem;
+}
+
+.risk-unverified-banner {
+  border: 1px solid color-mix(in srgb, var(--warning) 44%, var(--border) 56%);
+  background: color-mix(in srgb, var(--warning-soft) 70%, var(--panel) 30%);
+}
+
+.risk-unverified-watermark {
+  border: 1px dashed color-mix(in srgb, var(--warning) 60%, var(--border) 40%);
+  border-radius: 0.7rem;
+  padding: 0.45rem 0.7rem;
+  text-align: center;
+  font-size: 0.74rem;
+  font-weight: var(--fw-700);
+  letter-spacing: 0.08em;
+  color: color-mix(in srgb, var(--warning) 74%, var(--text) 26%);
+  background: color-mix(in srgb, var(--warning-soft) 45%, transparent 55%);
+}
+
+@media (max-width: 900px) {
+  .sync-conflict-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 
 .brand-mark {

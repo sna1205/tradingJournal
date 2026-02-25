@@ -2,12 +2,19 @@ import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import api from '@/services/api'
 import {
+  enqueueSyncCreate,
+  enqueueSyncDelete,
+  enqueueSyncUpdate,
+} from '@/services/offlineSyncQueue'
+import {
   createLocalTrade,
   deleteLocalTrade,
   deleteLocalTradeImage,
   fetchLocalTradeDetails,
   queryLocalTrades,
+  setLocalTradeSyncStatus,
   shouldUseLocalFallback,
+  upsertLocalTradeSnapshot,
   updateLocalTrade,
   uploadLocalTradeImage,
 } from '@/services/localFallback'
@@ -95,6 +102,8 @@ export interface TradePrecheckViolation {
 
 export interface TradePrecheckResult {
   allowed: boolean
+  risk_engine_unavailable?: boolean
+  local_only_override_allowed?: boolean
   requires_override_reason: boolean
   policy: {
     account_id: number
@@ -186,6 +195,13 @@ export const useTradeStore = defineStore('trades', () => {
       syncStatusStore.markServerHealthy()
 
       trades.value = data.data
+      for (const trade of data.data) {
+        upsertLocalTradeSnapshot({
+          ...trade,
+          local_sync_status: 'synced',
+          risk_validation_status: 'verified',
+        })
+      }
       pagination.value.current_page = data.current_page
       pagination.value.last_page = data.last_page
       pagination.value.per_page = data.per_page
@@ -244,6 +260,11 @@ export const useTradeStore = defineStore('trades', () => {
       } else {
         await fetchTrades(pagination.value.current_page)
       }
+      upsertLocalTradeSnapshot({
+        ...data,
+        local_sync_status: 'synced',
+        risk_validation_status: 'verified',
+      })
 
       void analyticsStore.fetchAnalytics().catch(() => undefined)
       void accountStore.fetchAccounts().catch(() => undefined)
@@ -252,6 +273,15 @@ export const useTradeStore = defineStore('trades', () => {
       if (shouldUseLocalFallback(err)) {
         syncStatusStore.markLocalFallback('trades')
         const local = createLocalTrade(payload)
+        enqueueSyncCreate({
+          entity: 'trades',
+          local_id: local.id,
+          payload: pruneUndefined(payload),
+          context: 'trades',
+          risk_unverified: true,
+        })
+        setLocalTradeSyncStatus(local.id, 'draft_local', 'unverified')
+        void syncStatusStore.refreshQueueState()
         if (shouldOptimisticallyInsert) {
           const index = trades.value.findIndex((trade) => trade.id === tempId)
           if (index >= 0) {
@@ -347,6 +377,11 @@ export const useTradeStore = defineStore('trades', () => {
       } else {
         await fetchTrades(pagination.value.current_page)
       }
+      upsertLocalTradeSnapshot({
+        ...data,
+        local_sync_status: 'synced',
+        risk_validation_status: 'verified',
+      })
 
       void analyticsStore.fetchAnalytics().catch(() => undefined)
       void accountStore.fetchAccounts().catch(() => undefined)
@@ -354,7 +389,21 @@ export const useTradeStore = defineStore('trades', () => {
     } catch (err) {
       if (shouldUseLocalFallback(err)) {
         syncStatusStore.markLocalFallback('trades')
+        if (current) {
+          upsertLocalTradeSnapshot(current)
+        }
         const data = updateLocalTrade(id, payload)
+        enqueueSyncUpdate({
+          entity: 'trades',
+          local_id: data.id,
+          server_id: id,
+          expected_updated_at: current?.updated_at ?? null,
+          payload: pruneUndefined(payload),
+          context: 'trades',
+          risk_unverified: data.risk_validation_status !== 'verified',
+        })
+        setLocalTradeSyncStatus(data.id, 'draft_local', data.risk_validation_status ?? 'unverified')
+        void syncStatusStore.refreshQueueState()
         if (index >= 0) {
           trades.value[index] = data
         } else {
@@ -386,6 +435,7 @@ export const useTradeStore = defineStore('trades', () => {
     try {
       await api.delete(`/trades/${id}`)
       syncStatusStore.markServerHealthy()
+      deleteLocalTrade(id)
 
       if (trades.value.length === 0 && pagination.value.current_page > 1) {
         await fetchTrades(pagination.value.current_page - 1)
@@ -396,7 +446,18 @@ export const useTradeStore = defineStore('trades', () => {
     } catch (err) {
       if (shouldUseLocalFallback(err)) {
         syncStatusStore.markLocalFallback('trades')
+        if (previous) {
+          upsertLocalTradeSnapshot(previous)
+        }
         deleteLocalTrade(id)
+        enqueueSyncDelete({
+          entity: 'trades',
+          local_id: id,
+          server_id: id,
+          expected_updated_at: previous?.updated_at ?? null,
+          context: 'trades',
+        })
+        void syncStatusStore.refreshQueueState()
         await fetchTrades(Math.max(1, pagination.value.current_page))
         void analyticsStore.fetchAnalytics().catch(() => undefined)
         void accountStore.fetchAccounts().catch(() => undefined)
@@ -570,7 +631,9 @@ export const useTradeStore = defineStore('trades', () => {
       }
       syncStatusStore.markLocalFallback('trades-precheck')
       return {
-        allowed: true,
+        allowed: false,
+        risk_engine_unavailable: true,
+        local_only_override_allowed: true,
         requires_override_reason: false,
         policy: {
           account_id: payload.account_id,
@@ -578,10 +641,17 @@ export const useTradeStore = defineStore('trades', () => {
           max_daily_loss_pct: 5,
           max_total_drawdown_pct: 10,
           max_open_risk_pct: 2,
-          enforce_hard_limits: false,
+          enforce_hard_limits: true,
           allow_override: false,
         },
-        violations: [],
+        violations: [
+          {
+            code: 'risk_engine_unavailable',
+            message: 'Risk engine unavailable. Submission is blocked until connectivity is restored or local-only override is confirmed.',
+            limit: 0,
+            actual: 0,
+          },
+        ],
         stats: {
           risk_percent: 0,
           monetary_risk: 0,
@@ -977,4 +1047,10 @@ function defaultFxRatesFallback(): FxRate[] {
     created_at: now,
     updated_at: now,
   }))
+}
+
+function pruneUndefined<T extends object>(payload: T): Record<string, unknown> {
+  return Object.fromEntries(
+    Object.entries(payload as Record<string, unknown>).filter(([, value]) => value !== undefined)
+  )
 }

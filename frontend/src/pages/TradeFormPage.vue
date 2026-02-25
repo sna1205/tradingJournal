@@ -267,10 +267,21 @@ const instrumentSymbol = computed(() => selectedInstrument.value?.symbol ?? form
 const precheckLoading = ref(false)
 const precheckError = ref('')
 const precheckResult = ref<TradePrecheckResult | null>(null)
+const localRiskOverrideAccepted = ref(false)
 let precheckTimer: ReturnType<typeof setTimeout> | null = null
+const isRiskEngineUnavailable = computed(() => Boolean(precheckResult.value?.risk_engine_unavailable))
+const canUseLocalRiskOverride = computed(() =>
+  isRiskEngineUnavailable.value
+  && Boolean(precheckResult.value?.local_only_override_allowed)
+)
+const hasAcceptedLocalRiskOverride = computed(() =>
+  canUseLocalRiskOverride.value
+  && localRiskOverrideAccepted.value
+)
 const isSaveBlocked = computed(() =>
   isFxPending.value
-  || ((precheckResult.value !== null) && !precheckResult.value.allowed)
+  || Boolean(precheckError.value)
+  || ((precheckResult.value !== null) && !precheckResult.value.allowed && !hasAcceptedLocalRiskOverride.value)
   || Boolean(liveFxConversionError.value)
 )
 const isChecklistStrictBlocked = computed(() =>
@@ -291,6 +302,7 @@ const softChecklistWarning = computed(() =>
 const riskStatusLabel = computed(() => {
   if (precheckLoading.value) return 'Checking'
   if (isFxPending.value) return 'Fetching FX'
+  if (precheckError.value) return 'Blocked'
   if (liveFxConversionError.value) return 'Blocked'
   if (precheckResult.value?.allowed) return 'Allowed'
   if (precheckResult.value) return 'Blocked'
@@ -299,6 +311,7 @@ const riskStatusLabel = computed(() => {
 const riskStatusClass = computed(() => {
   if (precheckLoading.value) return ''
   if (isFxPending.value) return ''
+  if (precheckError.value) return 'is-blocked'
   if (liveFxConversionError.value) return 'is-blocked'
   if (precheckResult.value?.allowed) return 'is-allowed'
   if (precheckResult.value) return 'is-blocked'
@@ -307,7 +320,11 @@ const riskStatusClass = computed(() => {
 const blockedSummary = computed(() => {
   if (!submitAttempted.value || !isSaveBlocked.value) return ''
   if (isFxPending.value) return 'Fetching FX quote...'
+  if (precheckError.value) return precheckError.value
   if (liveFxConversionError.value) return liveFxConversionError.value
+  if (isRiskEngineUnavailable.value && !hasAcceptedLocalRiskOverride.value) {
+    return 'Risk engine is unavailable. Confirm local-only override or reconnect before saving.'
+  }
   return 'Blocked by account risk policy. Resolve violations or provide override reason when allowed.'
 })
 
@@ -982,6 +999,7 @@ function buildPayload(): TradePayload {
 async function runPrecheck() {
   precheckError.value = ''
   precheckResult.value = null
+  localRiskOverrideAccepted.value = false
 
   const firstError = Object.values(formErrors.value)[0]
   if (firstError) return
@@ -1449,6 +1467,15 @@ watch(
 )
 
 watch(
+  () => isRiskEngineUnavailable.value,
+  (unavailable) => {
+    if (!unavailable) {
+      localRiskOverrideAccepted.value = false
+    }
+  }
+)
+
+watch(
   exitLegs,
   () => {
     schedulePrecheck()
@@ -1540,7 +1567,7 @@ async function loadImage(file: File): Promise<HTMLImageElement> {
 </script>
 
 <template>
-  <div class="space-y-4 trade-form-minimal execution-long-page">
+  <div class="space-y-4 trade-form-minimal execution-long-page" data-testid="trade-form-page">
     <GlassPanel class="form-shell-panel execution-long-shell form-shell-unified">
       <div v-if="loadingTrade" class="space-y-3">
         <div class="skeleton-shimmer h-12 rounded-xl" />
@@ -1550,6 +1577,9 @@ async function loadImage(file: File): Promise<HTMLImageElement> {
 
       <div v-else class="trade-form-with-checklist">
         <form :id="tradeFormId" class="form-block space-y-4 trade-form-main" @submit.prevent="submitForm">
+        <div v-if="hasAcceptedLocalRiskOverride" class="risk-unverified-watermark">
+          RISK UNVERIFIED · LOCAL DRAFT
+        </div>
         <div class="execution-long-header">
           <div>
             <h2 class="section-title">{{ pageTitle }}</h2>
@@ -1562,6 +1592,17 @@ async function loadImage(file: File): Promise<HTMLImageElement> {
         </div>
 
         <p v-if="blockedSummary" class="field-error-text">{{ blockedSummary }}</p>
+        <div v-if="isRiskEngineUnavailable" class="panel p-3 text-sm risk-unverified-banner">
+          <p class="font-semibold">Risk engine unavailable</p>
+          <p class="mt-1">
+            This submission is blocked by default. You can proceed only as a local-only draft and it will remain
+            <strong>risk unverified</strong> until server confirmation.
+          </p>
+          <label class="mt-2 inline-flex items-center gap-2">
+            <input v-model="localRiskOverrideAccepted" type="checkbox">
+            <span>I accept risk (local-only draft)</span>
+          </label>
+        </div>
         <p v-if="softChecklistWarning" class="field-error-text">
           Checklist is incomplete. Save is allowed in soft mode and this trade will be flagged.
         </p>
@@ -1876,6 +1917,9 @@ async function loadImage(file: File): Promise<HTMLImageElement> {
             <p class="trade-section-title">Risk Check</p>
             <span class="filter-chip-mini" :class="riskStatusClass">{{ riskStatusLabel }}</span>
           </div>
+          <p v-if="isRiskEngineUnavailable" class="field-error-text">
+            Risk precheck unavailable. Confirm local-only override to save as draft.
+          </p>
           <p v-if="isFxPending" class="text-xs muted">Fetching FX quote...</p>
           <p v-if="liveFxConversionError" class="field-error-text">{{ liveFxConversionError }}</p>
           <details v-if="liveFxConversionError && liveFxAttemptedSymbols.length > 0" class="mt-1 text-xs muted">
@@ -2015,6 +2059,9 @@ async function loadImage(file: File): Promise<HTMLImageElement> {
 
         <div class="execution-sticky-bar">
           <span class="execution-status-chip" :class="riskStatusClass">{{ riskStatusLabel }}</span>
+          <span v-if="hasAcceptedLocalRiskOverride" class="execution-status-chip is-blocked">
+            Risk unverified (local-only)
+          </span>
           <button type="button" class="btn btn-ghost px-4 py-2 text-sm" @click="router.push('/trades')">Cancel</button>
           <button
             type="submit"

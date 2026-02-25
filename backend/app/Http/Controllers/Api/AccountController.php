@@ -33,6 +33,7 @@ class AccountController extends Controller
     public function index(Request $request)
     {
         $query = Account::query()
+            ->where('user_id', (int) $request->user()->id)
             ->orderByDesc('is_active')
             ->orderBy('name');
 
@@ -52,6 +53,7 @@ class AccountController extends Controller
 
         $account = Account::query()->create([
             ...$payload,
+            'user_id' => (int) $request->user()->id,
             'current_balance' => $payload['starting_balance'],
         ]);
 
@@ -60,6 +62,7 @@ class AccountController extends Controller
 
     public function show(Account $account)
     {
+        $this->authorize('view', $account);
         $this->accountBalanceService->rebuildAccountState((int) $account->id);
 
         return response()->json($account->fresh());
@@ -70,6 +73,7 @@ class AccountController extends Controller
      */
     public function update(Request $request, Account $account)
     {
+        $this->authorize('update', $account);
         $payload = $this->validatePayload($request, true, (int) $account->id);
 
         DB::transaction(function () use ($account, $payload): void {
@@ -85,6 +89,8 @@ class AccountController extends Controller
 
     public function destroy(Account $account)
     {
+        $this->authorize('delete', $account);
+
         if ($account->trades()->exists()) {
             return response()->json([
                 'message' => 'Cannot delete account with existing trades. Reassign or delete trades first.',
@@ -98,6 +104,8 @@ class AccountController extends Controller
 
     public function equity(Request $request, Account $account)
     {
+        $this->authorize('view', $account);
+
         $trades = Trade::query()
             ->where('account_id', $account->id)
             ->when($request->input('date_from'), fn ($query, string $dateFrom) => $query->whereDate('date', '>=', $dateFrom))
@@ -120,6 +128,8 @@ class AccountController extends Controller
 
     public function analytics(Request $request, Account $account)
     {
+        $this->authorize('view', $account);
+
         $trades = Trade::query()
             ->where('account_id', $account->id)
             ->when($request->input('date_from'), fn ($query, string $dateFrom) => $query->whereDate('date', '>=', $dateFrom))
@@ -166,6 +176,7 @@ class AccountController extends Controller
 
     public function riskPolicy(Account $account)
     {
+        $this->authorize('view', $account);
         $policy = $this->tradeRiskPolicyService->getOrCreatePolicy((int) $account->id);
 
         return response()->json($policy);
@@ -176,6 +187,7 @@ class AccountController extends Controller
      */
     public function upsertRiskPolicy(Request $request, Account $account)
     {
+        $this->authorize('update', $account);
         $payload = $this->validateRiskPolicyPayload($request);
         $policy = $this->tradeRiskPolicyService->getOrCreatePolicy((int) $account->id);
         $policy->fill($payload);
@@ -186,6 +198,7 @@ class AccountController extends Controller
 
     public function challenge(Account $account)
     {
+        $this->authorize('view', $account);
         $challenge = $this->propChallengeService->getOrCreateChallenge($account);
 
         return response()->json($challenge);
@@ -196,6 +209,7 @@ class AccountController extends Controller
      */
     public function upsertChallenge(Request $request, Account $account)
     {
+        $this->authorize('update', $account);
         $payload = $this->validateChallengePayload($request);
         $challenge = $this->propChallengeService->getOrCreateChallenge($account);
         $challenge->fill($payload);
@@ -206,6 +220,7 @@ class AccountController extends Controller
 
     public function challengeStatus(Account $account)
     {
+        $this->authorize('view', $account);
         return response()->json(
             $this->propChallengeService->status($account)
         );
@@ -217,22 +232,16 @@ class AccountController extends Controller
     private function validatePayload(Request $request, bool $isUpdate = false, ?int $ignoreId = null): array
     {
         $required = $isUpdate ? 'sometimes' : 'required';
-        $input = $request->all();
-        $currentAccountUserId = $ignoreId
-            ? Account::query()->whereKey($ignoreId)->value('user_id')
-            : null;
-        $scopedUserId = array_key_exists('user_id', $input)
-            ? $input['user_id']
-            : $currentAccountUserId;
+        $input = $request->except(['user_id']);
+        $userId = (int) $request->user()->id;
 
         $validator = Validator::make($input, [
-            'user_id' => ['nullable', 'integer', 'exists:users,id'],
             'name' => [
                 $required,
                 'string',
                 'max:120',
                 Rule::unique('accounts', 'name')
-                    ->where(fn (QueryBuilder $query) => $query->where('user_id', $scopedUserId))
+                    ->where(fn (QueryBuilder $query) => $query->where('user_id', $userId))
                     ->ignore($ignoreId),
             ],
             'broker' => [$required, 'string', 'max:120'],

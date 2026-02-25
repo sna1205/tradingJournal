@@ -21,8 +21,8 @@ class TradeChecklistResponseController extends Controller
 
     public function show(Request $request, Trade $trade)
     {
-        $userId = $this->resolveUserId($request);
-        abort_unless($this->checklistService->ensureTradeInUserScope($trade, $userId), 404);
+        $this->authorize('view', $trade);
+        $userId = (int) $request->user()->id;
 
         $accountId = $trade->account_id !== null ? (int) $trade->account_id : null;
         $checklist = $this->checklistService->resolveApplicableChecklist($userId, $accountId);
@@ -54,8 +54,8 @@ class TradeChecklistResponseController extends Controller
      */
     public function upsert(Request $request, Trade $trade)
     {
-        $userId = $this->resolveUserId($request);
-        abort_unless($this->checklistService->ensureTradeInUserScope($trade, $userId), 404);
+        $this->authorize('update', $trade);
+        $userId = (int) $request->user()->id;
 
         $validator = Validator::make($request->all(), [
             'checklist_id' => ['sometimes', 'nullable', 'integer', 'exists:checklists,id'],
@@ -102,24 +102,4 @@ class TradeChecklistResponseController extends Controller
         return response()->json($result);
     }
 
-    private function resolveUserId(Request $request): ?int
-    {
-        $fromAuth = $request->user()?->id;
-        if (is_int($fromAuth) && $fromAuth > 0) {
-            return $fromAuth;
-        }
-
-        $headerRaw = $request->header('X-User-Id');
-        $fromHeader = is_numeric($headerRaw) ? (int) $headerRaw : 0;
-        if ($fromHeader > 0) {
-            return $fromHeader;
-        }
-
-        $fromQuery = (int) $request->integer('user_id', 0);
-        if ($fromQuery > 0) {
-            return $fromQuery;
-        }
-
-        return null;
-    }
 }

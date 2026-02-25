@@ -24,6 +24,8 @@ class MissedTradeImageController extends Controller
      */
     public function store(Request $request, MissedTrade $missedTrade)
     {
+        $this->authorize('update', $missedTrade);
+
         if (!Schema::hasTable('missed_trade_images')) {
             return response()->json([
                 'message' => 'Missed trade image storage is not ready. Run database migrations first.',
@@ -88,6 +90,9 @@ class MissedTradeImageController extends Controller
 
     public function destroy(MissedTradeImage $missedTradeImage)
     {
+        $missedTrade = $missedTradeImage->missedTrade()->firstOrFail();
+        $this->authorize('delete', $missedTrade);
+
         $disk = (string) config('filesystems.trade_images_disk', 'public');
 
         Storage::disk($disk)->delete([

@@ -31,6 +31,11 @@ class Checklist extends Model
         return $this->belongsTo(Account::class);
     }
 
+    public function user(): BelongsTo
+    {
+        return $this->belongsTo(User::class);
+    }
+
     public function items(): HasMany
     {
         return $this->hasMany(ChecklistItem::class)->orderBy('order_index')->orderBy('id');

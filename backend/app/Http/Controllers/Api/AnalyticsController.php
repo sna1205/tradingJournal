@@ -9,6 +9,8 @@ use App\Services\Analytics\BehavioralAnalyticsEngine;
 use App\Services\Analytics\EquityEngine;
 use App\Services\Analytics\StreakEngine;
 use App\Services\Analytics\TradeMetricsEngine;
+use App\Services\CurrencyConversionService;
+use Carbon\CarbonInterface;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\Request;
 use Illuminate\Support\Collection;
@@ -20,15 +22,18 @@ class AnalyticsController extends Controller
         private readonly EquityEngine $equityEngine,
         private readonly StreakEngine $streakEngine,
         private readonly TradeMetricsEngine $metricsEngine,
-        private readonly BehavioralAnalyticsEngine $behavioralAnalyticsEngine
+        private readonly BehavioralAnalyticsEngine $behavioralAnalyticsEngine,
+        private readonly CurrencyConversionService $currencyConversionService
     ) {
     }
 
     public function overview(Request $request)
     {
         $payload = $this->remember('overview', $request, function () use ($request): array {
-            $trades = $this->chronologicalTrades($request);
-            $startingBalance = $this->startingBalance($request);
+            $reportingCurrency = $this->reportingCurrency($request);
+            $normalizeForPortfolio = $this->shouldNormalizeForPortfolio($request);
+            $trades = $this->chronologicalTrades($request, $normalizeForPortfolio ? $reportingCurrency : null);
+            $startingBalance = $this->startingBalance($request, $normalizeForPortfolio ? $reportingCurrency : null);
 
             $equity = $this->equityEngine->build($trades, $startingBalance);
             $metrics = $this->metricsEngine->calculate($trades, (float) $equity['max_drawdown']);
@@ -46,6 +51,8 @@ class AnalyticsController extends Controller
                 'expectancy' => $metrics['expectancy_money'],
                 'average_r' => $metrics['avg_r_realized'],
                 'recovery_factor' => $metrics['recovery_factor'],
+                'reporting_currency' => $reportingCurrency,
+                'fx_normalized' => $normalizeForPortfolio,
             ];
         });
 
@@ -55,6 +62,37 @@ class AnalyticsController extends Controller
     public function daily(Request $request)
     {
         $payload = $this->remember('daily', $request, function () use ($request): array {
+            $reportingCurrency = $this->reportingCurrency($request);
+            $normalizeForPortfolio = $this->shouldNormalizeForPortfolio($request);
+            if ($normalizeForPortfolio) {
+                $rows = $this->chronologicalTrades($request, $reportingCurrency)
+                    ->groupBy(fn (Trade $trade): string => (string) $trade->date?->toDateString())
+                    ->map(function (Collection $rows, string $closeDate): array {
+                        $totalTrades = $rows->count();
+                        $profitLoss = (float) $rows->sum(fn (Trade $trade): float => (float) $trade->profit_loss);
+                        $avgR = $totalTrades > 0
+                            ? (float) $rows->avg(fn (Trade $trade): float => (float) ($trade->r_multiple ?? 0))
+                            : 0.0;
+                        $wins = $rows->filter(fn (Trade $trade): bool => (float) $trade->profit_loss > 0)->count();
+
+                        return [
+                            'date' => $closeDate,
+                            'close_date' => $closeDate,
+                            'total_trades' => $totalTrades,
+                            'profit_loss' => round($profitLoss, 2),
+                            'average_r' => round($avgR, 4),
+                            'win_rate' => $totalTrades > 0
+                                ? round(($wins / $totalTrades) * 100, 2)
+                                : 0.0,
+                        ];
+                    })
+                    ->sortBy('close_date')
+                    ->values()
+                    ->all();
+
+                return $rows;
+            }
+
             return $this->baseQuery($request)
                 ->selectRaw('DATE(`date`) as close_date, COUNT(*) as total_trades, ROUND(SUM(profit_loss), 2) as profit_loss, ROUND(AVG(r_multiple), 4) as average_r, SUM(CASE WHEN profit_loss > 0 THEN 1 ELSE 0 END) as wins')
                 ->groupByRaw('DATE(`date`)')
@@ -80,13 +118,15 @@ class AnalyticsController extends Controller
     public function performanceProfile(Request $request)
     {
         $payload = $this->remember('performance-profile', $request, function () use ($request): array {
-            $trades = $this->chronologicalTrades($request);
-            $startingBalance = $this->startingBalance($request);
+            $reportingCurrency = $this->reportingCurrency($request);
+            $normalizeForPortfolio = $this->shouldNormalizeForPortfolio($request);
+            $trades = $this->chronologicalTrades($request, $normalizeForPortfolio ? $reportingCurrency : null);
+            $startingBalance = $this->startingBalance($request, $normalizeForPortfolio ? $reportingCurrency : null);
 
             $equity = $this->equityEngine->build($trades, $startingBalance);
             $metrics = $this->metricsEngine->calculate($trades, (float) $equity['max_drawdown']);
 
-            $dailySeries = $this->dailyPnlSeries($request);
+            $dailySeries = $this->dailyPnlSeries($request, $normalizeForPortfolio ? $reportingCurrency : null);
             $consistencyScore = $this->calculateConsistencyScore($dailySeries);
 
             return [
@@ -96,6 +136,8 @@ class AnalyticsController extends Controller
                 'consistency_score' => $consistencyScore,
                 'recovery_factor' => $metrics['recovery_factor'],
                 'sharpe_ratio' => $metrics['sharpe_ratio'],
+                'reporting_currency' => $reportingCurrency,
+                'fx_normalized' => $normalizeForPortfolio,
             ];
         });
 
@@ -105,14 +147,18 @@ class AnalyticsController extends Controller
     public function equity(Request $request)
     {
         $payload = $this->remember('equity', $request, function () use ($request): array {
-            $trades = $this->chronologicalTrades($request);
-            $startingBalance = $this->startingBalance($request);
+            $reportingCurrency = $this->reportingCurrency($request);
+            $normalizeForPortfolio = $this->shouldNormalizeForPortfolio($request);
+            $trades = $this->chronologicalTrades($request, $normalizeForPortfolio ? $reportingCurrency : null);
+            $startingBalance = $this->startingBalance($request, $normalizeForPortfolio ? $reportingCurrency : null);
             $equity = $this->equityEngine->build($trades, $startingBalance);
 
             return [
                 'equity_points' => $equity['equity_points'],
                 'cumulative_profit' => $equity['cumulative_profit'],
                 'equity_timestamps' => $equity['equity_timestamps'],
+                'reporting_currency' => $reportingCurrency,
+                'fx_normalized' => $normalizeForPortfolio,
             ];
         });
 
@@ -122,8 +168,10 @@ class AnalyticsController extends Controller
     public function drawdown(Request $request)
     {
         $payload = $this->remember('drawdown', $request, function () use ($request): array {
-            $trades = $this->chronologicalTrades($request);
-            $startingBalance = $this->startingBalance($request);
+            $reportingCurrency = $this->reportingCurrency($request);
+            $normalizeForPortfolio = $this->shouldNormalizeForPortfolio($request);
+            $trades = $this->chronologicalTrades($request, $normalizeForPortfolio ? $reportingCurrency : null);
+            $startingBalance = $this->startingBalance($request, $normalizeForPortfolio ? $reportingCurrency : null);
             $equity = $this->equityEngine->build($trades, $startingBalance);
 
             return [
@@ -133,6 +181,8 @@ class AnalyticsController extends Controller
                 'current_drawdown_percent' => $equity['current_drawdown_percent'],
                 'peak_balance' => $equity['peak_balance'],
                 'current_equity' => $equity['current_equity'],
+                'reporting_currency' => $reportingCurrency,
+                'fx_normalized' => $normalizeForPortfolio,
             ];
         });
 
@@ -142,9 +192,15 @@ class AnalyticsController extends Controller
     public function streaks(Request $request)
     {
         $payload = $this->remember('streaks', $request, function () use ($request): array {
-            $trades = $this->chronologicalTrades($request);
+            $reportingCurrency = $this->reportingCurrency($request);
+            $normalizeForPortfolio = $this->shouldNormalizeForPortfolio($request);
+            $trades = $this->chronologicalTrades($request, $normalizeForPortfolio ? $reportingCurrency : null);
 
-            return $this->streakEngine->calculate($trades);
+            return [
+                ...$this->streakEngine->calculate($trades),
+                'reporting_currency' => $reportingCurrency,
+                'fx_normalized' => $normalizeForPortfolio,
+            ];
         });
 
         return response()->json($payload);
@@ -153,11 +209,17 @@ class AnalyticsController extends Controller
     public function metrics(Request $request)
     {
         $payload = $this->remember('metrics', $request, function () use ($request): array {
-            $trades = $this->chronologicalTrades($request);
-            $startingBalance = $this->startingBalance($request);
+            $reportingCurrency = $this->reportingCurrency($request);
+            $normalizeForPortfolio = $this->shouldNormalizeForPortfolio($request);
+            $trades = $this->chronologicalTrades($request, $normalizeForPortfolio ? $reportingCurrency : null);
+            $startingBalance = $this->startingBalance($request, $normalizeForPortfolio ? $reportingCurrency : null);
             $equity = $this->equityEngine->build($trades, $startingBalance);
 
-            return $this->metricsEngine->calculate($trades, (float) $equity['max_drawdown']);
+            return [
+                ...$this->metricsEngine->calculate($trades, (float) $equity['max_drawdown']),
+                'reporting_currency' => $reportingCurrency,
+                'fx_normalized' => $normalizeForPortfolio,
+            ];
         });
 
         return response()->json($payload);
@@ -166,11 +228,17 @@ class AnalyticsController extends Controller
     public function behavioral(Request $request)
     {
         $payload = $this->remember('behavioral', $request, function () use ($request): array {
-            $trades = $this->chronologicalTrades($request);
+            $reportingCurrency = $this->reportingCurrency($request);
+            $normalizeForPortfolio = $this->shouldNormalizeForPortfolio($request);
+            $trades = $this->chronologicalTrades($request, $normalizeForPortfolio ? $reportingCurrency : null);
             $trades->load('psychology');
-            $startingBalance = $this->startingBalance($request);
+            $startingBalance = $this->startingBalance($request, $normalizeForPortfolio ? $reportingCurrency : null);
 
-            return $this->behavioralAnalyticsEngine->calculate($trades, $startingBalance);
+            return [
+                ...$this->behavioralAnalyticsEngine->calculate($trades, $startingBalance),
+                'reporting_currency' => $reportingCurrency,
+                'fx_normalized' => $normalizeForPortfolio,
+            ];
         });
 
         return response()->json($payload);
@@ -179,11 +247,16 @@ class AnalyticsController extends Controller
     public function rankings(Request $request)
     {
         $payload = $this->remember('rankings', $request, function () use ($request): array {
+            $reportingCurrency = $this->reportingCurrency($request);
+            $normalizeForPortfolio = $this->shouldNormalizeForPortfolio($request);
             $trades = $this->baseQuery($request)
                 ->with(['strategyModel', 'setup', 'killzone'])
                 ->orderBy('date')
                 ->orderBy('id')
                 ->get();
+            if ($normalizeForPortfolio) {
+                $trades = $this->normalizeTradesToReportingCurrency($trades, $reportingCurrency);
+            }
 
             return [
                 'sessions' => $this->groupMetricsByCallback(
@@ -220,27 +293,51 @@ class AnalyticsController extends Controller
     public function monthlyHeatmap(Request $request)
     {
         $payload = $this->remember('monthly-heatmap', $request, function () use ($request): array {
-            $rows = $this->baseQuery($request)
-                ->selectRaw('DATE(`date`) as close_date, COUNT(*) as number_of_trades, ROUND(SUM(profit_loss), 2) as total_profit, ROUND(AVG(r_multiple), 4) as average_r, SUM(CASE WHEN profit_loss > 0 THEN 1 ELSE 0 END) as wins')
-                ->groupByRaw('DATE(`date`)')
-                ->orderByRaw('DATE(`date`)')
-                ->get()
-                ->map(function ($row): array {
-                    $trades = (int) $row->number_of_trades;
-                    $wins = (int) $row->wins;
-                    $winRate = $trades > 0
-                        ? ($wins / $trades) * 100
-                        : 0.0;
+            $reportingCurrency = $this->reportingCurrency($request);
+            $normalizeForPortfolio = $this->shouldNormalizeForPortfolio($request);
+            if ($normalizeForPortfolio) {
+                $rows = $this->chronologicalTrades($request, $reportingCurrency)
+                    ->groupBy(fn (Trade $trade): string => (string) $trade->date?->toDateString())
+                    ->map(function (Collection $rows, string $closeDate): array {
+                        $trades = $rows->count();
+                        $wins = $rows->filter(fn (Trade $trade): bool => (float) $trade->profit_loss > 0)->count();
+                        $winRate = $trades > 0
+                            ? ($wins / $trades) * 100
+                            : 0.0;
 
-                    return [
-                        'close_date' => (string) $row->close_date,
-                        'number_of_trades' => $trades,
-                        'total_profit' => round((float) $row->total_profit, 2),
-                        'average_r' => round((float) ($row->average_r ?? 0), 4),
-                        'win_rate' => round($winRate, 2),
-                    ];
-                })
-                ->values();
+                        return [
+                            'close_date' => $closeDate,
+                            'number_of_trades' => $trades,
+                            'total_profit' => round((float) $rows->sum(fn (Trade $trade): float => (float) $trade->profit_loss), 2),
+                            'average_r' => round((float) $rows->avg(fn (Trade $trade): float => (float) ($trade->r_multiple ?? 0)), 4),
+                            'win_rate' => round($winRate, 2),
+                        ];
+                    })
+                    ->sortBy('close_date')
+                    ->values();
+            } else {
+                $rows = $this->baseQuery($request)
+                    ->selectRaw('DATE(`date`) as close_date, COUNT(*) as number_of_trades, ROUND(SUM(profit_loss), 2) as total_profit, ROUND(AVG(r_multiple), 4) as average_r, SUM(CASE WHEN profit_loss > 0 THEN 1 ELSE 0 END) as wins')
+                    ->groupByRaw('DATE(`date`)')
+                    ->orderByRaw('DATE(`date`)')
+                    ->get()
+                    ->map(function ($row): array {
+                        $trades = (int) $row->number_of_trades;
+                        $wins = (int) $row->wins;
+                        $winRate = $trades > 0
+                            ? ($wins / $trades) * 100
+                            : 0.0;
+
+                        return [
+                            'close_date' => (string) $row->close_date,
+                            'number_of_trades' => $trades,
+                            'total_profit' => round((float) $row->total_profit, 2),
+                            'average_r' => round((float) ($row->average_r ?? 0), 4),
+                            'win_rate' => round($winRate, 2),
+                        ];
+                    })
+                    ->values();
+            }
 
             $maxAbsDailyPnl = (float) $rows
                 ->map(fn (array $row): float => abs((float) $row['total_profit']))
@@ -281,8 +378,10 @@ class AnalyticsController extends Controller
     public function riskStatus(Request $request)
     {
         $payload = $this->remember('risk-status', $request, function () use ($request): array {
-            $trades = $this->chronologicalTrades($request);
-            $startingBalance = $this->startingBalance($request);
+            $reportingCurrency = $this->reportingCurrency($request);
+            $normalizeForPortfolio = $this->shouldNormalizeForPortfolio($request);
+            $trades = $this->chronologicalTrades($request, $normalizeForPortfolio ? $reportingCurrency : null);
+            $startingBalance = $this->startingBalance($request, $normalizeForPortfolio ? $reportingCurrency : null);
 
             $equity = $this->equityEngine->build($trades, $startingBalance);
             $streaks = $this->streakEngine->calculate($trades);
@@ -320,8 +419,33 @@ class AnalyticsController extends Controller
                 'current_drawdown_percent' => round((float) $equity['current_drawdown_percent'], 4),
                 'revenge_after_loss_events' => $revengeAfterLoss,
                 'warnings' => $warnings,
+                'reporting_currency' => $reportingCurrency,
+                'fx_normalized' => $normalizeForPortfolio,
             ];
         });
+
+        return response()->json($payload);
+    }
+
+    public function dashboardSummary(Request $request)
+    {
+        $payload = $this->remember('dashboard-summary', $request, function () use ($request): array {
+            return [
+                'overview' => $this->overview($request)->getData(true),
+                'daily' => $this->daily($request)->getData(true),
+                'performance_profile' => $this->performanceProfile($request)->getData(true),
+                'equity' => $this->equity($request)->getData(true),
+                'drawdown' => $this->drawdown($request)->getData(true),
+                'streaks' => $this->streaks($request)->getData(true),
+                'metrics' => $this->metrics($request)->getData(true),
+                'behavioral' => $this->behavioral($request)->getData(true),
+                'rankings' => $this->rankings($request)->getData(true),
+                'monthly_heatmap' => $this->monthlyHeatmap($request)->getData(true),
+                'risk_status' => $this->riskStatus($request)->getData(true),
+                'reporting_currency' => $this->reportingCurrency($request),
+                'fx_normalized' => $this->shouldNormalizeForPortfolio($request),
+            ];
+        }, 60);
 
         return response()->json($payload);
     }
@@ -329,9 +453,14 @@ class AnalyticsController extends Controller
     public function accounts(Request $request)
     {
         $payload = $this->remember('accounts', $request, function () use ($request): array {
+            $userId = (int) $request->user()->id;
             $requestedAccountIds = $this->requestedAccountIds($request);
+            $reportingCurrency = $this->reportingCurrency($request);
 
-            $accountQuery = Account::query()->orderByDesc('is_active')->orderBy('name');
+            $accountQuery = Account::query()
+                ->where('user_id', $userId)
+                ->orderByDesc('is_active')
+                ->orderBy('name');
             if (count($requestedAccountIds) > 0) {
                 $accountQuery->whereIn('id', $requestedAccountIds);
             }
@@ -372,8 +501,22 @@ class AnalyticsController extends Controller
 
             return [
                 'accounts' => $rows,
-                'portfolio_starting_balance' => $accounts->sum(fn (Account $account): float => (float) $account->starting_balance),
-                'portfolio_current_balance' => $accounts->sum(fn (Account $account): float => (float) $account->current_balance),
+                'portfolio_starting_balance' => round($accounts->sum(function (Account $account) use ($reportingCurrency): float {
+                    return $this->convertAccountAmount(
+                        (float) $account->starting_balance,
+                        (string) $account->currency,
+                        $reportingCurrency
+                    );
+                }), 2),
+                'portfolio_current_balance' => round($accounts->sum(function (Account $account) use ($reportingCurrency): float {
+                    return $this->convertAccountAmount(
+                        (float) $account->current_balance,
+                        (string) $account->currency,
+                        $reportingCurrency
+                    );
+                }), 2),
+                'reporting_currency' => $reportingCurrency,
+                'fx_normalized' => true,
             ];
         });
 
@@ -383,8 +526,10 @@ class AnalyticsController extends Controller
     public function portfolio(Request $request)
     {
         $payload = $this->remember('portfolio', $request, function () use ($request): array {
-            $trades = $this->chronologicalTrades($request);
-            $startingBalance = $this->startingBalance($request);
+            $reportingCurrency = $this->reportingCurrency($request);
+            $normalizeForPortfolio = $this->shouldNormalizeForPortfolio($request);
+            $trades = $this->chronologicalTrades($request, $normalizeForPortfolio ? $reportingCurrency : null);
+            $startingBalance = $this->startingBalance($request, $normalizeForPortfolio ? $reportingCurrency : null);
             $equity = $this->equityEngine->build($trades, $startingBalance);
             $metrics = $this->metricsEngine->calculate($trades, (float) $equity['max_drawdown']);
 
@@ -401,6 +546,8 @@ class AnalyticsController extends Controller
                 'equity_points' => $equity['equity_points'],
                 'equity_timestamps' => $equity['equity_timestamps'],
                 'cumulative_profit' => $equity['cumulative_profit'],
+                'reporting_currency' => $reportingCurrency,
+                'fx_normalized' => $normalizeForPortfolio,
             ];
         });
 
@@ -410,8 +557,11 @@ class AnalyticsController extends Controller
     public function portfolioAnalytics(Request $request)
     {
         $payload = $this->remember('portfolio-analytics', $request, function () use ($request): array {
+            $userId = (int) $request->user()->id;
             $requestedAccountIds = $this->requestedAccountIds($request);
+            $reportingCurrency = $this->reportingCurrency($request);
             $accountsQuery = Account::query()
+                ->where('user_id', $userId)
                 ->orderByDesc('is_active')
                 ->orderBy('name');
             if (count($requestedAccountIds) > 0) {
@@ -438,22 +588,31 @@ class AnalyticsController extends Controller
                     'total_trades' => 0,
                     'win_rate' => 0.0,
                     'account_breakdown' => [],
+                    'reporting_currency' => $reportingCurrency,
+                    'fx_normalized' => true,
                 ];
             }
 
             $accountIds = $accounts->pluck('id')->all();
             $trades = $this->baseQuery($request)
                 ->whereIn('account_id', $accountIds)
+                ->with(['account:id,currency'])
                 ->orderBy('date')
                 ->orderBy('id')
                 ->get();
 
-            $startingBalance = (float) $accounts->sum(fn (Account $account): float => (float) $account->starting_balance);
+            $startingBalance = (float) $accounts->sum(function (Account $account) use ($reportingCurrency): float {
+                return $this->convertAccountAmount(
+                    (float) $account->starting_balance,
+                    (string) $account->currency,
+                    $reportingCurrency
+                );
+            });
             $totalTrades = $trades->count();
             $wins = $trades->filter(fn (Trade $trade): bool => (float) $trade->profit_loss > 0)->count();
             $winRate = $totalTrades > 0 ? round(($wins / $totalTrades) * 100, 2) : 0.0;
 
-            $portfolioCurve = $this->buildPortfolioEquityCurve($accounts, $trades);
+            $portfolioCurve = $this->buildPortfolioEquityCurve($accounts, $trades, $reportingCurrency);
             $accountBreakdown = $accounts
                 ->map(function (Account $account) use ($trades): array {
                     $rows = $trades
@@ -499,6 +658,8 @@ class AnalyticsController extends Controller
                 'total_trades' => $totalTrades,
                 'win_rate' => $winRate,
                 'account_breakdown' => $accountBreakdown,
+                'reporting_currency' => $reportingCurrency,
+                'fx_normalized' => true,
             ];
         });
 
@@ -507,6 +668,7 @@ class AnalyticsController extends Controller
 
     private function baseQuery(Request $request): Builder
     {
+        $userId = (int) $request->user()->id;
         $filters = $request->only([
             'account_id',
             'account_ids',
@@ -555,30 +717,49 @@ class AnalyticsController extends Controller
             );
         }
 
-        return Trade::query()->applyFilters($filters);
+        return Trade::query()
+            ->whereHas('account', fn (Builder $query) => $query->where('user_id', $userId))
+            ->applyFilters($filters);
     }
 
     /**
      * @return Collection<int, Trade>
      */
-    private function chronologicalTrades(Request $request): Collection
+    private function chronologicalTrades(Request $request, ?string $reportingCurrency = null): Collection
     {
-        return $this->baseQuery($request)
+        $trades = $this->baseQuery($request)
+            ->with(['account:id,currency'])
             ->orderBy('date')
             ->orderBy('id')
             ->get();
+
+        if ($reportingCurrency === null) {
+            return $trades;
+        }
+
+        return $this->normalizeTradesToReportingCurrency($trades, $reportingCurrency);
     }
 
     /**
      * @return Collection<int, object>
      */
-    private function dailyPnlSeries(Request $request): Collection
+    private function dailyPnlSeries(Request $request, ?string $reportingCurrency = null): Collection
     {
-        return $this->baseQuery($request)
-            ->selectRaw('DATE(`date`) as trade_date, SUM(profit_loss) as pnl')
-            ->groupByRaw('DATE(`date`)')
-            ->orderByRaw('DATE(`date`)')
-            ->get();
+        if ($reportingCurrency === null) {
+            return $this->baseQuery($request)
+                ->selectRaw('DATE(`date`) as trade_date, SUM(profit_loss) as pnl')
+                ->groupByRaw('DATE(`date`)')
+                ->orderByRaw('DATE(`date`)')
+                ->get();
+        }
+
+        return $this->chronologicalTrades($request, $reportingCurrency)
+            ->groupBy(fn (Trade $trade): string => (string) $trade->date?->toDateString())
+            ->map(fn (Collection $rows, string $date): object => (object) [
+                'trade_date' => $date,
+                'pnl' => (float) $rows->sum(fn (Trade $trade): float => (float) $trade->profit_loss),
+            ])
+            ->values();
     }
 
     private function calculateConsistencyScore(Collection $dailySeries): float
@@ -593,8 +774,9 @@ class AnalyticsController extends Controller
         return round(($positiveDays / $totalDays) * 100, 2);
     }
 
-    private function startingBalance(Request $request): float
+    private function startingBalance(Request $request, ?string $reportingCurrency = null): float
     {
+        $userId = (int) $request->user()->id;
         if ($request->filled('starting_balance')) {
             $requested = (float) $request->input('starting_balance');
 
@@ -603,7 +785,19 @@ class AnalyticsController extends Controller
 
         $accountId = (int) $request->integer('account_id', 0);
         if ($accountId > 0) {
-            $accountStarting = (float) (Account::query()->whereKey($accountId)->value('starting_balance') ?? 0);
+            /** @var Account|null $account */
+            $account = Account::query()
+                ->where('user_id', $userId)
+                ->whereKey($accountId)
+                ->first(['starting_balance', 'currency']);
+            $accountStarting = (float) ($account?->starting_balance ?? 0);
+            if ($reportingCurrency !== null && $account !== null) {
+                $accountStarting = $this->convertAccountAmount(
+                    $accountStarting,
+                    (string) $account->currency,
+                    $reportingCurrency
+                );
+            }
 
             return $accountStarting > 0
                 ? $accountStarting
@@ -611,14 +805,24 @@ class AnalyticsController extends Controller
         }
 
         $requestedAccountIds = $this->requestedAccountIds($request);
-        $query = Account::query();
+        $query = Account::query()->where('user_id', $userId);
         if (count($requestedAccountIds) > 0) {
             $query->whereIn('id', $requestedAccountIds);
         } else {
             $query->where('is_active', true);
         }
 
-        $portfolioStarting = (float) $query->sum('starting_balance');
+        if ($reportingCurrency === null) {
+            $portfolioStarting = (float) $query->sum('starting_balance');
+        } else {
+            $portfolioStarting = (float) $query
+                ->get(['starting_balance', 'currency'])
+                ->sum(fn (Account $account): float => $this->convertAccountAmount(
+                    (float) $account->starting_balance,
+                    (string) $account->currency,
+                    $reportingCurrency
+                ));
+        }
 
         return $portfolioStarting > 0
             ? $portfolioStarting
@@ -718,7 +922,10 @@ class AnalyticsController extends Controller
     private function remember(string $namespace, Request $request, callable $callback, int $ttlSeconds = 90)
     {
         $version = (int) Cache::get('analytics:version', 1);
-        $queryHash = md5((string) json_encode($request->query()));
+        $queryHash = md5((string) json_encode([
+            ...$request->query(),
+            '_reporting_currency' => $this->reportingCurrency($request),
+        ]));
         $cacheKey = "analytics:{$namespace}:v{$version}:{$queryHash}";
 
         return Cache::remember($cacheKey, $ttlSeconds, $callback);
@@ -746,9 +953,76 @@ class AnalyticsController extends Controller
             ->all();
     }
 
+    private function reportingCurrency(Request $request): string
+    {
+        $requested = strtoupper(trim((string) $request->query('reporting_currency', '')));
+        if ($requested !== '') {
+            return $requested;
+        }
+
+        return strtoupper((string) env('REPORTING_CURRENCY', 'USD'));
+    }
+
+    private function shouldNormalizeForPortfolio(Request $request): bool
+    {
+        $accountId = (int) $request->integer('account_id', 0);
+        if ($accountId > 0) {
+            return false;
+        }
+
+        $requestedAccountIds = $this->requestedAccountIds($request);
+        return count($requestedAccountIds) !== 1;
+    }
+
+    /**
+     * @param Collection<int, Trade> $trades
+     * @return Collection<int, Trade>
+     */
+    private function normalizeTradesToReportingCurrency(Collection $trades, string $reportingCurrency): Collection
+    {
+        $targetCurrency = strtoupper(trim($reportingCurrency));
+        if ($targetCurrency === '') {
+            return $trades;
+        }
+
+        return $trades
+            ->map(function (Trade $trade) use ($targetCurrency): Trade {
+                $sourceCurrency = strtoupper(trim((string) ($trade->account?->currency ?? '')));
+                if ($sourceCurrency === '' || $sourceCurrency === $targetCurrency) {
+                    return $trade;
+                }
+
+                $asOf = $trade->date instanceof CarbonInterface ? $trade->date : null;
+                $normalizedTrade = clone $trade;
+                $normalizedTrade->profit_loss = round(
+                    $this->convertAccountAmount((float) $trade->profit_loss, $sourceCurrency, $targetCurrency, $asOf),
+                    2
+                );
+
+                return $normalizedTrade;
+            })
+            ->values();
+    }
+
+    private function convertAccountAmount(
+        float $amount,
+        ?string $fromCurrency,
+        string $toCurrency,
+        ?CarbonInterface $asOf = null
+    ): float {
+        $from = strtoupper(trim((string) $fromCurrency));
+        $to = strtoupper(trim($toCurrency));
+        if ($from === '' || $to === '' || $from === $to) {
+            return $amount;
+        }
+
+        return $this->currencyConversionService->convert($amount, $from, $to, $asOf);
+    }
+
     /**
      * @param Collection<int, Account> $accounts
      * @param Collection<int, Trade> $trades
+     * @param string|null $reportingCurrency
      * @return array{
      *   equity_points:array<int, float>,
      *   equity_timestamps:array<int, string>,
@@ -761,11 +1035,21 @@ class AnalyticsController extends Controller
      *   current_drawdown_percent:float
      * }
      */
-    private function buildPortfolioEquityCurve(Collection $accounts, Collection $trades): array
+    private function buildPortfolioEquityCurve(Collection $accounts, Collection $trades, ?string $reportingCurrency = null): array
     {
         $balances = [];
+        $accountCurrencies = [];
         foreach ($accounts as $account) {
-            $balances[(int) $account->id] = (float) $account->starting_balance;
+            $accountId = (int) $account->id;
+            $accountCurrency = (string) $account->currency;
+            $accountCurrencies[$accountId] = $accountCurrency;
+            $balances[$accountId] = $reportingCurrency !== null
+                ? $this->convertAccountAmount(
+                    (float) $account->starting_balance,
+                    $accountCurrency,
+                    $reportingCurrency
+                )
+                : (float) $account->starting_balance;
         }
 
         $starting = (float) array_sum($balances);
@@ -778,6 +1062,11 @@ class AnalyticsController extends Controller
         foreach ($trades as $trade) {
             $accountId = (int) $trade->account_id;
             $profitLoss = (float) $trade->profit_loss;
+            if ($reportingCurrency !== null) {
+                $sourceCurrency = $accountCurrencies[$accountId] ?? (string) ($trade->account?->currency ?? $reportingCurrency);
+                $tradeDate = $trade->date instanceof CarbonInterface ? $trade->date : null;
+                $profitLoss = $this->convertAccountAmount($profitLoss, $sourceCurrency, $reportingCurrency, $tradeDate);
+            }
             $balances[$accountId] = (float) ($balances[$accountId] ?? 0) + $profitLoss;
             $running = (float) array_sum($balances);
 

@@ -2,12 +2,19 @@ import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import api from '@/services/api'
 import {
+  enqueueSyncCreate,
+  enqueueSyncDelete,
+  enqueueSyncUpdate,
+} from '@/services/offlineSyncQueue'
+import {
   createLocalAccount,
   deleteLocalAccount,
   fetchLocalAccountAnalytics,
   fetchLocalAccountEquity,
   fetchLocalAccounts,
+  setLocalAccountSyncStatus,
   shouldUseLocalFallback,
+  upsertLocalAccountSnapshot,
   updateLocalAccount,
 } from '@/services/localFallback'
 import { useSyncStatusStore } from '@/stores/syncStatusStore'
@@ -22,7 +29,6 @@ import type {
 } from '@/types/account'
 
 export interface AccountPayload {
-  user_id?: number | null
   name: string
   broker: string
   account_type: AccountType
@@ -82,6 +88,12 @@ export const useAccountStore = defineStore('accounts', () => {
       accounts.value = source
         .map((row) => normalizeAccount(row))
         .filter((row): row is Account => row !== null)
+      for (const account of accounts.value) {
+        upsertLocalAccountSnapshot({
+          ...account,
+          local_sync_status: 'synced',
+        })
+      }
 
       if (selectedAccountId.value !== null) {
         const exists = accounts.value.some((account) => account.id === selectedAccountId.value)
@@ -116,6 +128,10 @@ export const useAccountStore = defineStore('accounts', () => {
       if (!normalized) {
         throw new Error('Invalid account payload returned by API.')
       }
+      upsertLocalAccountSnapshot({
+        ...normalized,
+        local_sync_status: 'synced',
+      })
       accounts.value = [normalized, ...accounts.value]
       return normalized
     } catch (error) {
@@ -125,6 +141,14 @@ export const useAccountStore = defineStore('accounts', () => {
 
       syncStatusStore.markLocalFallback('accounts')
       const data = createLocalAccount(payload)
+      enqueueSyncCreate({
+        entity: 'accounts',
+        local_id: data.id,
+        payload: pruneUndefined(payload),
+        context: 'accounts',
+      })
+      setLocalAccountSyncStatus(data.id, 'draft_local')
+      void syncStatusStore.refreshQueueState()
       accounts.value = fetchLocalAccounts()
       return data
     } finally {
@@ -134,6 +158,7 @@ export const useAccountStore = defineStore('accounts', () => {
 
   async function updateAccount(id: number, payload: Partial<AccountPayload>) {
     saving.value = true
+    const existing = accounts.value.find((account) => account.id === id) ?? null
     try {
       const { data } = await api.put<unknown>(`/accounts/${id}`, payload)
       syncStatusStore.markServerHealthy()
@@ -141,6 +166,10 @@ export const useAccountStore = defineStore('accounts', () => {
       if (!normalized) {
         throw new Error('Invalid account payload returned by API.')
       }
+      upsertLocalAccountSnapshot({
+        ...normalized,
+        local_sync_status: 'synced',
+      })
       const index = accounts.value.findIndex((account) => account.id === id)
       if (index >= 0) {
         accounts.value[index] = normalized
@@ -154,7 +183,20 @@ export const useAccountStore = defineStore('accounts', () => {
       }
 
       syncStatusStore.markLocalFallback('accounts')
+      if (existing) {
+        upsertLocalAccountSnapshot(existing)
+      }
       const data = updateLocalAccount(id, payload)
+      enqueueSyncUpdate({
+        entity: 'accounts',
+        local_id: data.id,
+        server_id: id,
+        expected_updated_at: existing?.updated_at ?? null,
+        payload: pruneUndefined(payload),
+        context: 'accounts',
+      })
+      setLocalAccountSyncStatus(data.id, 'draft_local')
+      void syncStatusStore.refreshQueueState()
       accounts.value = fetchLocalAccounts()
       return data
     } finally {
@@ -164,9 +206,15 @@ export const useAccountStore = defineStore('accounts', () => {
 
   async function deleteAccount(id: number) {
     saving.value = true
+    const existing = accounts.value.find((account) => account.id === id) ?? null
     try {
       await api.delete(`/accounts/${id}`)
       syncStatusStore.markServerHealthy()
+      try {
+        deleteLocalAccount(id)
+      } catch {
+        // Local mirror cleanup is best-effort.
+      }
       accounts.value = accounts.value.filter((account) => account.id !== id)
       if (selectedAccountId.value === id) {
         setSelectedAccountId(null)
@@ -177,7 +225,18 @@ export const useAccountStore = defineStore('accounts', () => {
       }
 
       syncStatusStore.markLocalFallback('accounts')
+      if (existing) {
+        upsertLocalAccountSnapshot(existing)
+      }
       deleteLocalAccount(id)
+      enqueueSyncDelete({
+        entity: 'accounts',
+        local_id: id,
+        server_id: id,
+        expected_updated_at: existing?.updated_at ?? null,
+        context: 'accounts',
+      })
+      void syncStatusStore.refreshQueueState()
       accounts.value = fetchLocalAccounts()
       if (selectedAccountId.value === id) {
         setSelectedAccountId(null)
@@ -336,4 +395,10 @@ function asMoney(value: unknown): string {
   const parsed = Number(value)
   const safe = Number.isFinite(parsed) ? parsed : 0
   return safe.toFixed(2)
+}
+
+function pruneUndefined<T extends object>(payload: T): Record<string, unknown> {
+  return Object.fromEntries(
+    Object.entries(payload as Record<string, unknown>).filter(([, value]) => value !== undefined)
+  )
 }

@@ -13,11 +13,13 @@ class MissedTradeController extends Controller
 {
     public function index(Request $request)
     {
+        $userId = (int) $request->user()->id;
         $perPage = max(1, min((int) $request->integer('per_page', 15), 100));
         $disk = (string) config('filesystems.trade_images_disk', 'public');
         $imageTableExists = Schema::hasTable('missed_trade_images');
 
         $query = MissedTrade::query()
+            ->where('user_id', $userId)
             ->applyFilters($request->only([
                 'pair',
                 'model',
@@ -60,13 +62,18 @@ class MissedTradeController extends Controller
 
     public function store(Request $request)
     {
-        $missedTrade = MissedTrade::create($this->validatePayload($request));
+        $missedTrade = MissedTrade::query()->create([
+            ...$this->validatePayload($request),
+            'user_id' => (int) $request->user()->id,
+        ]);
 
         return response()->json($missedTrade, 201);
     }
 
     public function show(MissedTrade $missedTrade)
     {
+        $this->authorize('view', $missedTrade);
+
         if (!Schema::hasTable('missed_trade_images')) {
             $missedTrade->setAttribute('images_count', 0);
             $missedTrade->setRelation('images', collect());
@@ -89,6 +96,7 @@ class MissedTradeController extends Controller
 
     public function update(Request $request, MissedTrade $missedTrade)
     {
+        $this->authorize('update', $missedTrade);
         $missedTrade->update($this->validatePayload($request, true));
 
         return response()->json($missedTrade->fresh());
@@ -96,6 +104,7 @@ class MissedTradeController extends Controller
 
     public function destroy(MissedTrade $missedTrade)
     {
+        $this->authorize('delete', $missedTrade);
         $missedTrade->delete();
 
         return response()->noContent();

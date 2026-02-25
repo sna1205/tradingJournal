@@ -16,11 +16,35 @@ export default defineConfig({
     headless: true,
     viewport: { width: 1440, height: 900 },
   },
+  projects: [
+    {
+      name: 'desktop',
+      use: {
+        viewport: { width: 1440, height: 900 },
+      },
+    },
+    {
+      name: 'mobile',
+      use: {
+        viewport: { width: 390, height: 844 },
+      },
+    },
+    {
+      name: 'tablet',
+      use: {
+        viewport: { width: 768, height: 1024 },
+      },
+    },
+  ],
   webServer: {
     command: 'npm run dev -- --host 127.0.0.1 --port 4173',
     url: 'http://127.0.0.1:4173',
     timeout: 120_000,
-    reuseExistingServer: !process.env.CI,
+    reuseExistingServer: false,
+    env: {
+      VITE_VISUAL_TEST_MODE: '1',
+      VITE_ENABLE_VISUAL_ROUTES: '1',
+    },
   },
   reporter: 'list',
 })
