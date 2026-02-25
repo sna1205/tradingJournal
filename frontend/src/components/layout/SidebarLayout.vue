@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { RouterLink, RouterView, useRoute } from 'vue-router'
+import { RouterLink, RouterView, useRoute, useRouter } from 'vue-router'
 import {
   LayoutDashboard,
   ClipboardList,
@@ -17,17 +17,33 @@ import {
   Menu,
   X,
   WifiOff,
+  RefreshCw,
+  ShieldAlert,
   SwatchBook,
+  LogOut,
 } from 'lucide-vue-next'
 import { storeToRefs } from 'pinia'
 import { useUiStore, type ThemeMode } from '@/stores/uiStore'
 import { useSyncStatusStore } from '@/stores/syncStatusStore'
+import { useAuthStore } from '@/stores/authStore'
 
 const route = useRoute()
+const router = useRouter()
 const uiStore = useUiStore()
 const syncStatusStore = useSyncStatusStore()
+const authStore = useAuthStore()
 const { theme } = storeToRefs(uiStore)
-const { isFallbackMode, lastFallbackContext } = storeToRefs(syncStatusStore)
+const {
+  isFallbackMode,
+  lastFallbackContext,
+  queueSummary,
+  pendingQueueCount,
+  hasConflicts,
+  conflictItems,
+  syncing,
+  lastSyncError,
+} = storeToRefs(syncStatusStore)
+const conflictModalOpen = ref(false)
 
 interface NavItem {
   label: string
@@ -132,6 +148,14 @@ const themeDropdownRef = ref<HTMLElement | null>(null)
 const activeThemeLabel = computed(() =>
   uiStore.themeOptions.find((option) => option.value === theme.value)?.label ?? 'Theme'
 )
+const workspaceOwnerLabel = computed(() => {
+  const name = authStore.user?.name?.trim()
+  if (!name) {
+    return 'Trader | WAGMI'
+  }
+
+  return `${name} | WAGMI`
+})
 
 function toggleMobileNav() {
   mobileThemeMenuOpen.value = false
@@ -151,6 +175,11 @@ function chooseTheme(mode: ThemeMode) {
   mobileThemeMenuOpen.value = false
 }
 
+async function logout() {
+  await authStore.logout()
+  await router.replace('/login')
+}
+
 function handleDocumentClick(event: MouseEvent) {
   if (!mobileThemeMenuOpen.value) return
   const root = themeDropdownRef.value
@@ -164,6 +193,36 @@ function handleEscape(event: KeyboardEvent) {
   if (event.key !== 'Escape') return
   mobileThemeMenuOpen.value = false
   mobileNavOpen.value = false
+  conflictModalOpen.value = false
+}
+
+function openConflictModal() {
+  conflictModalOpen.value = true
+}
+
+function closeConflictModal() {
+  conflictModalOpen.value = false
+}
+
+function runSyncNow() {
+  void syncStatusStore.syncQueueNow()
+}
+
+function keepLocalDraft(queueId: string) {
+  syncStatusStore.resolveConflictKeepLocal(queueId)
+}
+
+function acceptServerVersion(queueId: string) {
+  syncStatusStore.resolveConflictAcceptServer(queueId)
+}
+
+function formatConflictPayload(payload: unknown): string {
+  if (payload === null || payload === undefined) return '-'
+  try {
+    return JSON.stringify(payload, null, 2)
+  } catch {
+    return '-'
+  }
 }
 
 onMounted(() => {
@@ -187,7 +246,7 @@ watch(
 
 <template>
   <div class="app-shell">
-    <div class="workspace-owner-badge motion-fade-scale">IZ | WAGMI</div>
+    <div class="workspace-owner-badge motion-fade-scale">{{ workspaceOwnerLabel }}</div>
 
     <div class="workspace-shell">
       <aside class="workspace-sidebar panel motion-fade-scale">
@@ -283,11 +342,38 @@ watch(
               </div>
             </div>
 
-            <span v-if="isFallbackMode" class="topbar-fallback-indicator" title="Using local fallback data">
+            <button
+              v-if="isFallbackMode || pendingQueueCount > 0 || hasConflicts"
+              type="button"
+              class="topbar-fallback-indicator"
+              :title="hasConflicts ? 'Sync conflicts need review' : 'Offline draft mode active'"
+              @click="openConflictModal"
+            >
               <WifiOff class="h-3.5 w-3.5" />
-              Local mode
-              <small v-if="lastFallbackContext">{{ lastFallbackContext }}</small>
-            </span>
+              Offline drafts
+              <small>
+                {{ queueSummary.draft_local }} draft
+                / {{ queueSummary.pending_sync }} pending
+                / {{ queueSummary.conflict }} conflict
+              </small>
+            </button>
+
+            <button
+              v-if="isFallbackMode || pendingQueueCount > 0 || hasConflicts"
+              type="button"
+              class="workspace-theme-trigger"
+              :disabled="syncing"
+              :title="syncing ? 'Sync in progress' : 'Sync now'"
+              @click="runSyncNow"
+            >
+              <RefreshCw class="h-4 w-4" :class="{ 'animate-spin': syncing }" />
+              <span>{{ syncing ? 'Syncing' : 'Sync now' }}</span>
+            </button>
+
+            <button type="button" class="workspace-theme-trigger" title="Logout" aria-label="Logout" @click="logout">
+              <LogOut class="h-4 w-4" />
+              <span>Logout</span>
+            </button>
           </div>
         </header>
 
@@ -358,6 +444,63 @@ watch(
           </section>
         </nav>
       </aside>
+    </Transition>
+
+    <Transition name="fade">
+      <div v-if="conflictModalOpen" class="app-modal-overlay fixed inset-0 flex items-center justify-center bg-black/45 px-4 backdrop-blur-sm" @click.self="closeConflictModal">
+        <section class="panel sync-conflict-modal">
+          <header class="section-head">
+            <div>
+              <p class="section-title">Sync Queue</p>
+              <p class="section-note">
+                {{ queueSummary.draft_local }} draft /
+                {{ queueSummary.pending_sync }} pending /
+                {{ queueSummary.conflict }} conflict
+              </p>
+            </div>
+            <button type="button" class="btn btn-ghost p-2" aria-label="Close sync modal" @click="closeConflictModal">
+              <X class="h-4 w-4" />
+            </button>
+          </header>
+
+          <p v-if="lastFallbackContext" class="section-note mt-2">
+            Last offline context: {{ lastFallbackContext }}
+          </p>
+          <p v-if="lastSyncError" class="field-error-text mt-2">{{ lastSyncError }}</p>
+
+          <div v-if="conflictItems.length === 0" class="panel mt-3 p-3 text-sm">
+            No conflicts in queue. Drafts will sync automatically when connectivity is stable.
+          </div>
+
+          <article v-for="item in conflictItems" :key="item.id" class="panel mt-3 p-3 text-sm sync-conflict-item">
+            <p class="font-semibold inline-flex items-center gap-2">
+              <ShieldAlert class="h-4 w-4 text-[var(--warning)]" />
+              {{ item.entity }} {{ item.operation }} conflict
+            </p>
+            <p class="section-note mt-1">{{ item.conflict?.message ?? 'Conflict detected.' }}</p>
+
+            <div class="sync-conflict-grid mt-2">
+              <div>
+                <p class="kicker-label">Local draft</p>
+                <pre>{{ formatConflictPayload(item.conflict?.local_snapshot) }}</pre>
+              </div>
+              <div>
+                <p class="kicker-label">Server snapshot</p>
+                <pre>{{ formatConflictPayload(item.conflict?.server_snapshot) }}</pre>
+              </div>
+            </div>
+
+            <div class="sync-conflict-actions mt-3">
+              <button type="button" class="btn btn-ghost px-3 py-1.5 text-sm" @click="acceptServerVersion(item.id)">
+                Accept server
+              </button>
+              <button type="button" class="btn btn-primary px-3 py-1.5 text-sm" @click="keepLocalDraft(item.id)">
+                Keep local draft
+              </button>
+            </div>
+          </article>
+        </section>
+      </div>
     </Transition>
   </div>
 </template>

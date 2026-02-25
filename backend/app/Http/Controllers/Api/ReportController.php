@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Models\SavedReport;
 use App\Models\Trade;
+use App\Services\Export\CsvSanitizer;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Validator;
 use Illuminate\Validation\ValidationException;
@@ -12,14 +13,21 @@ use Symfony\Component\HttpFoundation\StreamedResponse;
 
 class ReportController extends Controller
 {
+    public function __construct(
+        private readonly CsvSanitizer $csvSanitizer
+    ) {
+    }
+
     /**
      * @throws ValidationException
      */
     public function index(Request $request)
     {
+        $userId = (int) $request->user()->id;
         $scope = (string) $request->query('scope', '');
 
         $reports = SavedReport::query()
+            ->where('user_id', $userId)
             ->when($scope !== '', fn ($query) => $query->where('scope', $scope))
             ->orderByDesc('is_default')
             ->orderBy('name')
@@ -33,18 +41,26 @@ class ReportController extends Controller
      */
     public function store(Request $request)
     {
+        $userId = (int) $request->user()->id;
         $payload = $this->validatePayload($request);
         if ((bool) ($payload['is_default'] ?? false)) {
-            SavedReport::query()->where('scope', $payload['scope'])->update(['is_default' => false]);
+            SavedReport::query()
+                ->where('user_id', $userId)
+                ->where('scope', $payload['scope'])
+                ->update(['is_default' => false]);
         }
 
-        $report = SavedReport::query()->create($payload);
+        $report = SavedReport::query()->create([
+            ...$payload,
+            'user_id' => $userId,
+        ]);
 
         return response()->json($report, 201);
     }
 
     public function show(SavedReport $report)
     {
+        $this->authorize('view', $report);
         return response()->json($report);
     }
 
@@ -53,10 +69,13 @@ class ReportController extends Controller
      */
     public function update(Request $request, SavedReport $report)
     {
+        $this->authorize('update', $report);
+
         $payload = $this->validatePayload($request, true);
         $scope = (string) ($payload['scope'] ?? $report->scope);
         if ((bool) ($payload['is_default'] ?? false)) {
             SavedReport::query()
+                ->where('user_id', (int) $request->user()->id)
                 ->where('scope', $scope)
                 ->where('id', '!=', $report->id)
                 ->update(['is_default' => false]);
@@ -70,16 +89,21 @@ class ReportController extends Controller
 
     public function destroy(SavedReport $report)
     {
+        $this->authorize('delete', $report);
         $report->delete();
         return response()->noContent();
     }
 
     public function run(Request $request, SavedReport $report)
     {
+        $this->authorize('view', $report);
+
         $filters = $this->mergedFilters($report, $request);
         $perPage = max(1, min((int) $request->integer('per_page', 100), 500));
+        $userId = (int) $request->user()->id;
 
         $query = Trade::query()
+            ->whereHas('account', fn ($builder) => $builder->where('user_id', $userId))
             ->with(['account', 'instrument', 'strategyModel', 'setup', 'killzone', 'tags'])
             ->applyFilters($filters)
             ->orderByDesc('date')
@@ -97,8 +121,11 @@ class ReportController extends Controller
 
     public function exportCsv(Request $request, SavedReport $report): StreamedResponse
     {
+        $this->authorize('view', $report);
+
         $filters = $this->mergedFilters($report, $request);
         $columns = $this->resolvedColumns($report);
+        $userId = (int) $request->user()->id;
         $fileName = sprintf(
             '%s-%s.csv',
             preg_replace('/[^a-z0-9_-]+/i', '-', strtolower((string) $report->name)) ?: 'report',
@@ -106,6 +133,7 @@ class ReportController extends Controller
         );
 
         $query = Trade::query()
+            ->whereHas('account', fn ($builder) => $builder->where('user_id', $userId))
             ->with(['account', 'instrument', 'strategyModel', 'setup', 'killzone', 'tags', 'psychology'])
             ->applyFilters($filters)
             ->orderByDesc('date')
@@ -117,11 +145,11 @@ class ReportController extends Controller
                 return;
             }
 
-            fputcsv($handle, $columns);
+            fputcsv($handle, $this->csvSanitizer->sanitizeRow($columns));
 
             $query->chunk(500, function ($trades) use ($columns, $handle): void {
                 foreach ($trades as $trade) {
-                    fputcsv($handle, $this->tradeToCsvRow($trade, $columns));
+                    fputcsv($handle, $this->csvSanitizer->sanitizeRow($this->tradeToCsvRow($trade, $columns)));
                 }
             });
 
@@ -141,6 +169,7 @@ class ReportController extends Controller
             : [];
 
         $report = new SavedReport([
+            'user_id' => (int) $request->user()->id,
             'name' => $name,
             'scope' => $scope,
             'filters_json' => $request->query(),
@@ -250,6 +279,7 @@ class ReportController extends Controller
             'r_multiple' => (float) ($trade->realized_r_multiple ?? $trade->r_multiple ?? 0),
             'followed_rules' => (bool) $trade->followed_rules,
             'emotion' => (string) ($trade->emotion ?? ''),
+            'notes' => (string) ($trade->notes ?? ''),
             'tags' => $trade->tags->pluck('name')->implode('|'),
             'confidence_score' => $trade->psychology?->confidence_score,
             'stress_score' => $trade->psychology?->stress_score,

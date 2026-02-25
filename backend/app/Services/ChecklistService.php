@@ -11,7 +11,7 @@ use Illuminate\Support\Facades\DB;
 
 class ChecklistService
 {
-    public function listForScope(?int $userId, array $filters = [])
+    public function listForScope(int $userId, array $filters = [])
     {
         $query = Checklist::query()
             ->with('account:id,name')
@@ -42,7 +42,7 @@ class ChecklistService
         return $query->get();
     }
 
-    public function createChecklist(?int $userId, array $payload): Checklist
+    public function createChecklist(int $userId, array $payload): Checklist
     {
         return Checklist::query()->create([
             'user_id' => $userId,
@@ -194,7 +194,7 @@ class ChecklistService
         $item->save();
     }
 
-    public function resolveApplicableChecklist(?int $userId, ?int $accountId): ?Checklist
+    public function resolveApplicableChecklist(int $userId, ?int $accountId): ?Checklist
     {
         $base = Checklist::query()
             ->where('is_active', true)
@@ -218,12 +218,8 @@ class ChecklistService
         return $base->first();
     }
 
-    public function ensureTradeInUserScope(Trade $trade, ?int $userId): bool
+    public function ensureTradeInUserScope(Trade $trade, int $userId): bool
     {
-        if ($userId === null) {
-            return $trade->account()->whereNull('user_id')->exists();
-        }
-
         return $trade->account()->where('user_id', $userId)->exists();
     }
 
@@ -240,22 +236,13 @@ class ChecklistService
     /**
      * @param Builder<Checklist> $query
      */
-    public function applyUserScope(Builder $query, ?int $userId): void
+    public function applyUserScope(Builder $query, int $userId): void
     {
-        if ($userId === null) {
-            $query->whereNull('user_id');
-            return;
-        }
-
         $query->where('user_id', $userId);
     }
 
-    public function scopeResponseQueryToUser($query, ?int $userId)
+    public function scopeResponseQueryToUser($query, int $userId)
     {
-        if ($userId === null) {
-            return $query->whereNull('checklists.user_id');
-        }
-
         return $query->where('checklists.user_id', $userId);
     }
 }

@@ -35,6 +35,9 @@ export interface Trade {
   swap?: string | null
   spread_cost?: string | null
   slippage_cost?: string | null
+  fx_rate_quote_to_usd?: string | null
+  fx_symbol_used?: string | null
+  fx_rate_timestamp?: string | null
   profit_loss: string
   rr: string
   r_multiple: string | null
@@ -70,6 +73,8 @@ export interface Trade {
   created_at: string
   updated_at: string
   deleted_at?: string | null
+  local_sync_status?: 'draft_local' | 'pending_sync' | 'synced' | 'conflict'
+  risk_validation_status?: 'verified' | 'unverified'
 }
 
 export interface TradeLeg {
@@ -98,6 +103,16 @@ export interface Instrument {
   min_lot: string
   lot_step: string
   is_active: boolean
+}
+
+export interface FxRate {
+  id: number
+  from_currency: string
+  to_currency: string
+  rate: string
+  rate_updated_at?: string | null
+  created_at?: string
+  updated_at?: string
 }
 
 export interface TradeImage {

@@ -3,11 +3,14 @@
 namespace Tests\Feature;
 
 use App\Models\Account;
+use App\Models\FxRateSnapshot;
 use App\Models\Instrument;
 use App\Models\Trade;
+use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\Storage;
+use Laravel\Sanctum\Sanctum;
 use Tests\TestCase;
 
 class AccountArchitectureTest extends TestCase
@@ -15,10 +18,13 @@ class AccountArchitectureTest extends TestCase
     use RefreshDatabase;
 
     private int $eurusdInstrumentId;
+    private User $user;
 
     protected function setUp(): void
     {
         parent::setUp();
+        $this->user = User::factory()->create();
+        Sanctum::actingAs($this->user);
 
         $this->eurusdInstrumentId = (int) Instrument::query()->create([
             'symbol' => 'EURUSD',
@@ -47,7 +53,7 @@ class AccountArchitectureTest extends TestCase
 
     public function test_trade_is_assigned_to_an_account_and_balance_is_synced(): void
     {
-        $account = Account::factory()->create([
+        $account = $this->createOwnedAccount([
             'starting_balance' => 10_000,
             'current_balance' => 10_000,
             'is_active' => true,
@@ -67,7 +73,7 @@ class AccountArchitectureTest extends TestCase
 
     public function test_trade_edit_and_delete_rebuild_account_balance_safely(): void
     {
-        $account = Account::factory()->create([
+        $account = $this->createOwnedAccount([
             'starting_balance' => 10_000,
             'current_balance' => 10_000,
             'is_active' => true,
@@ -108,12 +114,12 @@ class AccountArchitectureTest extends TestCase
 
     public function test_portfolio_analytics_can_scope_to_a_single_account(): void
     {
-        $accountA = Account::factory()->create([
+        $accountA = $this->createOwnedAccount([
             'starting_balance' => 10000,
             'current_balance' => 10000,
             'is_active' => true,
         ]);
-        $accountB = Account::factory()->create([
+        $accountB = $this->createOwnedAccount([
             'starting_balance' => 5000,
             'current_balance' => 5000,
             'is_active' => true,
@@ -138,9 +144,52 @@ class AccountArchitectureTest extends TestCase
         $this->assertSame(150.0, (float) $response->json('portfolio_equity.net_profit'));
     }
 
+    public function test_portfolio_analytics_normalizes_mixed_currency_totals_using_fx_snapshots(): void
+    {
+        $usdAccount = $this->createOwnedAccount([
+            'starting_balance' => 10_000,
+            'current_balance' => 10_000,
+            'currency' => 'USD',
+            'is_active' => true,
+        ]);
+        $jpyAccount = $this->createOwnedAccount([
+            'starting_balance' => 1_000_000,
+            'current_balance' => 1_000_000,
+            'currency' => 'JPY',
+            'is_active' => true,
+        ]);
+
+        FxRateSnapshot::query()->create([
+            'from_currency' => 'JPY',
+            'to_currency' => 'USD',
+            'snapshot_date' => '2026-01-01',
+            'rate' => 0.0100000000,
+        ]);
+
+        Trade::factory()->create([
+            'account_id' => $usdAccount->id,
+            'profit_loss' => 100.00,
+            'date' => '2026-01-05 10:00:00',
+        ]);
+        Trade::factory()->create([
+            'account_id' => $jpyAccount->id,
+            'profit_loss' => 10_000.00,
+            'date' => '2026-01-05 11:00:00',
+        ]);
+
+        $response = $this->getJson('/api/portfolio/analytics');
+        $response->assertOk();
+
+        $this->assertSame('USD', (string) $response->json('reporting_currency'));
+        $this->assertTrue((bool) $response->json('fx_normalized'));
+        $this->assertSame(20000.0, (float) $response->json('portfolio_equity.starting_balance'));
+        $this->assertSame(20200.0, (float) $response->json('portfolio_equity.current_equity'));
+        $this->assertSame(200.0, (float) $response->json('portfolio_equity.net_profit'));
+    }
+
     public function test_accounts_analytics_returns_per_account_rows(): void
     {
-        $account = Account::factory()->create([
+        $account = $this->createOwnedAccount([
             'starting_balance' => 12000,
             'current_balance' => 12000,
             'is_active' => true,
@@ -160,7 +209,7 @@ class AccountArchitectureTest extends TestCase
 
     public function test_account_specific_analytics_endpoint_returns_key_metrics(): void
     {
-        $account = Account::factory()->create([
+        $account = $this->createOwnedAccount([
             'starting_balance' => 10_000,
             'current_balance' => 10_000,
             'is_active' => true,
@@ -204,7 +253,7 @@ class AccountArchitectureTest extends TestCase
 
     public function test_account_challenge_endpoints_support_get_put_and_live_status(): void
     {
-        $account = Account::factory()->create([
+        $account = $this->createOwnedAccount([
             'starting_balance' => 10_000,
             'current_balance' => 10_000,
             'is_active' => true,
@@ -259,7 +308,7 @@ class AccountArchitectureTest extends TestCase
 
     public function test_account_challenge_status_marks_fail_on_daily_loss_breach(): void
     {
-        $account = Account::factory()->create([
+        $account = $this->createOwnedAccount([
             'starting_balance' => 10_000,
             'current_balance' => 10_000,
             'is_active' => true,
@@ -294,7 +343,7 @@ class AccountArchitectureTest extends TestCase
 
     public function test_analytics_overview_and_metrics_contracts_are_truthful(): void
     {
-        $account = Account::factory()->create([
+        $account = $this->createOwnedAccount([
             'starting_balance' => 10_000,
             'current_balance' => 10_000,
             'is_active' => true,
@@ -336,7 +385,7 @@ class AccountArchitectureTest extends TestCase
     {
         Storage::fake('public');
 
-        $account = Account::factory()->create([
+        $account = $this->createOwnedAccount([
             'starting_balance' => 10_000,
             'current_balance' => 10_000,
             'is_active' => true,
@@ -378,7 +427,7 @@ class AccountArchitectureTest extends TestCase
     {
         Storage::fake('public');
 
-        $account = Account::factory()->create([
+        $account = $this->createOwnedAccount([
             'starting_balance' => 10_000,
             'current_balance' => 10_000,
             'is_active' => true,
@@ -422,5 +471,13 @@ class AccountArchitectureTest extends TestCase
             'strategy_model' => 'Breakout',
             'notes' => 'Test trade',
         ];
+    }
+
+    private function createOwnedAccount(array $attributes = []): Account
+    {
+        return Account::factory()->create([
+            'user_id' => $this->user->id,
+            ...$attributes,
+        ]);
     }
 }

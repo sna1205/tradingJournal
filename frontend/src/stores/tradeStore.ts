@@ -2,12 +2,19 @@ import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import api from '@/services/api'
 import {
+  enqueueSyncCreate,
+  enqueueSyncDelete,
+  enqueueSyncUpdate,
+} from '@/services/offlineSyncQueue'
+import {
   createLocalTrade,
   deleteLocalTrade,
   deleteLocalTradeImage,
   fetchLocalTradeDetails,
   queryLocalTrades,
+  setLocalTradeSyncStatus,
   shouldUseLocalFallback,
+  upsertLocalTradeSnapshot,
   updateLocalTrade,
   uploadLocalTradeImage,
 } from '@/services/localFallback'
@@ -15,6 +22,7 @@ import { useAnalyticsStore } from '@/stores/analyticsStore'
 import { useAccountStore } from '@/stores/accountStore'
 import { useSyncStatusStore } from '@/stores/syncStatusStore'
 import type {
+  FxRate,
   Instrument,
   KillzoneItem,
   Paginated,
@@ -57,6 +65,9 @@ export interface TradePayload {
   swap?: number
   spread_cost?: number
   slippage_cost?: number
+  fx_rate_quote_to_usd?: number | null
+  fx_symbol_used?: string | null
+  fx_rate_timestamp?: string | null
   legs?: TradeLegPayload[]
   strategy_model_id?: number | null
   setup_id?: number | null
@@ -91,6 +102,8 @@ export interface TradePrecheckViolation {
 
 export interface TradePrecheckResult {
   allowed: boolean
+  risk_engine_unavailable?: boolean
+  local_only_override_allowed?: boolean
   requires_override_reason: boolean
   policy: {
     account_id: number
@@ -123,6 +136,9 @@ export interface TradePrecheckResult {
     avg_entry_price: number
     avg_exit_price: number
     rr: number
+    fx_rate_quote_to_usd?: number | null
+    fx_symbol_used?: string | null
+    fx_rate_timestamp?: string | null
   }
 }
 
@@ -155,6 +171,7 @@ export const useTradeStore = defineStore('trades', () => {
   const saving = ref(false)
   const error = ref<string | null>(null)
   const instruments = ref<Instrument[]>([])
+  const fxRates = ref<FxRate[]>([])
   const strategyModels = ref<TaxonomyItem[]>([])
   const setups = ref<TaxonomyItem[]>([])
   const killzones = ref<KillzoneItem[]>([])
@@ -178,6 +195,13 @@ export const useTradeStore = defineStore('trades', () => {
       syncStatusStore.markServerHealthy()
 
       trades.value = data.data
+      for (const trade of data.data) {
+        upsertLocalTradeSnapshot({
+          ...trade,
+          local_sync_status: 'synced',
+          risk_validation_status: 'verified',
+        })
+      }
       pagination.value.current_page = data.current_page
       pagination.value.last_page = data.last_page
       pagination.value.per_page = data.per_page
@@ -236,6 +260,11 @@ export const useTradeStore = defineStore('trades', () => {
       } else {
         await fetchTrades(pagination.value.current_page)
       }
+      upsertLocalTradeSnapshot({
+        ...data,
+        local_sync_status: 'synced',
+        risk_validation_status: 'verified',
+      })
 
       void analyticsStore.fetchAnalytics().catch(() => undefined)
       void accountStore.fetchAccounts().catch(() => undefined)
@@ -244,6 +273,15 @@ export const useTradeStore = defineStore('trades', () => {
       if (shouldUseLocalFallback(err)) {
         syncStatusStore.markLocalFallback('trades')
         const local = createLocalTrade(payload)
+        enqueueSyncCreate({
+          entity: 'trades',
+          local_id: local.id,
+          payload: pruneUndefined(payload),
+          context: 'trades',
+          risk_unverified: true,
+        })
+        setLocalTradeSyncStatus(local.id, 'draft_local', 'unverified')
+        void syncStatusStore.refreshQueueState()
         if (shouldOptimisticallyInsert) {
           const index = trades.value.findIndex((trade) => trade.id === tempId)
           if (index >= 0) {
@@ -339,6 +377,11 @@ export const useTradeStore = defineStore('trades', () => {
       } else {
         await fetchTrades(pagination.value.current_page)
       }
+      upsertLocalTradeSnapshot({
+        ...data,
+        local_sync_status: 'synced',
+        risk_validation_status: 'verified',
+      })
 
       void analyticsStore.fetchAnalytics().catch(() => undefined)
       void accountStore.fetchAccounts().catch(() => undefined)
@@ -346,7 +389,21 @@ export const useTradeStore = defineStore('trades', () => {
     } catch (err) {
       if (shouldUseLocalFallback(err)) {
         syncStatusStore.markLocalFallback('trades')
+        if (current) {
+          upsertLocalTradeSnapshot(current)
+        }
         const data = updateLocalTrade(id, payload)
+        enqueueSyncUpdate({
+          entity: 'trades',
+          local_id: data.id,
+          server_id: id,
+          expected_updated_at: current?.updated_at ?? null,
+          payload: pruneUndefined(payload),
+          context: 'trades',
+          risk_unverified: data.risk_validation_status !== 'verified',
+        })
+        setLocalTradeSyncStatus(data.id, 'draft_local', data.risk_validation_status ?? 'unverified')
+        void syncStatusStore.refreshQueueState()
         if (index >= 0) {
           trades.value[index] = data
         } else {
@@ -378,6 +435,7 @@ export const useTradeStore = defineStore('trades', () => {
     try {
       await api.delete(`/trades/${id}`)
       syncStatusStore.markServerHealthy()
+      deleteLocalTrade(id)
 
       if (trades.value.length === 0 && pagination.value.current_page > 1) {
         await fetchTrades(pagination.value.current_page - 1)
@@ -388,7 +446,18 @@ export const useTradeStore = defineStore('trades', () => {
     } catch (err) {
       if (shouldUseLocalFallback(err)) {
         syncStatusStore.markLocalFallback('trades')
+        if (previous) {
+          upsertLocalTradeSnapshot(previous)
+        }
         deleteLocalTrade(id)
+        enqueueSyncDelete({
+          entity: 'trades',
+          local_id: id,
+          server_id: id,
+          expected_updated_at: previous?.updated_at ?? null,
+          context: 'trades',
+        })
+        void syncStatusStore.refreshQueueState()
         await fetchTrades(Math.max(1, pagination.value.current_page))
         void analyticsStore.fetchAnalytics().catch(() => undefined)
         void accountStore.fetchAccounts().catch(() => undefined)
@@ -481,6 +550,21 @@ export const useTradeStore = defineStore('trades', () => {
     }
   }
 
+  async function fetchFxRates() {
+    try {
+      const { data } = await api.get<FxRate[] | { data?: FxRate[] }>('/fx-rates')
+      syncStatusStore.markServerHealthy()
+      const rows = Array.isArray(data) ? data : (Array.isArray(data?.data) ? data.data : [])
+      fxRates.value = rows.length > 0 ? rows : defaultFxRatesFallback()
+    } catch (error) {
+      if (!shouldUseLocalFallback(error)) {
+        throw error
+      }
+      syncStatusStore.markLocalFallback('fx-rates')
+      fxRates.value = defaultFxRatesFallback()
+    }
+  }
+
   async function fetchDictionaries() {
     try {
       const [strategyRes, setupRes, killzoneRes, tagRes, sessionRes] = await Promise.all([
@@ -547,7 +631,9 @@ export const useTradeStore = defineStore('trades', () => {
       }
       syncStatusStore.markLocalFallback('trades-precheck')
       return {
-        allowed: true,
+        allowed: false,
+        risk_engine_unavailable: true,
+        local_only_override_allowed: true,
         requires_override_reason: false,
         policy: {
           account_id: payload.account_id,
@@ -555,10 +641,17 @@ export const useTradeStore = defineStore('trades', () => {
           max_daily_loss_pct: 5,
           max_total_drawdown_pct: 10,
           max_open_risk_pct: 2,
-          enforce_hard_limits: false,
+          enforce_hard_limits: true,
           allow_override: false,
         },
-        violations: [],
+        violations: [
+          {
+            code: 'risk_engine_unavailable',
+            message: 'Risk engine unavailable. Submission is blocked until connectivity is restored or local-only override is confirmed.',
+            limit: 0,
+            actual: 0,
+          },
+        ],
         stats: {
           risk_percent: 0,
           monetary_risk: 0,
@@ -672,6 +765,7 @@ export const useTradeStore = defineStore('trades', () => {
   return {
     trades,
     instruments,
+    fxRates,
     strategyModels,
     setups,
     killzones,
@@ -685,6 +779,7 @@ export const useTradeStore = defineStore('trades', () => {
     hasFilters,
     fetchTrades,
     fetchInstruments,
+    fetchFxRates,
     fetchDictionaries,
     fetchTradePsychology,
     upsertTradePsychology,
@@ -928,4 +1023,34 @@ function defaultInstrumentsFallback(): Instrument[] {
     lot_step: seed.lot_step.toFixed(4),
     is_active: true,
   }))
+}
+
+function defaultFxRatesFallback(): FxRate[] {
+  const now = new Date().toISOString()
+  const rows: Array<{ from_currency: string; to_currency: string; rate: number }> = [
+    { from_currency: 'USD', to_currency: 'JPY', rate: 150.0 },
+    { from_currency: 'GBP', to_currency: 'USD', rate: 1.27 },
+    { from_currency: 'EUR', to_currency: 'USD', rate: 1.08 },
+    { from_currency: 'USD', to_currency: 'CHF', rate: 0.88 },
+    { from_currency: 'USD', to_currency: 'CAD', rate: 1.35 },
+    { from_currency: 'AUD', to_currency: 'USD', rate: 0.66 },
+    { from_currency: 'NZD', to_currency: 'USD', rate: 0.61 },
+    { from_currency: 'EUR', to_currency: 'GBP', rate: 0.85 },
+  ]
+
+  return rows.map((row, index) => ({
+    id: index + 1,
+    from_currency: row.from_currency,
+    to_currency: row.to_currency,
+    rate: row.rate.toFixed(10),
+    rate_updated_at: now,
+    created_at: now,
+    updated_at: now,
+  }))
+}
+
+function pruneUndefined<T extends object>(payload: T): Record<string, unknown> {
+  return Object.fromEntries(
+    Object.entries(payload as Record<string, unknown>).filter(([, value]) => value !== undefined)
+  )
 }

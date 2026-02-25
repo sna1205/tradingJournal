@@ -47,11 +47,13 @@ class TradeController extends Controller
 
     public function index(Request $request)
     {
+        $userId = (int) $request->user()->id;
         $perPage = max(1, min((int) $request->integer('per_page', 15), 100));
         $filters = $this->normalizedFilterInputs($request->all());
         $disk = (string) config('filesystems.trade_images_disk', 'public');
 
         $trades = Trade::query()
+            ->whereHas('account', fn ($query) => $query->where('user_id', $userId))
             ->with([
                 'account',
                 'instrument',
@@ -87,10 +89,17 @@ class TradeController extends Controller
      */
     public function precheck(Request $request)
     {
+        $userId = (int) $request->user()->id;
         $tradeId = (int) $request->integer('trade_id', 0);
         $existingTrade = $tradeId > 0
-            ? Trade::query()->find($tradeId)
+            ? Trade::query()
+                ->whereKey($tradeId)
+                ->whereHas('account', fn ($query) => $query->where('user_id', $userId))
+                ->first()
             : null;
+        if ($tradeId > 0) {
+            abort_unless($existingTrade !== null, 404);
+        }
         $isUpdate = $existingTrade !== null;
 
         $payload = $this->validatePayload($request, $isUpdate, $existingTrade);
@@ -98,7 +107,7 @@ class TradeController extends Controller
         $payload = $this->normalizePrecheckPayload($payload, $existingTrade);
         $payload['pair'] = strtoupper((string) $payload['pair']);
 
-        $account = $this->resolveAccountForRead((int) $payload['account_id']);
+        $account = $this->resolveAccountForRead((int) $payload['account_id'], $userId);
         $instrument = $this->resolveInstrumentForRead((int) $payload['instrument_id']);
         $payloadWithMetrics = $this->buildPayloadWithCalculatedFields($payload, $account, $instrument);
         $riskEvaluation = $this->evaluateRiskPolicy(
@@ -131,12 +140,13 @@ class TradeController extends Controller
 
     public function store(Request $request)
     {
+        $userId = (int) $request->user()->id;
         $payload = $this->validatePayload($request);
         $payload = $this->applyDefaults($payload);
         $payload['pair'] = strtoupper((string) $payload['pair']);
 
-        $trade = DB::transaction(function () use ($payload): Trade {
-            $account = $this->resolveAccountForWrite((int) $payload['account_id']);
+        $trade = DB::transaction(function () use ($payload, $userId): Trade {
+            $account = $this->resolveAccountForWrite((int) $payload['account_id'], $userId);
             $instrument = $this->resolveInstrumentForRead((int) $payload['instrument_id']);
             $payloadWithMetrics = $this->buildPayloadWithCalculatedFields($payload, $account, $instrument);
             $riskEvaluation = $this->evaluateRiskPolicy($payloadWithMetrics, $account, null);
@@ -160,6 +170,7 @@ class TradeController extends Controller
 
     public function show(Trade $trade)
     {
+        $this->authorize('view', $trade);
         $trade->load([
             'account',
             'instrument',
@@ -188,6 +199,8 @@ class TradeController extends Controller
 
     public function update(Request $request, Trade $trade)
     {
+        $this->authorize('update', $trade);
+        $userId = (int) $request->user()->id;
         $payload = $this->validatePayload($request, true, $trade);
         $payload = $this->applyDefaults($payload, true);
 
@@ -197,9 +210,9 @@ class TradeController extends Controller
 
         $previousAccountId = (int) $trade->account_id;
 
-        $updatedTrade = DB::transaction(function () use ($trade, $payload, $previousAccountId): Trade {
+        $updatedTrade = DB::transaction(function () use ($trade, $payload, $previousAccountId, $userId): Trade {
             $effectivePayload = $this->normalizePrecheckPayload($payload, $trade);
-            $account = $this->resolveAccountForWrite((int) $effectivePayload['account_id']);
+            $account = $this->resolveAccountForWrite((int) $effectivePayload['account_id'], $userId);
             $instrument = $this->resolveInstrumentForRead((int) $effectivePayload['instrument_id']);
             $payloadWithMetrics = $this->buildPayloadWithCalculatedFields($effectivePayload, $account, $instrument);
             $riskEvaluation = $this->evaluateRiskPolicy($payloadWithMetrics, $account, (int) $trade->id);
@@ -228,6 +241,7 @@ class TradeController extends Controller
 
     public function destroy(Trade $trade)
     {
+        $this->authorize('delete', $trade);
         $accountId = (int) $trade->account_id;
         DB::transaction(function () use ($trade, $accountId): void {
             $trade->delete();
@@ -947,18 +961,20 @@ class TradeController extends Controller
         Cache::increment('analytics:version');
     }
 
-    private function resolveAccountForWrite(int $accountId): object
+    private function resolveAccountForWrite(int $accountId, int $userId): object
     {
         return DB::table('accounts')
             ->where('id', $accountId)
+            ->where('user_id', $userId)
             ->lockForUpdate()
             ->firstOrFail();
     }
 
-    private function resolveAccountForRead(int $accountId): object
+    private function resolveAccountForRead(int $accountId, int $userId): object
     {
         return DB::table('accounts')
             ->where('id', $accountId)
+            ->where('user_id', $userId)
             ->firstOrFail();
     }
 

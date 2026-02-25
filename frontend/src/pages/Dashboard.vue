@@ -1,5 +1,5 @@
 ﻿<script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, defineAsyncComponent, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { RouterLink } from 'vue-router'
 import { storeToRefs } from 'pinia'
 import {
@@ -16,10 +16,6 @@ import GlassPanel from '@/components/layout/GlassPanel.vue'
 import SkeletonBlock from '@/components/layout/SkeletonBlock.vue'
 import EmptyState from '@/components/layout/EmptyState.vue'
 import AnimatedNumber from '@/components/layout/AnimatedNumber.vue'
-import EquityDrawdownStackedChart from '@/components/charts/EquityDrawdownStackedChart.vue'
-import EmotionPieChart from '@/components/charts/EmotionPieChart.vue'
-import SessionPerformanceBarChart from '@/components/charts/SessionPerformanceBarChart.vue'
-import CalendarHeatmap from '@/components/analytics/CalendarHeatmap.vue'
 import DatePopoverField from '@/components/form/DatePopoverField.vue'
 import BaseSelect from '@/components/form/BaseSelect.vue'
 import api from '@/services/api'
@@ -36,6 +32,11 @@ import {
   type AccountChallengeStatusPayload,
 } from '@/types/account'
 import type { MissedTrade, Paginated, Trade } from '@/types/trade'
+
+const EquityDrawdownStackedChart = defineAsyncComponent(() => import('@/components/charts/EquityDrawdownStackedChart.vue'))
+const EmotionPieChart = defineAsyncComponent(() => import('@/components/charts/EmotionPieChart.vue'))
+const SessionPerformanceBarChart = defineAsyncComponent(() => import('@/components/charts/SessionPerformanceBarChart.vue'))
+const CalendarHeatmap = defineAsyncComponent(() => import('@/components/analytics/CalendarHeatmap.vue'))
 
 type DashboardTab = 'overview' | 'chart' | 'calendar'
 type RangePreset = '30d' | 'custom'
@@ -54,6 +55,8 @@ const {
   drawdownSeries,
   rankings,
   behavioral,
+  reportingCurrency,
+  fxNormalized,
   loading,
 } = storeToRefs(analyticsStore)
 const { accounts, selectedAccountId } = storeToRefs(accountStore)
@@ -775,11 +778,16 @@ function setDashboardMode(mode: DashboardMode) {
 
 <template>
   <Transition name="account-switch">
-    <div :key="`mode-${effectiveDashboardMode}-${scopedSelectedAccountId === null ? 'none' : scopedSelectedAccountId}`" class="space-y-5 dashboard-overview-shell dashboard-minimal">
+    <div
+      :key="`mode-${effectiveDashboardMode}-${scopedSelectedAccountId === null ? 'none' : scopedSelectedAccountId}`"
+      class="space-y-5 dashboard-overview-shell dashboard-minimal"
+      data-testid="dashboard-page"
+    >
       <section class="overview-top-row">
         <div class="overview-heading-block">
           <h1 class="overview-heading-title">Overview</h1>
           <p class="overview-heading-subtitle">Control center</p>
+          <p v-if="fxNormalized" class="section-note">Converted to {{ reportingCurrency }}</p>
         </div>
 
         <div class="overview-controls-wrap">

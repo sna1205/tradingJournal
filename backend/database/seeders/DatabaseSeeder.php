@@ -11,6 +11,8 @@ class DatabaseSeeder extends Seeder
     {
         $this->call([
             InstrumentSeeder::class,
+            FxRateSeeder::class,
+            FxRateSnapshotSeeder::class,
             AccountSeeder::class,
             ChecklistSeeder::class,
             AccountRiskPolicySeeder::class,

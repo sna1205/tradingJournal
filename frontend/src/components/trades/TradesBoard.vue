@@ -409,6 +409,14 @@ function priorityLabel(trade: Trade) {
   return 'Review done'
 }
 
+function localSyncLabel(trade: Trade) {
+  if (trade.local_sync_status === 'draft_local') return 'Draft local'
+  if (trade.local_sync_status === 'pending_sync') return 'Pending sync'
+  if (trade.local_sync_status === 'conflict') return 'Sync conflict'
+  if (trade.local_sync_status === 'synced') return 'Synced'
+  return ''
+}
+
 function cardDate(value: string) {
   const parsed = new Date(value)
   if (Number.isNaN(parsed.getTime())) return '-'
@@ -853,6 +861,12 @@ watch(quickFocus, (value) => {
                 <h3>{{ trade.pair }}</h3>
                 <span :class="directionClass(trade)">{{ directionLabel(trade) }}</span>
                 <span class="trade-card-priority" :class="`is-${reviewPriority(trade)}`">{{ priorityLabel(trade) }}</span>
+                <span v-if="trade.local_sync_status && trade.local_sync_status !== 'synced'" class="trade-card-priority is-medium">
+                  {{ localSyncLabel(trade) }}
+                </span>
+                <span v-if="trade.risk_validation_status === 'unverified'" class="trade-card-priority is-high">
+                  Risk unverified
+                </span>
               </div>
               <p class="trade-card-reference-pnl value-display" :class="Number(trade.profit_loss) >= 0 ? 'positive' : 'negative'">
                 {{ asSignedCurrency(trade.profit_loss) }}

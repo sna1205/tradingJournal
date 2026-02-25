@@ -27,5 +27,30 @@ export default defineConfig(({ mode }) => {
         },
       },
     },
+    build: {
+      rollupOptions: {
+        output: {
+          manualChunks(id) {
+            if (!id.includes('node_modules')) {
+              return undefined
+            }
+
+            if (id.includes('echarts') || id.includes('zrender') || id.includes('vue-echarts')) {
+              return 'vendor-charts'
+            }
+
+            if (id.includes('vue-router') || id.includes('pinia') || id.includes('/vue/')) {
+              return 'vendor-vue'
+            }
+
+            if (id.includes('axios')) {
+              return 'vendor-http'
+            }
+
+            return 'vendor'
+          },
+        },
+      },
+    },
   }
 })

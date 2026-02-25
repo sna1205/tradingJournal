@@ -6,14 +6,14 @@ services:
     environment:
       MYSQL_DATABASE: trading_journal
       MYSQL_USER: trading
-      MYSQL_PASSWORD: veasna123
-      MYSQL_ROOT_PASSWORD: veasna123
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-trading_local_password}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-trading_local_root_password}
     ports:
       - "3307:3306"
     volumes:
       - mysql_data:/var/lib/mysql
     healthcheck:
-      test: ["CMD-SHELL", "mysqladmin ping -h localhost -uroot -pveasna123"]
+      test: ["CMD-SHELL", "mysqladmin ping -h localhost -uroot -p$${MYSQL_ROOT_PASSWORD}"]
       interval: 10s
       timeout: 5s
       retries: 10
@@ -36,7 +36,7 @@ services:
       DB_PORT: 3306
       DB_DATABASE: trading_journal
       DB_USERNAME: trading
-      DB_PASSWORD: veasna123
+      DB_PASSWORD: ${MYSQL_PASSWORD:-trading_local_password}
       COMPOSER_CACHE_DIR: /tmp/composer-cache
     depends_on:
       mysql:

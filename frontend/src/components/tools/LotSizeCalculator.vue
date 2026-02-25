@@ -1,13 +1,16 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import { AlertTriangle, ShieldCheck, Target } from 'lucide-vue-next'
 import BaseSelect from '@/components/form/BaseSelect.vue'
 import InstrumentPairSelect from '@/components/form/InstrumentPairSelect.vue'
 import FieldWrapper from '@/components/form/FieldWrapper.vue'
 import api from '@/services/api'
+import { FxRateResolutionError, FxToUsdService, type FxQuoteToUsdResolution } from '@/services/fxToUsdService'
+import { livePriceFeedService } from '@/services/priceFeedService'
 import { useAccountStore } from '@/stores/accountStore'
 import { useTradeStore } from '@/stores/tradeStore'
+import { asCurrency } from '@/utils/format'
 import { calculateLotSize, type RiskMode, type TradeDirection } from '@/utils/lotSizeEngine'
 
 interface AccountRiskPolicyLite {
@@ -37,9 +40,18 @@ const selectedAccountId = ref('')
 const selectedInstrumentId = ref('')
 const riskMode = ref<RiskMode>('percent')
 const direction = ref<TradeDirection>('long')
+const quoteTickVersion = ref(0)
 const policyLoading = ref(false)
 const policyError = ref('')
 const policy = ref<AccountRiskPolicyLite | null>(null)
+const fxResolver = new FxToUsdService(livePriceFeedService)
+let stopTrackingSymbols: (() => void) | null = null
+let unsubscribeQuoteListeners: Array<() => void> = []
+const fxConversion = ref<FxQuoteToUsdResolution | null>(null)
+const fxLoading = ref(false)
+const fxErrorMessage = ref('')
+const fxAttemptedSymbols = ref<string[]>([])
+let fxResolveRequestId = 0
 
 const form = reactive({
   account_balance: '',
@@ -82,6 +94,35 @@ const selectedInstrument = computed(() =>
   instruments.value.find((instrument) => String(instrument.id) === selectedInstrumentId.value) ?? null
 )
 
+const validationErrorsForDisplay = computed(() => {
+  const rows = Object.entries(calculationResult.value.field_errors)
+  if (!fxErrorMessage.value) return rows
+
+  const quote = selectedInstrument.value?.quote_currency?.toUpperCase() ?? ''
+  const prefix = quote ? `Missing live FX quote to convert ${quote}->USD` : ''
+  return rows.filter(([key, message]) =>
+    !(key === 'instrument' && prefix && message.startsWith(prefix))
+  )
+})
+const hasValidationErrorsForDisplay = computed(() => validationErrorsForDisplay.value.length > 0)
+const hasFxFetchInProgress = computed(() => {
+  const quoteCurrency = selectedInstrument.value?.quote_currency?.toUpperCase() ?? ''
+  return quoteCurrency !== '' && quoteCurrency !== 'USD' && fxLoading.value
+})
+
+const conversionTimestampLabel = computed(() => {
+  const ts = fxConversion.value?.ts
+  if (!ts) return 'live'
+
+  const d = new Date(ts)
+  if (Number.isNaN(d.getTime())) return 'live'
+  return d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false })
+})
+
+const lotSizeDisplay = computed(() =>
+  calculationResult.value.valid ? calculationResult.value.lot_size_text : '-'
+)
+
 const calculationResult = computed(() =>
   calculateLotSize({
     account_balance: form.account_balance,
@@ -99,14 +140,21 @@ const calculationResult = computed(() =>
     instrument: selectedInstrument.value
       ? {
         symbol: selectedInstrument.value.symbol,
+        asset_class: selectedInstrument.value.asset_class,
+        base_currency: selectedInstrument.value.base_currency,
+        quote_currency: selectedInstrument.value.quote_currency,
         tick_size: selectedInstrument.value.tick_size,
-        tick_value: selectedInstrument.value.tick_value,
         contract_size: selectedInstrument.value.contract_size,
         lot_step: selectedInstrument.value.lot_step,
         min_lot: selectedInstrument.value.min_lot,
         pip_size: selectedInstrument.value.pip_size,
       }
       : null,
+    fx_rate_quote_to_usd: fxConversion.value?.rate ?? null,
+    fx_symbol_used: fxConversion.value?.symbolUsed ?? null,
+    fx_rate_timestamp: fxConversion.value?.ts ?? null,
+    fx_conversion_method: fxConversion.value?.method ?? null,
+    fx_rate_mode: fxConversion.value?.mode ?? 'mid',
     policy_max_risk_pct: policy.value?.max_risk_per_trade_pct ?? null,
   })
 )
@@ -127,6 +175,60 @@ const stopDistanceValue = computed(() =>
     : calculationResult.value.stop_distance_ticks
 )
 
+async function refreshFxConversion() {
+  const instrument = selectedInstrument.value
+  if (!instrument) {
+    fxConversion.value = null
+    fxErrorMessage.value = ''
+    fxAttemptedSymbols.value = []
+    fxLoading.value = false
+    return
+  }
+
+  const quoteCurrency = instrument.quote_currency.toUpperCase()
+  if (quoteCurrency === 'USD') {
+    fxConversion.value = {
+      rate: 1,
+      symbolUsed: null,
+      method: 'identity',
+      mode: 'mid',
+      ts: null,
+      attemptedSymbols: [],
+    }
+    fxErrorMessage.value = ''
+    fxAttemptedSymbols.value = []
+    fxLoading.value = false
+    return
+  }
+
+  const requestId = ++fxResolveRequestId
+  fxLoading.value = true
+  fxErrorMessage.value = ''
+  fxAttemptedSymbols.value = []
+
+  try {
+    const resolved = await fxResolver.getRate(quoteCurrency, 'mid')
+    if (requestId !== fxResolveRequestId) return
+    fxConversion.value = resolved
+    fxErrorMessage.value = ''
+    fxAttemptedSymbols.value = []
+  } catch (error) {
+    if (requestId !== fxResolveRequestId) return
+    fxConversion.value = null
+    if (error instanceof FxRateResolutionError) {
+      fxAttemptedSymbols.value = error.attemptedSymbols
+      fxErrorMessage.value = error.message
+    } else {
+      fxAttemptedSymbols.value = []
+      fxErrorMessage.value = `Missing live FX quote to convert ${quoteCurrency}->USD`
+    }
+  } finally {
+    if (requestId === fxResolveRequestId) {
+      fxLoading.value = false
+    }
+  }
+}
+
 watch(selectedAccount, (next) => {
   if (!next) return
   form.account_balance = `${next.current_balance ?? next.starting_balance ?? '0'}`
@@ -146,6 +248,51 @@ watch(selectedAccountId, (next) => {
   void loadRiskPolicy(accountId)
 })
 
+watch(
+  () => selectedInstrument.value?.quote_currency ?? '',
+  (quoteCurrency) => {
+    for (const unsubscribe of unsubscribeQuoteListeners) {
+      unsubscribe()
+    }
+    unsubscribeQuoteListeners = []
+    if (stopTrackingSymbols) {
+      stopTrackingSymbols()
+      stopTrackingSymbols = null
+    }
+
+    const symbols = fxResolver.getTrackedSymbolsForQuoteCurrency(quoteCurrency)
+    if (symbols.length === 0) {
+      quoteTickVersion.value += 1
+      void refreshFxConversion()
+      return
+    }
+
+    stopTrackingSymbols = livePriceFeedService.trackSymbols(symbols)
+    unsubscribeQuoteListeners = symbols.map((symbol) =>
+      livePriceFeedService.subscribe(symbol, () => {
+        quoteTickVersion.value += 1
+      })
+    )
+    quoteTickVersion.value += 1
+    void refreshFxConversion()
+  },
+  { immediate: true }
+)
+
+watch(
+  () => quoteTickVersion.value,
+  () => {
+    void refreshFxConversion()
+  }
+)
+
+watch(
+  () => selectedInstrumentId.value,
+  () => {
+    void refreshFxConversion()
+  }
+)
+
 onMounted(async () => {
   await Promise.all([
     accountStore.fetchAccounts().catch(() => undefined),
@@ -157,6 +304,17 @@ onMounted(async () => {
   }
   if (!selectedInstrumentId.value && instruments.value.length > 0) {
     selectedInstrumentId.value = String(instruments.value[0]!.id)
+  }
+})
+
+onBeforeUnmount(() => {
+  for (const unsubscribe of unsubscribeQuoteListeners) {
+    unsubscribe()
+  }
+  unsubscribeQuoteListeners = []
+  if (stopTrackingSymbols) {
+    stopTrackingSymbols()
+    stopTrackingSymbols = null
   }
 })
 
@@ -177,17 +335,6 @@ async function loadRiskPolicy(accountId: number) {
   } finally {
     policyLoading.value = false
   }
-}
-
-function asCurrency(value: number) {
-  const currency = (selectedAccount.value?.currency ?? 'USD').toUpperCase()
-  const safeValue = Number.isFinite(value) ? value : 0
-  return new Intl.NumberFormat('en-US', {
-    style: 'currency',
-    currency,
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  }).format(safeValue)
 }
 
 function asPercent(value: number) {
@@ -352,14 +499,35 @@ function asNumber(value: number, decimals = 2) {
           </details>
         </section>
 
-        <section v-if="Object.values(calculationResult.field_errors).length > 0" class="panel lot-calc-alert danger">
+        <section v-if="hasValidationErrorsForDisplay" class="panel lot-calc-alert danger">
           <div class="lot-calc-alert-head">
             <AlertTriangle class="h-4 w-4" />
             <p>Input validation required</p>
           </div>
           <ul>
-            <li v-for="(message, key) in calculationResult.field_errors" :key="`error-${key}`">{{ message }}</li>
+            <li v-for="[key, message] in validationErrorsForDisplay" :key="`error-${key}`">{{ message }}</li>
           </ul>
+        </section>
+
+        <section v-if="hasFxFetchInProgress" class="panel lot-calc-alert warning">
+          <div class="lot-calc-alert-head">
+            <AlertTriangle class="h-4 w-4" />
+            <p>Fetching FX quote...</p>
+          </div>
+        </section>
+
+        <section v-if="fxErrorMessage" class="panel lot-calc-alert danger">
+          <div class="lot-calc-alert-head">
+            <AlertTriangle class="h-4 w-4" />
+            <p>Live FX quote required</p>
+          </div>
+          <ul>
+            <li>{{ fxErrorMessage }}</li>
+          </ul>
+          <details v-if="fxAttemptedSymbols.length > 0" class="lot-calc-fx-debug">
+            <summary>Tried symbols</summary>
+            <p>{{ fxAttemptedSymbols.join(', ') }}</p>
+          </details>
         </section>
 
         <p class="lot-calc-logic-note muted">Lot size is derived from Entry + Stop Loss + Risk. TP never changes lot size.</p>
@@ -373,7 +541,7 @@ function asNumber(value: number, decimals = 2) {
 
         <div class="lot-calc-lot-block">
           <span>Position Size</span>
-          <strong class="value-display">{{ calculationResult.lot_size_text }}</strong>
+          <strong class="value-display">{{ lotSizeDisplay }}</strong>
           <small>lot</small>
         </div>
 
@@ -401,14 +569,27 @@ function asNumber(value: number, decimals = 2) {
         </div>
 
         <div class="lot-calc-secondary">
+          <p><span>Risk currency</span><strong>{{ calculationResult.risk_currency }}</strong></p>
+          <p v-if="calculationResult.quote_currency && calculationResult.quote_currency !== 'USD'">
+            <span>FX</span>
+            <strong>
+              {{
+                hasFxFetchInProgress
+                  ? `Fetching ${calculationResult.quote_currency}->USD...`
+                  : calculationResult.conversion_rate_quote_to_usd === null
+                  ? `${calculationResult.quote_currency}->USD missing`
+                  : `${calculationResult.quote_currency}->USD via ${calculationResult.conversion_symbol_used ?? '?'} (${calculationResult.conversion_method ?? '?'}) @ ${asNumber(calculationResult.conversion_rate_quote_to_usd, 6)} (${calculationResult.conversion_rate_mode}) ${conversionTimestampLabel}`
+              }}
+            </strong>
+          </p>
           <p><span>Expected Profit @ TP</span><strong>{{ calculationResult.expected_profit_at_tp === null ? '-' : asCurrency(calculationResult.expected_profit_at_tp) }}</strong></p>
           <p><span>Risk : Reward</span><strong>{{ calculationResult.rr_ratio === null ? '-' : `${asNumber(calculationResult.rr_ratio, 2)}R` }}</strong></p>
-          <p><span>Tick Value</span><strong>{{ asCurrency(selectedInstrument ? Number(selectedInstrument.tick_value) : 0) }}</strong></p>
-          <p><span>Estimated Costs</span><strong>{{ asCurrency(calculationResult.estimated_costs) }}</strong></p>
-          <p v-if="calculationResult.pip_or_point_value_per_lot !== null">
-            <span>Pip/Point Value (1 lot)</span>
-            <strong>{{ asCurrency(calculationResult.pip_or_point_value_per_lot) }}</strong>
+          <p><span>Tick Value (USD, 1 lot)</span><strong>{{ calculationResult.tick_value_per_lot_usd === null ? '-' : asCurrency(calculationResult.tick_value_per_lot_usd) }}</strong></p>
+          <p v-if="calculationResult.pip_value_per_lot_usd !== null">
+            <span>Pip Value (USD, 1 lot)</span>
+            <strong>{{ asCurrency(calculationResult.pip_value_per_lot_usd) }}</strong>
           </p>
+          <p><span>Estimated Costs</span><strong>{{ asCurrency(calculationResult.estimated_costs) }}</strong></p>
         </div>
 
         <div class="lot-calc-stop-line panel">
@@ -833,6 +1014,22 @@ function asNumber(value: number, decimals = 2) {
   display: grid;
   gap: 0.2rem;
   font-size: 0.78rem;
+}
+
+.lot-calc-fx-debug {
+  margin-top: 0.38rem;
+  font-size: 0.74rem;
+}
+
+.lot-calc-fx-debug summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.lot-calc-fx-debug p {
+  margin: 0.25rem 0 0;
+  color: var(--muted);
+  word-break: break-word;
 }
 
 .lot-calc-logic-note {

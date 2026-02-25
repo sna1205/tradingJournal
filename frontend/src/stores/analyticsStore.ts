@@ -182,6 +182,22 @@ export interface BehavioralPayload {
   }
 }
 
+interface DashboardSummaryPayload {
+  overview: AnalyticsOverview
+  daily: AnalyticsDailyRow[]
+  performance_profile: PerformanceProfile
+  equity: EquityPayload
+  drawdown: DrawdownPayload
+  streaks: StreakPayload
+  metrics: MetricsPayload
+  behavioral: BehavioralPayload
+  rankings: RankingsPayload
+  monthly_heatmap: MonthlyHeatmapPayload
+  risk_status: RiskStatusPayload
+  reporting_currency: string
+  fx_normalized: boolean
+}
+
 export interface AnalyticsRangeFilters {
   date_from?: string
   date_to?: string
@@ -212,6 +228,8 @@ export const useAnalyticsStore = defineStore('analytics', () => {
   const monthlyHeatmap = ref<MonthlyHeatmapPayload | null>(null)
   const riskStatus = ref<RiskStatusPayload | null>(null)
   const behavioral = ref<BehavioralPayload | null>(null)
+  const reportingCurrency = ref('USD')
+  const fxNormalized = ref(false)
   const loading = ref(false)
 
   const bySymbol = computed(() =>
@@ -328,47 +346,25 @@ export const useAnalyticsStore = defineStore('analytics', () => {
     const params = analyticsQueryParams(activeAccountId, filters)
 
     try {
-      const [
-        overviewRes,
-        dailyRes,
-        profileRes,
-        equityRes,
-        drawdownRes,
-        streaksRes,
-        metricsRes,
-        behavioralRes,
-        rankingsRes,
-        monthlyHeatmapRes,
-        riskStatusRes,
-      ] = await Promise.all([
-        api.get<AnalyticsOverview>('/analytics/overview', { params }),
-        api.get<AnalyticsDailyRow[]>('/analytics/daily', { params }),
-        api.get<PerformanceProfile>('/analytics/performance-profile', { params }),
-        api.get<EquityPayload>('/analytics/equity', { params }),
-        api.get<DrawdownPayload>('/analytics/drawdown', { params }),
-        api.get<StreakPayload>('/analytics/streaks', { params }),
-        api.get<MetricsPayload>('/analytics/metrics', { params }),
-        api.get<BehavioralPayload>('/analytics/behavioral', { params }),
-        api.get<RankingsPayload>('/analytics/rankings', { params }),
-        api.get<MonthlyHeatmapPayload>('/analytics/monthly-heatmap', { params }),
-        api.get<RiskStatusPayload>('/analytics/risk-status', { params }),
-      ])
+      const { data: summaryRes } = await api.get<DashboardSummaryPayload>('/analytics/dashboard-summary', { params })
       syncStatusStore.markServerHealthy()
+      reportingCurrency.value = String(summaryRes.reporting_currency || 'USD').toUpperCase()
+      fxNormalized.value = Boolean(summaryRes.fx_normalized)
 
       overview.value = {
-        ...overviewRes.data,
-        total_trades: Number(overviewRes.data.total_trades || 0),
-        win_rate: Number(overviewRes.data.win_rate || 0),
-        total_profit: Number(overviewRes.data.total_profit || 0),
-        total_loss: Number(overviewRes.data.total_loss || 0),
-        profit_factor: overviewRes.data.profit_factor === null ? null : Number(overviewRes.data.profit_factor),
-        return_on_equity_pct: Number(overviewRes.data.return_on_equity_pct || 0),
-        expectancy: Number(overviewRes.data.expectancy || 0),
-        average_r: Number(overviewRes.data.average_r || 0),
-        recovery_factor: overviewRes.data.recovery_factor === null ? null : Number(overviewRes.data.recovery_factor),
+        ...summaryRes.overview,
+        total_trades: Number(summaryRes.overview.total_trades || 0),
+        win_rate: Number(summaryRes.overview.win_rate || 0),
+        total_profit: Number(summaryRes.overview.total_profit || 0),
+        total_loss: Number(summaryRes.overview.total_loss || 0),
+        profit_factor: summaryRes.overview.profit_factor === null ? null : Number(summaryRes.overview.profit_factor),
+        return_on_equity_pct: Number(summaryRes.overview.return_on_equity_pct || 0),
+        expectancy: Number(summaryRes.overview.expectancy || 0),
+        average_r: Number(summaryRes.overview.average_r || 0),
+        recovery_factor: summaryRes.overview.recovery_factor === null ? null : Number(summaryRes.overview.recovery_factor),
       }
 
-      const dailyRows = Array.isArray(dailyRes.data) ? dailyRes.data : []
+      const dailyRows = Array.isArray(summaryRes.daily) ? summaryRes.daily : []
       dailyStats.value = dailyRows.map((row) => ({
         date: row.date || row.close_date || '',
         close_date: row.close_date || row.date || '',
@@ -379,72 +375,72 @@ export const useAnalyticsStore = defineStore('analytics', () => {
       }))
 
       performanceProfile.value = {
-        ...profileRes.data,
-        win_rate: Number(profileRes.data.win_rate || 0),
-        avg_rr: Number(profileRes.data.avg_rr || 0),
-        profit_factor: profileRes.data.profit_factor === null ? null : Number(profileRes.data.profit_factor),
-        consistency_score: Number(profileRes.data.consistency_score || 0),
-        recovery_factor: profileRes.data.recovery_factor === null ? null : Number(profileRes.data.recovery_factor),
-        sharpe_ratio: profileRes.data.sharpe_ratio === null ? null : Number(profileRes.data.sharpe_ratio || 0),
+        ...summaryRes.performance_profile,
+        win_rate: Number(summaryRes.performance_profile.win_rate || 0),
+        avg_rr: Number(summaryRes.performance_profile.avg_rr || 0),
+        profit_factor: summaryRes.performance_profile.profit_factor === null ? null : Number(summaryRes.performance_profile.profit_factor),
+        consistency_score: Number(summaryRes.performance_profile.consistency_score || 0),
+        recovery_factor: summaryRes.performance_profile.recovery_factor === null ? null : Number(summaryRes.performance_profile.recovery_factor),
+        sharpe_ratio: summaryRes.performance_profile.sharpe_ratio === null ? null : Number(summaryRes.performance_profile.sharpe_ratio || 0),
       }
 
       equity.value = {
-        equity_points: (equityRes.data.equity_points || []).map((value) => Number(value || 0)),
-        cumulative_profit: (equityRes.data.cumulative_profit || []).map((value) => Number(value || 0)),
-        equity_timestamps: (equityRes.data.equity_timestamps || []).map((value) => String(value || '')),
+        equity_points: (summaryRes.equity.equity_points || []).map((value) => Number(value || 0)),
+        cumulative_profit: (summaryRes.equity.cumulative_profit || []).map((value) => Number(value || 0)),
+        equity_timestamps: (summaryRes.equity.equity_timestamps || []).map((value) => String(value || '')),
       }
 
       drawdown.value = {
-        max_drawdown: Number(drawdownRes.data.max_drawdown || 0),
-        max_drawdown_percent: Number(drawdownRes.data.max_drawdown_percent || 0),
-        current_drawdown: Number(drawdownRes.data.current_drawdown || 0),
-        current_drawdown_percent: Number(drawdownRes.data.current_drawdown_percent || 0),
-        peak_balance: Number(drawdownRes.data.peak_balance || 0),
-        current_equity: Number(drawdownRes.data.current_equity || 0),
+        max_drawdown: Number(summaryRes.drawdown.max_drawdown || 0),
+        max_drawdown_percent: Number(summaryRes.drawdown.max_drawdown_percent || 0),
+        current_drawdown: Number(summaryRes.drawdown.current_drawdown || 0),
+        current_drawdown_percent: Number(summaryRes.drawdown.current_drawdown_percent || 0),
+        peak_balance: Number(summaryRes.drawdown.peak_balance || 0),
+        current_equity: Number(summaryRes.drawdown.current_equity || 0),
       }
 
       streaks.value = {
-        ...streaksRes.data,
-        longest_win_streak: Number(streaksRes.data.longest_win_streak || 0),
-        longest_loss_streak: Number(streaksRes.data.longest_loss_streak || 0),
-        current_win_streak: Number(streaksRes.data.current_win_streak || 0),
-        current_loss_streak: Number(streaksRes.data.current_loss_streak || 0),
+        ...summaryRes.streaks,
+        longest_win_streak: Number(summaryRes.streaks.longest_win_streak || 0),
+        longest_loss_streak: Number(summaryRes.streaks.longest_loss_streak || 0),
+        current_win_streak: Number(summaryRes.streaks.current_win_streak || 0),
+        current_loss_streak: Number(summaryRes.streaks.current_loss_streak || 0),
         current_streak: {
-          type: streaksRes.data.current_streak?.type ?? 'flat',
-          length: Number(streaksRes.data.current_streak?.length || 0),
+          type: summaryRes.streaks.current_streak?.type ?? 'flat',
+          length: Number(summaryRes.streaks.current_streak?.length || 0),
         },
       }
 
       metrics.value = {
-        ...metricsRes.data,
-        total_trades: Number(metricsRes.data.total_trades || 0),
-        wins: Number(metricsRes.data.wins || 0),
-        losses: Number(metricsRes.data.losses || 0),
-        breakeven: Number(metricsRes.data.breakeven || 0),
-        win_rate: Number(metricsRes.data.win_rate || 0),
-        loss_rate: Number(metricsRes.data.loss_rate || 0),
-        average_win: Number(metricsRes.data.average_win || 0),
-        average_loss: Number(metricsRes.data.average_loss || 0),
-        total_winning_amount: Number(metricsRes.data.total_winning_amount || 0),
-        total_losing_amount: Number(metricsRes.data.total_losing_amount || 0),
-        net_profit: Number(metricsRes.data.net_profit || 0),
-        profit_factor: metricsRes.data.profit_factor === null ? null : Number(metricsRes.data.profit_factor),
-        expectancy: Number(metricsRes.data.expectancy || 0),
-        expectancy_money: Number(metricsRes.data.expectancy_money || metricsRes.data.expectancy || 0),
-        expectancy_r: Number(metricsRes.data.expectancy_r || 0),
-        payoff_ratio: metricsRes.data.payoff_ratio === null ? null : Number(metricsRes.data.payoff_ratio),
-        recovery_factor: metricsRes.data.recovery_factor === null ? null : Number(metricsRes.data.recovery_factor),
-        average_r: Number(metricsRes.data.average_r || 0),
-        avg_r: Number(metricsRes.data.avg_r || 0),
-        avg_r_realized: Number(metricsRes.data.avg_r_realized || metricsRes.data.avg_r || metricsRes.data.average_r || 0),
-        avg_rr_planned: Number(metricsRes.data.avg_rr_planned || 0),
-        sharpe_ratio: metricsRes.data.sharpe_ratio === null ? null : Number(metricsRes.data.sharpe_ratio),
+        ...summaryRes.metrics,
+        total_trades: Number(summaryRes.metrics.total_trades || 0),
+        wins: Number(summaryRes.metrics.wins || 0),
+        losses: Number(summaryRes.metrics.losses || 0),
+        breakeven: Number(summaryRes.metrics.breakeven || 0),
+        win_rate: Number(summaryRes.metrics.win_rate || 0),
+        loss_rate: Number(summaryRes.metrics.loss_rate || 0),
+        average_win: Number(summaryRes.metrics.average_win || 0),
+        average_loss: Number(summaryRes.metrics.average_loss || 0),
+        total_winning_amount: Number(summaryRes.metrics.total_winning_amount || 0),
+        total_losing_amount: Number(summaryRes.metrics.total_losing_amount || 0),
+        net_profit: Number(summaryRes.metrics.net_profit || 0),
+        profit_factor: summaryRes.metrics.profit_factor === null ? null : Number(summaryRes.metrics.profit_factor),
+        expectancy: Number(summaryRes.metrics.expectancy || 0),
+        expectancy_money: Number(summaryRes.metrics.expectancy_money || summaryRes.metrics.expectancy || 0),
+        expectancy_r: Number(summaryRes.metrics.expectancy_r || 0),
+        payoff_ratio: summaryRes.metrics.payoff_ratio === null ? null : Number(summaryRes.metrics.payoff_ratio),
+        recovery_factor: summaryRes.metrics.recovery_factor === null ? null : Number(summaryRes.metrics.recovery_factor),
+        average_r: Number(summaryRes.metrics.average_r || 0),
+        avg_r: Number(summaryRes.metrics.avg_r || 0),
+        avg_r_realized: Number(summaryRes.metrics.avg_r_realized || summaryRes.metrics.avg_r || summaryRes.metrics.average_r || 0),
+        avg_rr_planned: Number(summaryRes.metrics.avg_rr_planned || 0),
+        sharpe_ratio: summaryRes.metrics.sharpe_ratio === null ? null : Number(summaryRes.metrics.sharpe_ratio),
       }
 
-      behavioral.value = behavioralRes.data
+      behavioral.value = summaryRes.behavioral
 
       rankings.value = {
-        sessions: (rankingsRes.data.sessions || []).map((row) => ({
+        sessions: (summaryRes.rankings.sessions || []).map((row) => ({
           ...row,
           total_trades: Number(row.total_trades || 0),
           win_rate: Number(row.win_rate || 0),
@@ -453,7 +449,7 @@ export const useAnalyticsStore = defineStore('analytics', () => {
           total_pnl: Number(row.total_pnl || 0),
           avg_r: Number(row.avg_r || 0),
         })),
-        killzones: (rankingsRes.data.killzones || []).map((row) => ({
+        killzones: (summaryRes.rankings.killzones || []).map((row) => ({
           ...row,
           total_trades: Number(row.total_trades || 0),
           win_rate: Number(row.win_rate || 0),
@@ -462,7 +458,7 @@ export const useAnalyticsStore = defineStore('analytics', () => {
           total_pnl: Number(row.total_pnl || 0),
           avg_r: Number(row.avg_r || 0),
         })),
-        setups: (rankingsRes.data.setups || []).map((row) => ({
+        setups: (summaryRes.rankings.setups || []).map((row) => ({
           ...row,
           total_trades: Number(row.total_trades || 0),
           win_rate: Number(row.win_rate || 0),
@@ -471,7 +467,7 @@ export const useAnalyticsStore = defineStore('analytics', () => {
           total_pnl: Number(row.total_pnl || 0),
           avg_r: Number(row.avg_r || 0),
         })),
-        strategy_models: (rankingsRes.data.strategy_models || []).map((row) => ({
+        strategy_models: (summaryRes.rankings.strategy_models || []).map((row) => ({
           ...row,
           total_trades: Number(row.total_trades || 0),
           win_rate: Number(row.win_rate || 0),
@@ -480,7 +476,7 @@ export const useAnalyticsStore = defineStore('analytics', () => {
           total_pnl: Number(row.total_pnl || 0),
           avg_r: Number(row.avg_r || 0),
         })),
-        symbols: (rankingsRes.data.symbols || []).map((row) => ({
+        symbols: (summaryRes.rankings.symbols || []).map((row) => ({
           ...row,
           total_trades: Number(row.total_trades || 0),
           win_rate: Number(row.win_rate || 0),
@@ -492,7 +488,7 @@ export const useAnalyticsStore = defineStore('analytics', () => {
       }
 
       monthlyHeatmap.value = {
-        months: (monthlyHeatmapRes.data.months || []).map((month) => ({
+        months: (summaryRes.monthly_heatmap.months || []).map((month) => ({
           ...month,
           days: (month.days || []).map((day) => ({
             ...day,
@@ -503,21 +499,21 @@ export const useAnalyticsStore = defineStore('analytics', () => {
             intensity: Number(day.intensity || 0),
           })),
         })),
-        max_abs_daily_pnl: Number(monthlyHeatmapRes.data.max_abs_daily_pnl || 0),
+        max_abs_daily_pnl: Number(summaryRes.monthly_heatmap.max_abs_daily_pnl || 0),
       }
 
       riskStatus.value = {
-        ...riskStatusRes.data,
-        risk_percent_warning: Boolean(riskStatusRes.data.risk_percent_warning),
-        loss_streak_caution: Boolean(riskStatusRes.data.loss_streak_caution),
-        drawdown_banner: Boolean(riskStatusRes.data.drawdown_banner),
-        revenge_behavior_flag: Boolean(riskStatusRes.data.revenge_behavior_flag),
-        latest_risk_percent: Number(riskStatusRes.data.latest_risk_percent || 0),
-        max_risk_percent: Number(riskStatusRes.data.max_risk_percent || 0),
-        current_loss_streak: Number(riskStatusRes.data.current_loss_streak || 0),
-        current_drawdown_percent: Number(riskStatusRes.data.current_drawdown_percent || 0),
-        revenge_after_loss_events: riskStatusRes.data.revenge_after_loss_events || [],
-        warnings: riskStatusRes.data.warnings || [],
+        ...summaryRes.risk_status,
+        risk_percent_warning: Boolean(summaryRes.risk_status.risk_percent_warning),
+        loss_streak_caution: Boolean(summaryRes.risk_status.loss_streak_caution),
+        drawdown_banner: Boolean(summaryRes.risk_status.drawdown_banner),
+        revenge_behavior_flag: Boolean(summaryRes.risk_status.revenge_behavior_flag),
+        latest_risk_percent: Number(summaryRes.risk_status.latest_risk_percent || 0),
+        max_risk_percent: Number(summaryRes.risk_status.max_risk_percent || 0),
+        current_loss_streak: Number(summaryRes.risk_status.current_loss_streak || 0),
+        current_drawdown_percent: Number(summaryRes.risk_status.current_drawdown_percent || 0),
+        revenge_after_loss_events: summaryRes.risk_status.revenge_after_loss_events || [],
+        warnings: summaryRes.risk_status.warnings || [],
       }
 
     } catch (error) {
@@ -525,6 +521,8 @@ export const useAnalyticsStore = defineStore('analytics', () => {
         throw error
       }
       syncStatusStore.markLocalFallback('analytics')
+      reportingCurrency.value = 'USD'
+      fxNormalized.value = false
 
       const localTrades = queryLocalTrades({
         page: 1,
@@ -572,6 +570,8 @@ export const useAnalyticsStore = defineStore('analytics', () => {
     monthlyHeatmap,
     riskStatus,
     behavioral,
+    reportingCurrency,
+    fxNormalized,
     summary,
     equityCurve,
     bySymbol,

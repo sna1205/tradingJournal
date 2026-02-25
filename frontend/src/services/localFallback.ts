@@ -1,5 +1,5 @@
-import { isAxiosError } from 'axios'
 import type { Account, AccountAnalyticsPayload, AccountEquityPayload, AccountType } from '@/types/account'
+import { isConnectivityFailure, type SyncQueueStatus } from '@/services/offlineSyncQueue'
 import type {
   MissedTrade,
   MissedTradeImage,
@@ -48,9 +48,7 @@ export interface MissedTradePayloadLike {
 }
 
 export function shouldUseLocalFallback(error: unknown): boolean {
-  if (!isAxiosError(error)) return false
-  if (!error.response) return true
-  return error.response.status === 404 || error.response.status === 405 || error.response.status >= 500
+  return isConnectivityFailure(error)
 }
 
 export function fetchLocalAccounts(params?: { is_active?: boolean }): Account[] {
@@ -75,6 +73,7 @@ export function createLocalAccount(payload: AccountPayloadLike): Account {
     current_balance: asMoney(payload.starting_balance),
     currency: payload.currency.trim().toUpperCase() || 'USD',
     is_active: payload.is_active,
+    local_sync_status: 'draft_local',
     created_at: now,
     updated_at: now,
   }
@@ -100,6 +99,7 @@ export function updateLocalAccount(id: number, payload: Partial<AccountPayloadLi
       ? (payload.currency.trim().toUpperCase() || current.currency)
       : current.currency,
     is_active: payload.is_active ?? current.is_active,
+    local_sync_status: current.local_sync_status ?? 'draft_local',
     updated_at: nowIso(),
   }
 
@@ -122,6 +122,47 @@ export function deleteLocalAccount(id: number): void {
   }
 
   writeJson(ACCOUNTS_KEY, accounts.filter((account) => account.id !== id))
+}
+
+export function upsertLocalAccountSnapshot(account: Account): Account {
+  const normalized = normalizeAccount(account)
+  if (!normalized) {
+    throw new Error('Invalid account snapshot.')
+  }
+
+  const accounts = ensureAccounts()
+  const index = accounts.findIndex((row) => row.id === normalized.id)
+  const next = accounts.slice()
+  if (index >= 0) {
+    next[index] = {
+      ...next[index]!,
+      ...normalized,
+      local_sync_status: next[index]!.local_sync_status ?? normalized.local_sync_status ?? 'synced',
+    }
+  } else {
+    next.unshift({
+      ...normalized,
+      local_sync_status: normalized.local_sync_status ?? 'synced',
+    })
+  }
+
+  writeJson(ACCOUNTS_KEY, next)
+  return next.find((row) => row.id === normalized.id) ?? normalized
+}
+
+export function setLocalAccountSyncStatus(id: number, status: SyncQueueStatus): Account | null {
+  const accounts = ensureAccounts()
+  const index = accounts.findIndex((account) => account.id === id)
+  if (index < 0) return null
+
+  const updated: Account = {
+    ...accounts[index]!,
+    local_sync_status: status,
+    updated_at: nowIso(),
+  }
+  accounts[index] = updated
+  writeJson(ACCOUNTS_KEY, accounts)
+  return updated
 }
 
 export function fetchLocalAccountEquity(id: number): AccountEquityPayload {
@@ -258,6 +299,8 @@ export function createLocalTrade(payload: TradePayloadLike): Trade {
     model: payload.strategy_model?.trim() || 'General',
     date: toIso(payload.close_date),
     notes: payload.notes,
+    local_sync_status: 'draft_local',
+    risk_validation_status: 'unverified',
     images: [],
     images_count: 0,
     created_at: now,
@@ -295,6 +338,8 @@ export function updateLocalTrade(id: number, payload: Partial<TradePayloadLike>)
     model: payload.strategy_model !== undefined ? payload.strategy_model.trim() || 'General' : current.model,
     date: payload.close_date !== undefined ? toIso(payload.close_date) : current.date,
     notes: payload.notes !== undefined ? payload.notes : current.notes,
+    local_sync_status: current.local_sync_status ?? 'draft_local',
+    risk_validation_status: current.risk_validation_status ?? 'unverified',
     updated_at: nowIso(),
   }
 
@@ -310,6 +355,58 @@ export function deleteLocalTrade(id: number): void {
   const recomputed = recomputeTradesAndBalances(ensureAccounts(), readTrades().filter((trade) => trade.id !== id))
   writeJson(ACCOUNTS_KEY, recomputed.accounts)
   writeJson(TRADES_KEY, recomputed.trades)
+}
+
+export function upsertLocalTradeSnapshot(trade: Trade): Trade {
+  const normalized = normalizeTrade(trade)
+  if (!normalized) {
+    throw new Error('Invalid trade snapshot.')
+  }
+
+  const trades = readTrades()
+  const index = trades.findIndex((row) => row.id === normalized.id)
+  const next = trades.slice()
+  if (index >= 0) {
+    next[index] = {
+      ...next[index]!,
+      ...normalized,
+      local_sync_status: next[index]!.local_sync_status ?? normalized.local_sync_status ?? 'synced',
+      risk_validation_status: next[index]!.risk_validation_status ?? normalized.risk_validation_status ?? 'verified',
+    }
+  } else {
+    next.unshift({
+      ...normalized,
+      local_sync_status: normalized.local_sync_status ?? 'synced',
+      risk_validation_status: normalized.risk_validation_status ?? 'verified',
+    })
+  }
+
+  const recomputed = recomputeTradesAndBalances(ensureAccounts(), next)
+  writeJson(ACCOUNTS_KEY, recomputed.accounts)
+  writeJson(TRADES_KEY, recomputed.trades)
+  return recomputed.trades.find((row) => row.id === normalized.id) ?? normalized
+}
+
+export function setLocalTradeSyncStatus(
+  id: number,
+  status: SyncQueueStatus,
+  riskValidationStatus?: 'verified' | 'unverified'
+): Trade | null {
+  const trades = readTrades()
+  const index = trades.findIndex((trade) => trade.id === id)
+  if (index < 0) return null
+
+  trades[index] = {
+    ...trades[index]!,
+    local_sync_status: status,
+    risk_validation_status: riskValidationStatus ?? trades[index]!.risk_validation_status ?? 'unverified',
+    updated_at: nowIso(),
+  }
+
+  const recomputed = recomputeTradesAndBalances(ensureAccounts(), trades)
+  writeJson(ACCOUNTS_KEY, recomputed.accounts)
+  writeJson(TRADES_KEY, recomputed.trades)
+  return recomputed.trades.find((trade) => trade.id === id) ?? null
 }
 
 export function fetchLocalTradeDetails(id: number): { trade: Trade; images: TradeImage[] } {
@@ -732,6 +829,7 @@ function normalizeAccount(input: unknown): Account | null {
     current_balance: asMoney(input.current_balance ?? input.starting_balance),
     currency: String(input.currency ?? 'USD').toUpperCase(),
     is_active: Boolean(input.is_active ?? true),
+    local_sync_status: normalizeLocalSyncStatus(input.local_sync_status),
     created_at: String(input.created_at ?? nowIso()),
     updated_at: String(input.updated_at ?? nowIso()),
   }
@@ -771,6 +869,8 @@ function normalizeTrade(input: unknown): Trade | null {
     model: String(input.model ?? 'General'),
     date: toIso(String(input.date ?? nowIso())),
     notes: input.notes === null || input.notes === undefined ? null : String(input.notes),
+    local_sync_status: normalizeLocalSyncStatus(input.local_sync_status),
+    risk_validation_status: normalizeRiskValidationStatus(input.risk_validation_status),
     images,
     images_count: toInt(input.images_count ?? images.length),
     created_at: String(input.created_at ?? nowIso()),
@@ -841,6 +941,27 @@ function normalizeAccountType(value: unknown): AccountType {
     return normalized
   }
   return 'personal'
+}
+
+function normalizeLocalSyncStatus(value: unknown): SyncQueueStatus | undefined {
+  const normalized = String(value ?? '').toLowerCase()
+  if (
+    normalized === 'draft_local'
+    || normalized === 'pending_sync'
+    || normalized === 'synced'
+    || normalized === 'conflict'
+  ) {
+    return normalized
+  }
+  return undefined
+}
+
+function normalizeRiskValidationStatus(value: unknown): 'verified' | 'unverified' | undefined {
+  const normalized = String(value ?? '').toLowerCase()
+  if (normalized === 'verified' || normalized === 'unverified') {
+    return normalized
+  }
+  return undefined
 }
 
 function readJson<T>(key: string, fallback: T): T {

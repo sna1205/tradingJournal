@@ -12,6 +12,7 @@ export interface Account {
   is_active: boolean
   created_at: string
   updated_at: string
+  local_sync_status?: 'draft_local' | 'pending_sync' | 'synced' | 'conflict'
 }
 
 export type ChallengeStatus = 'active' | 'passed' | 'failed' | 'paused'

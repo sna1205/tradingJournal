@@ -7,7 +7,9 @@ use App\Models\AccountRiskPolicy;
 use App\Models\Instrument;
 use App\Models\Trade;
 use App\Models\TradeLeg;
+use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Laravel\Sanctum\Sanctum;
 use Tests\TestCase;
 
 class TradeValidationTest extends TestCase
@@ -15,10 +17,13 @@ class TradeValidationTest extends TestCase
     use RefreshDatabase;
 
     private int $eurusdInstrumentId;
+    private User $user;
 
     protected function setUp(): void
     {
         parent::setUp();
+        $this->user = User::factory()->create();
+        Sanctum::actingAs($this->user);
 
         $this->eurusdInstrumentId = (int) Instrument::query()->create([
             'symbol' => 'EURUSD',
@@ -37,7 +42,7 @@ class TradeValidationTest extends TestCase
 
     public function test_trade_creation_rejects_future_close_date(): void
     {
-        $account = Account::factory()->create([
+        $account = $this->createOwnedAccount([
             'starting_balance' => 10_000,
             'current_balance' => 10_000,
             'is_active' => true,
@@ -54,7 +59,7 @@ class TradeValidationTest extends TestCase
 
     public function test_trade_creation_rejects_buy_stop_loss_above_entry(): void
     {
-        $account = Account::factory()->create([
+        $account = $this->createOwnedAccount([
             'starting_balance' => 10_000,
             'current_balance' => 10_000,
             'is_active' => true,
@@ -74,7 +79,7 @@ class TradeValidationTest extends TestCase
 
     public function test_trade_creation_rejects_sell_take_profit_above_entry(): void
     {
-        $account = Account::factory()->create([
+        $account = $this->createOwnedAccount([
             'starting_balance' => 10_000,
             'current_balance' => 10_000,
             'is_active' => true,
@@ -94,7 +99,7 @@ class TradeValidationTest extends TestCase
 
     public function test_trade_update_rejects_directional_rule_break_on_partial_update(): void
     {
-        $account = Account::factory()->create([
+        $account = $this->createOwnedAccount([
             'starting_balance' => 10_000,
             'current_balance' => 10_000,
             'is_active' => true,
@@ -122,7 +127,7 @@ class TradeValidationTest extends TestCase
 
     public function test_trade_precheck_blocks_when_risk_exceeds_policy(): void
     {
-        $account = Account::factory()->create([
+        $account = $this->createOwnedAccount([
             'starting_balance' => 10_000,
             'current_balance' => 10_000,
             'is_active' => true,
@@ -151,7 +156,7 @@ class TradeValidationTest extends TestCase
 
     public function test_trade_creation_requires_override_reason_when_policy_allows_override(): void
     {
-        $account = Account::factory()->create([
+        $account = $this->createOwnedAccount([
             'starting_balance' => 10_000,
             'current_balance' => 10_000,
             'is_active' => true,
@@ -189,7 +194,7 @@ class TradeValidationTest extends TestCase
 
     public function test_trade_creation_accepts_multi_leg_payload_and_persists_legs(): void
     {
-        $account = Account::factory()->create([
+        $account = $this->createOwnedAccount([
             'starting_balance' => 10_000,
             'current_balance' => 10_000,
             'is_active' => true,
@@ -254,5 +259,13 @@ class TradeValidationTest extends TestCase
             'strategy_model' => 'Breakout',
             'notes' => 'Validation test trade',
         ];
+    }
+
+    private function createOwnedAccount(array $attributes = []): Account
+    {
+        return Account::factory()->create([
+            'user_id' => $this->user->id,
+            ...$attributes,
+        ]);
     }
 }

@@ -17,6 +17,7 @@ class TradePsychologyController extends Controller
      */
     public function show(Trade $trade)
     {
+        $this->authorize('view', $trade);
         $psychology = $trade->psychology()->first();
         if ($psychology === null) {
             return response()->json([
@@ -41,6 +42,7 @@ class TradePsychologyController extends Controller
      */
     public function upsert(Request $request, Trade $trade)
     {
+        $this->authorize('update', $trade);
         $validated = Validator::make($request->all(), [
             'pre_emotion' => ['nullable', 'string', 'max:40'],
             'post_emotion' => ['nullable', 'string', 'max:40'],
