@@ -3,6 +3,7 @@
 use App\Http\Controllers\Api\AnalyticsController;
 use App\Http\Controllers\Api\AccountController;
 use App\Http\Controllers\Api\DictionaryController;
+use App\Http\Controllers\Api\FxRateController;
 use App\Http\Controllers\Api\InstrumentController;
 use App\Http\Controllers\Api\ChecklistController;
 use App\Http\Controllers\Api\ChecklistItemController;
@@ -30,6 +31,7 @@ Route::get('accounts/{account}/challenge', [AccountController::class, 'challenge
 Route::put('accounts/{account}/challenge', [AccountController::class, 'upsertChallenge']);
 Route::get('accounts/{account}/challenge-status', [AccountController::class, 'challengeStatus']);
 Route::get('instruments', [InstrumentController::class, 'index']);
+Route::get('fx-rates', [FxRateController::class, 'index']);
 Route::get('checklists', [ChecklistController::class, 'index']);
 Route::post('checklists', [ChecklistController::class, 'store']);
 Route::put('checklists/{checklist}', [ChecklistController::class, 'update']);

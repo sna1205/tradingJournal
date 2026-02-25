@@ -15,6 +15,7 @@ import { useAnalyticsStore } from '@/stores/analyticsStore'
 import { useAccountStore } from '@/stores/accountStore'
 import { useSyncStatusStore } from '@/stores/syncStatusStore'
 import type {
+  FxRate,
   Instrument,
   KillzoneItem,
   Paginated,
@@ -155,6 +156,7 @@ export const useTradeStore = defineStore('trades', () => {
   const saving = ref(false)
   const error = ref<string | null>(null)
   const instruments = ref<Instrument[]>([])
+  const fxRates = ref<FxRate[]>([])
   const strategyModels = ref<TaxonomyItem[]>([])
   const setups = ref<TaxonomyItem[]>([])
   const killzones = ref<KillzoneItem[]>([])
@@ -481,6 +483,21 @@ export const useTradeStore = defineStore('trades', () => {
     }
   }
 
+  async function fetchFxRates() {
+    try {
+      const { data } = await api.get<FxRate[] | { data?: FxRate[] }>('/fx-rates')
+      syncStatusStore.markServerHealthy()
+      const rows = Array.isArray(data) ? data : (Array.isArray(data?.data) ? data.data : [])
+      fxRates.value = rows.length > 0 ? rows : defaultFxRatesFallback()
+    } catch (error) {
+      if (!shouldUseLocalFallback(error)) {
+        throw error
+      }
+      syncStatusStore.markLocalFallback('fx-rates')
+      fxRates.value = defaultFxRatesFallback()
+    }
+  }
+
   async function fetchDictionaries() {
     try {
       const [strategyRes, setupRes, killzoneRes, tagRes, sessionRes] = await Promise.all([
@@ -672,6 +689,7 @@ export const useTradeStore = defineStore('trades', () => {
   return {
     trades,
     instruments,
+    fxRates,
     strategyModels,
     setups,
     killzones,
@@ -685,6 +703,7 @@ export const useTradeStore = defineStore('trades', () => {
     hasFilters,
     fetchTrades,
     fetchInstruments,
+    fetchFxRates,
     fetchDictionaries,
     fetchTradePsychology,
     upsertTradePsychology,
@@ -927,5 +946,29 @@ function defaultInstrumentsFallback(): Instrument[] {
     min_lot: seed.min_lot.toFixed(4),
     lot_step: seed.lot_step.toFixed(4),
     is_active: true,
+  }))
+}
+
+function defaultFxRatesFallback(): FxRate[] {
+  const now = new Date().toISOString()
+  const rows: Array<{ from_currency: string; to_currency: string; rate: number }> = [
+    { from_currency: 'USD', to_currency: 'JPY', rate: 150.0 },
+    { from_currency: 'GBP', to_currency: 'USD', rate: 1.27 },
+    { from_currency: 'EUR', to_currency: 'USD', rate: 1.08 },
+    { from_currency: 'USD', to_currency: 'CHF', rate: 0.88 },
+    { from_currency: 'USD', to_currency: 'CAD', rate: 1.35 },
+    { from_currency: 'AUD', to_currency: 'USD', rate: 0.66 },
+    { from_currency: 'NZD', to_currency: 'USD', rate: 0.61 },
+    { from_currency: 'EUR', to_currency: 'GBP', rate: 0.85 },
+  ]
+
+  return rows.map((row, index) => ({
+    id: index + 1,
+    from_currency: row.from_currency,
+    to_currency: row.to_currency,
+    rate: row.rate.toFixed(10),
+    rate_updated_at: now,
+    created_at: now,
+    updated_at: now,
   }))
 }

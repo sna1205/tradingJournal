@@ -8,6 +8,7 @@ import FieldWrapper from '@/components/form/FieldWrapper.vue'
 import api from '@/services/api'
 import { useAccountStore } from '@/stores/accountStore'
 import { useTradeStore } from '@/stores/tradeStore'
+import { asCurrency } from '@/utils/format'
 import { calculateLotSize, type RiskMode, type TradeDirection } from '@/utils/lotSizeEngine'
 
 interface AccountRiskPolicyLite {
@@ -31,7 +32,7 @@ const props = withDefaults(
 const accountStore = useAccountStore()
 const tradeStore = useTradeStore()
 const { accounts } = storeToRefs(accountStore)
-const { instruments } = storeToRefs(tradeStore)
+const { instruments, fxRates } = storeToRefs(tradeStore)
 
 const selectedAccountId = ref('')
 const selectedInstrumentId = ref('')
@@ -99,14 +100,17 @@ const calculationResult = computed(() =>
     instrument: selectedInstrument.value
       ? {
         symbol: selectedInstrument.value.symbol,
+        asset_class: selectedInstrument.value.asset_class,
+        base_currency: selectedInstrument.value.base_currency,
+        quote_currency: selectedInstrument.value.quote_currency,
         tick_size: selectedInstrument.value.tick_size,
-        tick_value: selectedInstrument.value.tick_value,
         contract_size: selectedInstrument.value.contract_size,
         lot_step: selectedInstrument.value.lot_step,
         min_lot: selectedInstrument.value.min_lot,
         pip_size: selectedInstrument.value.pip_size,
       }
       : null,
+    fx_rates: fxRates.value,
     policy_max_risk_pct: policy.value?.max_risk_per_trade_pct ?? null,
   })
 )
@@ -150,6 +154,7 @@ onMounted(async () => {
   await Promise.all([
     accountStore.fetchAccounts().catch(() => undefined),
     tradeStore.fetchInstruments().catch(() => undefined),
+    tradeStore.fetchFxRates().catch(() => undefined),
   ])
 
   if (!selectedAccountId.value && accounts.value.length > 0) {
@@ -177,17 +182,6 @@ async function loadRiskPolicy(accountId: number) {
   } finally {
     policyLoading.value = false
   }
-}
-
-function asCurrency(value: number) {
-  const currency = (selectedAccount.value?.currency ?? 'USD').toUpperCase()
-  const safeValue = Number.isFinite(value) ? value : 0
-  return new Intl.NumberFormat('en-US', {
-    style: 'currency',
-    currency,
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  }).format(safeValue)
 }
 
 function asPercent(value: number) {
@@ -401,14 +395,21 @@ function asNumber(value: number, decimals = 2) {
         </div>
 
         <div class="lot-calc-secondary">
+          <p><span>Risk currency</span><strong>{{ calculationResult.risk_currency }}</strong></p>
+          <p v-if="calculationResult.quote_currency && calculationResult.quote_currency !== 'USD'">
+            <span>Conversion</span>
+            <strong>
+              {{ `${calculationResult.quote_currency}->USD @ ${calculationResult.conversion_rate_quote_to_usd === null ? 'missing' : asNumber(calculationResult.conversion_rate_quote_to_usd, 6)}` }}
+            </strong>
+          </p>
           <p><span>Expected Profit @ TP</span><strong>{{ calculationResult.expected_profit_at_tp === null ? '-' : asCurrency(calculationResult.expected_profit_at_tp) }}</strong></p>
           <p><span>Risk : Reward</span><strong>{{ calculationResult.rr_ratio === null ? '-' : `${asNumber(calculationResult.rr_ratio, 2)}R` }}</strong></p>
-          <p><span>Tick Value</span><strong>{{ asCurrency(selectedInstrument ? Number(selectedInstrument.tick_value) : 0) }}</strong></p>
-          <p><span>Estimated Costs</span><strong>{{ asCurrency(calculationResult.estimated_costs) }}</strong></p>
-          <p v-if="calculationResult.pip_or_point_value_per_lot !== null">
-            <span>Pip/Point Value (1 lot)</span>
-            <strong>{{ asCurrency(calculationResult.pip_or_point_value_per_lot) }}</strong>
+          <p><span>Tick Value (USD, 1 lot)</span><strong>{{ calculationResult.tick_value_per_lot_usd === null ? '-' : asCurrency(calculationResult.tick_value_per_lot_usd) }}</strong></p>
+          <p v-if="calculationResult.pip_value_per_lot_usd !== null">
+            <span>Pip Value (USD, 1 lot)</span>
+            <strong>{{ asCurrency(calculationResult.pip_value_per_lot_usd) }}</strong>
           </p>
+          <p><span>Estimated Costs</span><strong>{{ asCurrency(calculationResult.estimated_costs) }}</strong></p>
         </div>
 
         <div class="lot-calc-stop-line panel">

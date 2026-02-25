@@ -100,6 +100,16 @@ export interface Instrument {
   is_active: boolean
 }
 
+export interface FxRate {
+  id: number
+  from_currency: string
+  to_currency: string
+  rate: string
+  rate_updated_at?: string | null
+  created_at?: string
+  updated_at?: string
+}
+
 export interface TradeImage {
   id: number
   image_url: string
