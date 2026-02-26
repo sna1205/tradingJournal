@@ -149,3 +149,8 @@ docker compose --env-file .env -f docker-compose.prod.yml up -d --build
 - No authentication is included by design.
 - Vite proxies `/api` using `VITE_PROXY_TARGET` in dev.
 - Frontend API prefix is controlled by `VITE_API_BASE_URL` (default `/api`).
+- Vercel deployments require `API_BASE_URL` set to your backend API root (example: `https://api.your-domain.com/api`) so `/api/*` can be proxied by `api/[...path].js`.
+
+## Railway Deployment
+- Use the repo guide: `docs/railway-deployment.md`
+- Deploy as 3 Railway services: `frontend`, `backend`, and `MySQL`

@@ -14,4 +14,5 @@ fi
 php artisan storage:link >/dev/null 2>&1 || true
 php artisan config:cache
 
-exec php artisan serve --host=0.0.0.0 --port=8000
+APP_PORT="${PORT:-8000}"
+exec php artisan serve --host=0.0.0.0 --port="$APP_PORT"
