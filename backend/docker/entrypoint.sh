@@ -5,6 +5,19 @@ if [ ! -f .env ] && [ -f .env.production.example ]; then
   cp .env.production.example .env
 fi
 
+# Laravel console bootstrap requires a valid absolute app URL.
+# Fallback if Railway variable interpolation leaves APP_URL malformed.
+APP_URL="${APP_URL:-http://localhost}"
+case "$APP_URL" in
+  http://*|https://*)
+    ;;
+  *)
+    echo "WARN: APP_URL is invalid ('${APP_URL}'); falling back to http://localhost" >&2
+    APP_URL="http://localhost"
+    ;;
+esac
+export APP_URL
+
 # Railway volume mounts can start empty; ensure Laravel writable paths exist.
 mkdir -p \
   storage/app/public \

@@ -94,10 +94,12 @@ If backend deployment fails, verify these first:
 3. Backend port is `8000` when Railway prompts for "port your app is listening on".
 4. A backend volume is attached at `/var/www/html/storage`.
 5. `APP_KEY` is set and starts with `base64:`.
-6. DB variables point to the Railway MySQL service:
+6. `APP_URL` is a real absolute URL (example: `https://your-frontend-domain.com`), not an unresolved `${{...}}` template.
+7. DB variables point to the Railway MySQL service:
    - `DB_HOST=${{MySQL.MYSQLHOST}}`
    - `DB_PORT=${{MySQL.MYSQLPORT}}`
    - `DB_DATABASE=${{MySQL.MYSQLDATABASE}}`
    - `DB_USERNAME=${{MySQL.MYSQLUSER}}`
    - `DB_PASSWORD=${{MySQL.MYSQLPASSWORD}}`
-7. Keep `RUN_MIGRATIONS=false` for first successful boot. Run migrations manually from Railway shell, then enable it only if you want auto-migrate on each deploy.
+8. Railway service references are case-sensitive (for example `Backend` vs `backend`).
+9. Keep `RUN_MIGRATIONS=false` for first successful boot. Run migrations manually from Railway shell, then enable it only if you want auto-migrate on each deploy.
