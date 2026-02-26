@@ -64,6 +64,7 @@ API_UPSTREAM_URL=http://${{backend.RAILWAY_PRIVATE_DOMAIN}}
 
 This keeps browser requests same-origin (`/api`, `/storage`) while Nginx proxies privately to the backend service.
 If your Railway service names differ, update the `${{service.VAR}}` references to match your actual names.
+`API_UPSTREAM_URL` must be a full URL with scheme (`http://` or `https://`).
 
 ## 4) Networking
 
