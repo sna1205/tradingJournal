@@ -40,6 +40,31 @@ const heroSubtext = computed(() =>
     : 'Create a dedicated user workspace so all trades, accounts, and reports stay scoped to you.'
 )
 
+function extractApiErrorMessage(payload: unknown): string | null {
+  if (typeof payload === 'string') {
+    const trimmed = payload.trim()
+    if (trimmed === '') return null
+    if (/<(!doctype|html)/i.test(trimmed)) {
+      return 'API returned HTML instead of JSON. Verify Railway API_UPSTREAM_URL and backend route configuration.'
+    }
+    return trimmed
+  }
+
+  if (!payload || typeof payload !== 'object') return null
+
+  const maybeMessage = (payload as { message?: unknown }).message
+  if (typeof maybeMessage === 'string' && maybeMessage.trim() !== '') {
+    return maybeMessage
+  }
+
+  const maybeErrors = (payload as { errors?: Record<string, unknown> }).errors
+  if (!maybeErrors || typeof maybeErrors !== 'object') return null
+
+  return Object.values(maybeErrors)
+    .flat()
+    .find((value) => typeof value === 'string' && value.trim() !== '') as string | null
+}
+
 async function submit() {
   errorMessage.value = null
   if (!canSubmit.value) return
@@ -64,19 +89,14 @@ async function submit() {
         return
       }
 
-      const message = error.response?.data?.message
-      if (typeof message === 'string' && message.trim() !== '') {
-        errorMessage.value = message
+      const apiErrorMessage = extractApiErrorMessage(error.response?.data)
+      if (apiErrorMessage) {
+        errorMessage.value = apiErrorMessage
         return
       }
 
-      const firstError = Object.values(error.response?.data?.errors ?? {})
-        .flat()
-        .find((value) => typeof value === 'string')
-      if (typeof firstError === 'string' && firstError.trim() !== '') {
-        errorMessage.value = firstError
-        return
-      }
+      errorMessage.value = `Authentication failed (HTTP ${error.response.status}).`
+      return
     }
 
     errorMessage.value = 'Authentication failed.'

@@ -1,37 +1,48 @@
 # Railway Deployment
 
-This project deploys cleanly to Railway as 3 services:
-- `backend` (Laravel API via Dockerfile)
-- `frontend` (Vite static build + Nginx proxy via Dockerfile)
-- `MySQL` (Railway database service)
+Deploy this repo as 3 Railway services:
+- `Backend` (Laravel API, `/backend`)
+- `Frontend` (Vite build + Nginx, `/frontend`)
+- `MySQL` (Railway template database)
 
-## 1) Create services from this repo
+## Critical rules
 
-1. Create a new Railway project.
-2. Add a service from GitHub for `backend` and set:
+1. Do not wrap Railway env values in quotes.
+2. URL env values must be full URLs with scheme (`http://` or `https://`).
+3. `${{Service.VAR}}` references are case-sensitive (`Backend` is different from `backend`).
+4. Backend requires a mounted volume at `/var/www/html/storage`.
+
+## 1) Create services
+
+1. Create a Railway project.
+2. Add service `Backend` from this repo:
    - Root Directory: `/backend`
-   - Config as Code path: `/backend/railway.json`
-3. Add a second service from the same repo for `frontend` and set:
+   - Config as Code: `/backend/railway.json`
+3. Add service `Frontend` from this repo:
    - Root Directory: `/frontend`
-   - Config as Code path: `/frontend/railway.json`
-4. Add a `MySQL` service from the Railway template list.
+   - Config as Code: `/frontend/railway.json`
+4. Add service `MySQL` from Railway templates.
 
-## 2) Configure backend variables
+## 2) Backend config
 
-Set these variables on the `backend` service:
+Set backend variables:
 
 ```env
 APP_NAME=Trading Journal API
 APP_ENV=production
 APP_DEBUG=false
-APP_KEY=base64:...generated-with-php-artisan-key-generate-show
-APP_URL=https://izledger.up.railway.app
+APP_KEY=base64:YOUR_REAL_KEY
+APP_URL=https://<backend-domain>.up.railway.app
 
 LOG_CHANNEL=stack
 LOG_LEVEL=warning
-CACHE_STORE=file
 SESSION_DRIVER=file
+CACHE_STORE=file
 QUEUE_CONNECTION=database
+RUN_MIGRATIONS=false
+
+FILESYSTEM_DISK=public
+TRADE_IMAGES_DISK=public
 
 DB_CONNECTION=mysql
 DB_HOST=${{MySQL.MYSQLHOST}}
@@ -39,68 +50,64 @@ DB_PORT=${{MySQL.MYSQLPORT}}
 DB_DATABASE=${{MySQL.MYSQLDATABASE}}
 DB_USERNAME=${{MySQL.MYSQLUSER}}
 DB_PASSWORD=${{MySQL.MYSQLPASSWORD}}
-
-RUN_MIGRATIONS=false
-FILESYSTEM_DISK=public
-TRADE_IMAGES_DISK=public
 ```
 
-Generate `APP_KEY` locally with:
+Attach a volume to backend:
+- Service: `Backend`
+- Mount path: `/var/www/html/storage`
+
+Generate key locally:
 
 ```bash
 cd backend
 php artisan key:generate --show
 ```
 
-Attach a Railway volume to `backend` at `/var/www/html/storage` (required by backend `railway.json`).
+## 3) Frontend config
 
-## 3) Configure frontend variables
-
-Set this on the `frontend` service:
+Recommended stable option (avoid reference-resolution issues):
 
 ```env
-API_UPSTREAM_URL=http://${{backend.RAILWAY_PRIVATE_DOMAIN}}
+API_UPSTREAM_URL=https://<backend-domain>.up.railway.app
 ```
 
-This keeps browser requests same-origin (`/api`, `/storage`) while Nginx proxies privately to the backend service.
-If your Railway service names differ, update the `${{service.VAR}}` references to match your actual names.
-`API_UPSTREAM_URL` must be a full URL with scheme (`http://` or `https://`).
+`API_UPSTREAM_URL` is required on Railway and must be backend origin only (no `/api` suffix).
+
+Alternative (private networking reference):
+
+```env
+API_UPSTREAM_URL=http://${{Backend.RAILWAY_PRIVATE_DOMAIN}}
+```
 
 ## 4) Networking
 
-1. Enable a public domain for `frontend`.
-2. Optionally enable a public domain for `backend` (useful for direct `/up` checks), but it is not required for app traffic.
+1. Enable public domain for `Frontend`.
+2. Enable public domain for `Backend` (recommended for direct checks).
 
-## 5) Deploy and verify
+## 5) Deploy order
 
-After deploy, validate:
+1. Deploy `Backend`.
+2. Deploy `Frontend`.
 
-- Frontend homepage loads from the frontend public domain.
-- `GET /healthz` on frontend returns `ok`.
-- `GET /api/health` through frontend returns JSON.
-- Image upload/read paths under `/storage/...` work.
+## 6) Verify
 
-If `RUN_MIGRATIONS=false`, run migrations once from backend service shell:
+1. `https://<frontend-domain>/healthz` returns `ok`.
+2. `https://<backend-domain>/up` returns healthy response.
+3. `https://<frontend-domain>/api/health` returns backend JSON.
+
+Run migrations once after backend is healthy:
 
 ```bash
 php artisan migrate --force
 ```
 
-## 6) Backend Failure Checklist
+## 7) Common failures
 
-If backend deployment fails, verify these first:
-
-1. Service root directory is exactly `/backend`.
-2. Dockerfile is used (no custom start command overriding Docker `ENTRYPOINT`).
-3. Backend port is `8000` when Railway prompts for "port your app is listening on".
-4. A backend volume is attached at `/var/www/html/storage`.
-5. `APP_KEY` is set and starts with `base64:`.
-6. `APP_URL` is a real absolute URL (example: `https://your-frontend-domain.com`), not an unresolved `${{...}}` template.
-7. DB variables point to the Railway MySQL service:
-   - `DB_HOST=${{MySQL.MYSQLHOST}}`
-   - `DB_PORT=${{MySQL.MYSQLPORT}}`
-   - `DB_DATABASE=${{MySQL.MYSQLDATABASE}}`
-   - `DB_USERNAME=${{MySQL.MYSQLUSER}}`
-   - `DB_PASSWORD=${{MySQL.MYSQLPASSWORD}}`
-8. Railway service references are case-sensitive (for example `Backend` vs `backend`).
-9. Keep `RUN_MIGRATIONS=false` for first successful boot. Run migrations manually from Railway shell, then enable it only if you want auto-migrate on each deploy.
+1. `Invalid URI: Scheme is malformed` (backend):
+   - `APP_URL` is invalid or unresolved `${{...}}`.
+2. `invalid URL prefix in /etc/nginx/conf.d/default.conf` (frontend):
+   - `API_UPSTREAM_URL` is invalid or unresolved `${{...}}`.
+3. Backend stuck unhealthy after adding volume:
+   - volume path is wrong; must be `/var/www/html/storage`.
+4. Auth/API calls return HTML or 404 from frontend:
+   - `API_UPSTREAM_URL` incorrectly includes `/api`; set it to backend origin only.

@@ -42,6 +42,8 @@ services:
     depends_on:
       db:
         condition: service_healthy
+    volumes:
+      - api_storage:/var/www/html/storage
     healthcheck:
       test: ["CMD-SHELL", "php -r \"exit((int)!@file_get_contents('http://127.0.0.1:8000/up'));\""]
       interval: 15s
@@ -61,3 +63,4 @@ services:
 
 volumes:
   db_data:
+  api_storage:
