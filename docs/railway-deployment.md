@@ -25,7 +25,7 @@ APP_NAME=Trading Journal API
 APP_ENV=production
 APP_DEBUG=false
 APP_KEY=base64:...generated-with-php-artisan-key-generate-show
-APP_URL=https://${{backend.RAILWAY_PUBLIC_DOMAIN}}
+APP_URL=https://izledger.up.railway.app
 
 LOG_CHANNEL=stack
 LOG_LEVEL=warning
@@ -52,7 +52,7 @@ cd backend
 php artisan key:generate --show
 ```
 
-Attach a Railway volume to `backend` at `/var/www/html/storage`.
+Attach a Railway volume to `backend` at `/var/www/html/storage` (required by backend `railway.json`).
 
 ## 3) Configure frontend variables
 
@@ -75,5 +75,23 @@ If your Railway service names differ, update the `${{service.VAR}}` references t
 After deploy, validate:
 
 - Frontend homepage loads from the frontend public domain.
+- `GET /healthz` on frontend returns `ok`.
 - `GET /api/health` through frontend returns JSON.
 - Image upload/read paths under `/storage/...` work.
+
+## 6) Backend Failure Checklist
+
+If backend deployment fails, verify these first:
+
+1. Service root directory is exactly `/backend`.
+2. Dockerfile is used (no custom start command overriding Docker `ENTRYPOINT`).
+3. Backend port is `8000` when Railway prompts for "port your app is listening on".
+4. A backend volume is attached at `/var/www/html/storage`.
+5. `APP_KEY` is set and starts with `base64:`.
+6. DB variables point to the Railway MySQL service:
+   - `DB_HOST=${{MySQL.MYSQLHOST}}`
+   - `DB_PORT=${{MySQL.MYSQLPORT}}`
+   - `DB_DATABASE=${{MySQL.MYSQLDATABASE}}`
+   - `DB_USERNAME=${{MySQL.MYSQLUSER}}`
+   - `DB_PASSWORD=${{MySQL.MYSQLPASSWORD}}`
+7. If startup fails on migrations, temporarily set `RUN_MIGRATIONS=false` to confirm app boot, then run migrations manually and re-enable it.
