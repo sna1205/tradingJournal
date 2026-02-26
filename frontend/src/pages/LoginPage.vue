@@ -57,6 +57,13 @@ async function submit() {
     await router.replace(redirectTarget)
   } catch (error) {
     if (isAxiosError(error)) {
+      if (!error.response) {
+        errorMessage.value = error.code === 'ECONNABORTED'
+          ? 'Authentication request timed out. Please try again.'
+          : 'Unable to reach the API. Verify production API URL/proxy and CORS settings.'
+        return
+      }
+
       const message = error.response?.data?.message
       if (typeof message === 'string' && message.trim() !== '') {
         errorMessage.value = message

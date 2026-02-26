@@ -37,6 +37,7 @@ services:
       DB_DATABASE: trading_journal
       DB_USERNAME: trading
       DB_PASSWORD: ${DB_PASSWORD:-change-me}
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-*}
       RUN_MIGRATIONS: ${RUN_MIGRATIONS:-true}
     depends_on:
       db:
