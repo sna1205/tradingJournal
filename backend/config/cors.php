@@ -22,7 +22,10 @@ return [
         explode(',', (string) env('CORS_ALLOWED_ORIGINS', '*'))
     )),
 
-    'allowed_origins_patterns' => [],
+    'allowed_origins_patterns' => array_filter(array_map(
+        static fn (string $pattern) => trim($pattern),
+        explode(',', (string) env('CORS_ALLOWED_ORIGIN_PATTERNS', ''))
+    )),
 
     'allowed_headers' => ['*'],
 
@@ -30,6 +33,9 @@ return [
 
     'max_age' => 0,
 
-    'supports_credentials' => false,
+    'supports_credentials' => filter_var(
+        env('CORS_SUPPORTS_CREDENTIALS', false),
+        FILTER_VALIDATE_BOOL
+    ),
 
 ];

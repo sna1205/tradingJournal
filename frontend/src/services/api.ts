@@ -5,6 +5,9 @@ const AUTH_TOKEN_KEY = 'tj_auth_token'
 const api = axios.create({
   baseURL: import.meta.env.VITE_API_BASE_URL || '/api',
   timeout: 10000,
+  withCredentials: ['1', 'true'].includes(
+    String(import.meta.env.VITE_API_WITH_CREDENTIALS || '').toLowerCase()
+  ),
 })
 
 export function getAuthToken(): string | null {
