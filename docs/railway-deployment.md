@@ -40,7 +40,7 @@ DB_DATABASE=${{MySQL.MYSQLDATABASE}}
 DB_USERNAME=${{MySQL.MYSQLUSER}}
 DB_PASSWORD=${{MySQL.MYSQLPASSWORD}}
 
-RUN_MIGRATIONS=true
+RUN_MIGRATIONS=false
 FILESYSTEM_DISK=public
 TRADE_IMAGES_DISK=public
 ```
@@ -79,6 +79,12 @@ After deploy, validate:
 - `GET /api/health` through frontend returns JSON.
 - Image upload/read paths under `/storage/...` work.
 
+If `RUN_MIGRATIONS=false`, run migrations once from backend service shell:
+
+```bash
+php artisan migrate --force
+```
+
 ## 6) Backend Failure Checklist
 
 If backend deployment fails, verify these first:
@@ -94,4 +100,4 @@ If backend deployment fails, verify these first:
    - `DB_DATABASE=${{MySQL.MYSQLDATABASE}}`
    - `DB_USERNAME=${{MySQL.MYSQLUSER}}`
    - `DB_PASSWORD=${{MySQL.MYSQLPASSWORD}}`
-7. If startup fails on migrations, temporarily set `RUN_MIGRATIONS=false` to confirm app boot, then run migrations manually and re-enable it.
+7. Keep `RUN_MIGRATIONS=false` for first successful boot. Run migrations manually from Railway shell, then enable it only if you want auto-migrate on each deploy.
