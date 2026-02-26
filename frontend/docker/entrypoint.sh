@@ -2,7 +2,14 @@
 set -eu
 
 : "${PORT:=80}"
-: "${API_UPSTREAM_URL:=http://api:8000}"
+
+if [ -z "${API_UPSTREAM_URL:-}" ]; then
+  if [ -n "${RAILWAY_PROJECT_ID:-}" ] || [ -n "${RAILWAY_ENVIRONMENT_ID:-}" ] || [ -n "${RAILWAY_SERVICE_ID:-}" ]; then
+    API_UPSTREAM_URL="http://127.0.0.1:8000"
+  else
+    API_UPSTREAM_URL="http://api:8000"
+  fi
+fi
 
 API_UPSTREAM_URL="${API_UPSTREAM_URL%/}"
 export PORT API_UPSTREAM_URL
