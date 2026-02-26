@@ -5,6 +5,16 @@ if [ ! -f .env ] && [ -f .env.production.example ]; then
   cp .env.production.example .env
 fi
 
+# Railway volume mounts can start empty; ensure Laravel writable paths exist.
+mkdir -p \
+  storage/app/public \
+  storage/framework/cache \
+  storage/framework/sessions \
+  storage/framework/views \
+  storage/logs \
+  bootstrap/cache
+chown -R www-data:www-data storage bootstrap/cache >/dev/null 2>&1 || true
+
 # Remove stale local caches that may reference dev-only providers.
 rm -f bootstrap/cache/*.php
 
