@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-if [ ! -f .env ]; then
+if [ ! -f .env ] && [ -f .env.production.example ]; then
   cp .env.production.example .env
 fi
 
