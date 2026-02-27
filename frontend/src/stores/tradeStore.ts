@@ -76,6 +76,17 @@ export interface TradePayload {
   tag_ids?: number[]
   risk_override_reason?: string | null
   followed_rules: boolean
+  checklist_responses?: Array<{
+    checklist_item_id: number
+    value: unknown
+  }>
+  checklist_evaluation?: {
+    status: 'not_ready' | 'almost' | 'ready'
+    ready: boolean
+    completed_required: number
+    total_required: number
+  }
+  precheck_snapshot?: TradePrecheckResult['calculated'] | null
   checklist_incomplete?: boolean
   emotion: TradeEmotion
   session?: string

@@ -14,7 +14,9 @@ class Checklist extends Model
     protected $fillable = [
         'user_id',
         'account_id',
+        'strategy_model_id',
         'name',
+        'revision',
         'scope',
         'enforcement_mode',
         'is_active',
@@ -23,6 +25,8 @@ class Checklist extends Model
     protected $casts = [
         'user_id' => 'integer',
         'account_id' => 'integer',
+        'strategy_model_id' => 'integer',
+        'revision' => 'integer',
         'is_active' => 'boolean',
     ];
 
@@ -34,6 +38,11 @@ class Checklist extends Model
     public function user(): BelongsTo
     {
         return $this->belongsTo(User::class);
+    }
+
+    public function strategyModel(): BelongsTo
+    {
+        return $this->belongsTo(StrategyModel::class);
     }
 
     public function items(): HasMany

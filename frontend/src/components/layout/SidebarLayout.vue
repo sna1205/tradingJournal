@@ -140,7 +140,7 @@ const currentItem = computed(() =>
 const showPageHero = computed(() => currentItem.value.to !== '/dashboard')
 const compactHeroRoutes = new Set(['/trades', '/missed-trades'])
 const useCompactHero = computed(() => compactHeroRoutes.has(route.path))
-const hideGlobalFabOnRoutes = new Set(['trades-new', 'trades-edit', 'tools-pre-trade-check', 'tools-lots-calculate', 'settings-checklists'])
+const hideGlobalFabOnRoutes = new Set(['trades-new', 'trades-edit', 'tools-lots-calculate', 'settings-checklists'])
 const showGlobalFab = computed(() => !hideGlobalFabOnRoutes.has(String(route.name ?? '')))
 const mobileThemeMenuOpen = ref(false)
 const mobileNavOpen = ref(false)

@@ -5,11 +5,13 @@ import ChecklistListPanel from '@/components/checklists/ChecklistListPanel.vue'
 import ChecklistEditor from '@/components/checklists/ChecklistEditor.vue'
 import { useChecklistStore } from '@/stores/checklistStore'
 import { useAccountStore } from '@/stores/accountStore'
+import { useTradeStore } from '@/stores/tradeStore'
 import { useUiStore } from '@/stores/uiStore'
 import type { ChecklistItemType, ChecklistScope } from '@/types/checklist'
 
 const checklistStore = useChecklistStore()
 const accountStore = useAccountStore()
+const tradeStore = useTradeStore()
 const uiStore = useUiStore()
 
 const {
@@ -22,14 +24,21 @@ const {
   saving,
 } = storeToRefs(checklistStore)
 const { accounts } = storeToRefs(accountStore)
+const { strategyModels } = storeToRefs(tradeStore)
 
 const scopeFilter = ref<'' | ChecklistScope>('')
 const search = ref('')
+const unsavedChanges = ref(false)
+const lastSavedAt = ref<string | null>(null)
 let filterTimer: ReturnType<typeof setTimeout> | null = null
 const bootstrapAttempted = ref(false)
 
 const accountRows = computed(() =>
   accounts.value.map((account) => ({ id: account.id, name: account.name }))
+)
+
+const strategyModelRows = computed(() =>
+  strategyModels.value.map((strategy) => ({ id: strategy.id, name: strategy.name }))
 )
 
 const checklistStatsByChecklistId = computed<Record<number, {
@@ -107,24 +116,33 @@ async function createChecklist(payload: {
   scope: ChecklistScope
   enforcement_mode: 'soft' | 'strict'
   account_id?: number | null
+  strategy_model_id?: number | null
   is_active: boolean
 }) {
+  unsavedChanges.value = true
   try {
     await checklistStore.createChecklist(payload)
     if (checklistStore.selectedChecklistId) {
       await checklistStore.fetchChecklistItems(checklistStore.selectedChecklistId)
     }
     await preloadChecklistStats()
+    lastSavedAt.value = new Date().toISOString()
+    unsavedChanges.value = false
     uiStore.toast({ type: 'success', title: 'Checklist created' })
   } catch {
+    unsavedChanges.value = true
     uiStore.toast({ type: 'error', title: 'Failed to create checklist' })
   }
 }
 
 async function updateChecklist(checklistId: number, payload: Record<string, unknown>) {
+  unsavedChanges.value = true
   try {
     await checklistStore.updateChecklist(checklistId, payload)
+    lastSavedAt.value = new Date().toISOString()
+    unsavedChanges.value = false
   } catch {
+    unsavedChanges.value = true
     uiStore.toast({ type: 'error', title: 'Failed to update checklist' })
   }
 }
@@ -164,35 +182,51 @@ async function createItem(checklistId: number, payload: {
   config?: Record<string, unknown>
   is_active?: boolean
 }) {
+  unsavedChanges.value = true
   try {
     await checklistStore.createItem(checklistId, payload)
+    lastSavedAt.value = new Date().toISOString()
+    unsavedChanges.value = false
     uiStore.toast({ type: 'success', title: 'Rule added' })
   } catch {
+    unsavedChanges.value = true
     uiStore.toast({ type: 'error', title: 'Failed to add rule' })
   }
 }
 
 async function updateItem(itemId: number, payload: Record<string, unknown>) {
+  unsavedChanges.value = true
   try {
     await checklistStore.updateItem(itemId, payload)
+    lastSavedAt.value = new Date().toISOString()
+    unsavedChanges.value = false
   } catch {
+    unsavedChanges.value = true
     uiStore.toast({ type: 'error', title: 'Failed to update rule' })
   }
 }
 
 async function removeItem(checklistId: number, itemId: number) {
+  unsavedChanges.value = true
   try {
     await checklistStore.removeItem(checklistId, itemId)
+    lastSavedAt.value = new Date().toISOString()
+    unsavedChanges.value = false
     uiStore.toast({ type: 'success', title: 'Rule archived' })
   } catch {
+    unsavedChanges.value = true
     uiStore.toast({ type: 'error', title: 'Failed to archive rule' })
   }
 }
 
 async function reorderItems(checklistId: number, orderedIds: number[]) {
+  unsavedChanges.value = true
   try {
     await checklistStore.reorderItems(checklistId, orderedIds)
+    lastSavedAt.value = new Date().toISOString()
+    unsavedChanges.value = false
   } catch {
+    unsavedChanges.value = true
     uiStore.toast({ type: 'error', title: 'Failed to reorder rules' })
   }
 }
@@ -224,38 +258,49 @@ async function ensureStarterChecklistIfEmpty() {
         title: 'Market context aligns with thesis',
         type: 'checkbox',
         required: true,
-        category: 'Context',
+        category: 'Market Context',
       },
       {
         title: 'No high-impact news conflict',
         type: 'checkbox',
         required: true,
-        category: 'Context',
+        category: 'Market Context',
       },
       {
         title: 'Setup trigger is valid',
         type: 'checkbox',
         required: true,
-        category: 'Setup',
+        category: 'Setup Validation',
       },
       {
         title: 'Risk per trade (%)',
         type: 'number',
         required: true,
-        category: 'Risk',
-        config: { min: 0.1, max: 2, step: 0.1, unit: '%' },
+        category: 'Risk & Compliance',
+        config: {
+          min: 0.1,
+          max: 2,
+          step: 0.1,
+          unit: '%',
+          comparator: '<=',
+          threshold: 1,
+          auto: 'risk_engine',
+          auto_metric: 'risk_percent',
+          risk_linked: true,
+          weight: 'hard',
+        },
       },
       {
         title: 'Stop loss placed at invalidation',
         type: 'checkbox',
         required: true,
-        category: 'Risk',
+        category: 'Risk & Compliance',
       },
       {
         title: 'Execution timing quality',
         type: 'dropdown',
         required: false,
-        category: 'Execution',
+        category: 'Setup Validation',
         config: { options: ['A+', 'A', 'B', 'C'] },
       },
       {
@@ -265,8 +310,8 @@ async function ensureStarterChecklistIfEmpty() {
         category: 'Psychology',
         config: {
           min: 1,
-          max: 5,
-          labels: { 1: 'Tilted', 3: 'Neutral', 5: 'Calm' },
+          max: 3,
+          labels: { 1: 'Calm', 2: 'Neutral', 3: 'Tilted' },
         },
       },
       {
@@ -320,7 +365,10 @@ async function preloadChecklistStats() {
 
 onMounted(async () => {
   try {
-    await accountStore.fetchAccounts()
+    await Promise.all([
+      accountStore.fetchAccounts(),
+      tradeStore.fetchDictionaries(),
+    ])
     await loadChecklists()
   } catch {
     uiStore.toast({
@@ -332,13 +380,8 @@ onMounted(async () => {
 </script>
 
 <template>
-  <div class="space-y-4 checklist-control-page">
-    <header class="checklist-page-header">
-      <h1 class="section-title">Pre-Trade Control System</h1>
-      <p class="section-note">Discipline-first rule editor with fast execution flow.</p>
-    </header>
-
-    <div class="checklist-builder-layout">
+  <section class="checklist-premium-page">
+    <div class="checklist-premium-layout">
       <ChecklistListPanel
         :checklists="checklists"
         :selected-checklist-id="selectedChecklistId"
@@ -347,11 +390,13 @@ onMounted(async () => {
         :loading="loading"
         :saving="saving"
         :accounts="accountRows"
+        :strategy-models="strategyModelRows"
         :stats-by-checklist-id="checklistStatsByChecklistId"
         @select="checklistStore.setSelectedChecklist"
         @scope-change="scopeFilter = $event"
         @search-change="search = String($event)"
         @create="createChecklist"
+        class="checklist-premium-library"
       />
 
       <ChecklistEditor
@@ -359,7 +404,10 @@ onMounted(async () => {
         :items="selectedItems"
         :loading="loading"
         :saving="saving"
+        :unsaved-changes="unsavedChanges"
+        :last-saved-at="lastSavedAt"
         :accounts="accountRows"
+        :strategy-models="strategyModelRows"
         @update-checklist="updateChecklist"
         @duplicate-checklist="duplicateChecklist"
         @remove-checklist="removeChecklist"
@@ -367,7 +415,53 @@ onMounted(async () => {
         @update-item="updateItem"
         @remove-item="removeItem"
         @reorder-items="reorderItems"
+        class="checklist-premium-editor"
       />
     </div>
-  </div>
+  </section>
 </template>
+
+<style scoped>
+.checklist-premium-page {
+  position: relative;
+  display: block;
+  border-radius: 18px;
+  padding: 1rem;
+  overflow: clip;
+  background:
+    radial-gradient(circle at 22% -6%, color-mix(in srgb, var(--primary-soft) 28%, transparent 72%), transparent 42%),
+    radial-gradient(circle at 80% 3%, color-mix(in srgb, var(--primary-soft) 16%, transparent 84%), transparent 34%),
+    color-mix(in srgb, #02070d 70%, var(--bg) 30%);
+}
+
+.checklist-premium-page::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0.14;
+  background-image:
+    linear-gradient(to right, color-mix(in srgb, var(--border) 66%, transparent 34%) 1px, transparent 1px),
+    linear-gradient(to bottom, color-mix(in srgb, var(--border) 62%, transparent 38%) 1px, transparent 1px);
+  background-size: 52px 52px;
+}
+
+.checklist-premium-layout {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 1rem;
+  align-items: start;
+}
+
+.checklist-premium-library {
+  position: static;
+}
+
+@media (max-width: 760px) {
+  .checklist-premium-page {
+    padding: 0.8rem;
+  }
+}
+</style>

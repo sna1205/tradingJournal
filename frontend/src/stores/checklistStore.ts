@@ -6,6 +6,7 @@ import type { Checklist, ChecklistEnforcementMode, ChecklistItem, ChecklistItemT
 interface ChecklistFilter {
   scope?: ChecklistScope | ''
   accountId?: number | null
+  strategyModelId?: number | null
   search?: string
 }
 
@@ -13,6 +14,7 @@ interface CreateChecklistPayload {
   name: string
   scope: ChecklistScope
   account_id?: number | null
+  strategy_model_id?: number | null
   enforcement_mode: ChecklistEnforcementMode
   is_active?: boolean
 }
@@ -50,6 +52,7 @@ export const useChecklistStore = defineStore('checklists', () => {
         params: {
           scope: filter.scope || undefined,
           accountId: filter.accountId ?? undefined,
+          strategyModelId: filter.strategyModelId ?? undefined,
           search: filter.search || undefined,
         },
       })

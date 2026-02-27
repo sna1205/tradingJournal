@@ -64,6 +64,7 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('trade-tags', [DictionaryController::class, 'tradeTags']);
         Route::get('sessions', [DictionaryController::class, 'sessions']);
     });
+    Route::get('trade-checklist/resolve', [TradeChecklistResponseController::class, 'resolve']);
     Route::post('trades/precheck', [TradeController::class, 'precheck']);
     Route::apiResource('trades', TradeController::class);
     Route::get('trades/{trade}/checklist-responses', [TradeChecklistResponseController::class, 'show']);

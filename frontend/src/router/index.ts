@@ -8,7 +8,6 @@ const MissedTrades = () => import('@/pages/MissedTrades.vue')
 const MissedTradeFormPage = () => import('@/pages/MissedTradeFormPage.vue')
 const Milestones = () => import('@/pages/Milestones.vue')
 const Accounts = () => import('@/pages/Accounts.vue')
-const PreTradeCheckPage = () => import('@/pages/PreTradeCheckPage.vue')
 const LotsCalculatorPage = () => import('@/pages/LotsCalculatorPage.vue')
 const ChecklistBuilderPage = () => import('@/pages/ChecklistBuilderPage.vue')
 const LoginPage = () => import('@/pages/LoginPage.vue')
@@ -63,11 +62,6 @@ const router = createRouter({
       path: '/trades/new',
       name: 'trades-new',
       component: TradeFormPage,
-    },
-    {
-      path: '/tools/pre-trade-check',
-      name: 'tools-pre-trade-check',
-      component: PreTradeCheckPage,
     },
     {
       path: '/tools/lots-calculate',

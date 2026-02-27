@@ -1,7 +1,14 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import { ChevronDown } from 'lucide-vue-next'
-import type { Checklist, TradeChecklistItemWithResponse, TradeChecklistReadiness, TradeChecklistResponseRecord } from '@/types/checklist'
+import type {
+  Checklist,
+  TradeChecklistExecutionSnapshot,
+  TradeChecklistItemWithResponse,
+  TradeChecklistReadiness,
+  TradeChecklistResponseRecord,
+} from '@/types/checklist'
+import type { TradePrecheckResult } from '@/stores/tradeStore'
 import TradeChecklistBody from '@/components/checklists/TradeChecklistBody.vue'
 
 const props = withDefaults(
@@ -11,11 +18,13 @@ const props = withDefaults(
     optionalItems: TradeChecklistItemWithResponse[]
     archivedResponses: TradeChecklistResponseRecord[]
     readiness: TradeChecklistReadiness
+    executionSnapshot?: TradeChecklistExecutionSnapshot | null
     loading?: boolean
     saving?: boolean
     submitAttempted?: boolean
     strictMode?: boolean
     mode?: 'auto' | 'desktop' | 'mobile'
+    riskPrecheck?: TradePrecheckResult | null
   }>(),
   {
     loading: false,
@@ -23,26 +32,18 @@ const props = withDefaults(
     submitAttempted: false,
     strictMode: false,
     mode: 'auto',
+    riskPrecheck: null,
+    executionSnapshot: null,
   }
 )
 
 const emit = defineEmits<{
   (event: 'update-response', itemId: number, value: unknown): void
+  (event: 'evaluation-change', payload: { failedRequiredIds: number[]; firstFailingId: number | null }): void
 }>()
 
 const mobileOpen = ref(props.mode === 'mobile')
-
-const summaryToneClass = computed(() => {
-  if (props.readiness.status === 'ready') return 'is-ready'
-  if (props.readiness.status === 'almost') return 'is-almost'
-  return 'is-not-ready'
-})
-
-const summaryLabel = computed(() => {
-  if (props.readiness.status === 'ready') return 'Ready'
-  if (props.readiness.status === 'almost') return 'Almost'
-  return 'Not Ready'
-})
+const summaryCount = computed(() => `${props.readiness.completed_required}/${props.readiness.total_required}`)
 
 const isDesktopOnly = computed(() => props.mode === 'desktop')
 const isMobileOnly = computed(() => props.mode === 'mobile')
@@ -56,12 +57,15 @@ const isMobileOnly = computed(() => props.mode === 'mobile')
       :optional-items="optionalItems"
       :archived-responses="archivedResponses"
       :readiness="readiness"
+      :execution-snapshot="executionSnapshot"
       :loading="loading"
       :saving="saving"
       :submit-attempted="submitAttempted"
       :strict-mode="strictMode"
+      :risk-precheck="riskPrecheck"
       :show-header="true"
       @update-response="(itemId, value) => emit('update-response', itemId, value)"
+      @evaluation-change="(payload) => emit('evaluation-change', payload)"
     />
   </aside>
 
@@ -69,14 +73,13 @@ const isMobileOnly = computed(() => props.mode === 'mobile')
     <button
       type="button"
       class="trade-checklist-mobile-trigger"
-      :class="summaryToneClass"
       :aria-expanded="mobileOpen"
       @click="mobileOpen = !mobileOpen"
     >
-      <span class="trade-checklist-mobile-trigger-title">Pre-Trade Validation</span>
+      <span class="trade-checklist-mobile-trigger-title">Rules Checklist</span>
       <span class="trade-checklist-mobile-trigger-right">
-        <strong>{{ readiness.completed_required }}/{{ readiness.total_required }}</strong>
-        <em>{{ summaryLabel }}</em>
+        <strong>{{ summaryCount }}</strong>
+        <em>checked</em>
         <ChevronDown class="h-4 w-4" :class="{ 'rotate-180': mobileOpen }" />
       </span>
     </button>
@@ -88,12 +91,15 @@ const isMobileOnly = computed(() => props.mode === 'mobile')
         :optional-items="optionalItems"
         :archived-responses="archivedResponses"
         :readiness="readiness"
+        :execution-snapshot="executionSnapshot"
         :loading="loading"
         :saving="saving"
         :submit-attempted="submitAttempted"
         :strict-mode="strictMode"
+        :risk-precheck="riskPrecheck"
         :show-header="false"
         @update-response="(itemId, value) => emit('update-response', itemId, value)"
+        @evaluation-change="(payload) => emit('evaluation-change', payload)"
       />
     </div>
   </section>
@@ -102,6 +108,9 @@ const isMobileOnly = computed(() => props.mode === 'mobile')
 <style scoped>
 .trade-checklist-panel-desktop {
   min-width: 0;
+  position: sticky;
+  top: 5.8rem;
+  align-self: flex-start;
 }
 
 .trade-checklist-mobile-accordion {
@@ -112,9 +121,7 @@ const isMobileOnly = computed(() => props.mode === 'mobile')
   width: 100%;
   border-radius: 14px;
   border: 1px solid color-mix(in srgb, var(--border) 30%, transparent 70%);
-  background:
-    linear-gradient(135deg, color-mix(in srgb, var(--primary-soft) 20%, var(--panel) 80%), var(--panel)),
-    var(--panel);
+  background: color-mix(in srgb, #01050a 88%, var(--panel) 12%);
   padding: 0.58rem 0.66rem;
   display: flex;
   align-items: center;
@@ -136,6 +143,7 @@ const isMobileOnly = computed(() => props.mode === 'mobile')
 .trade-checklist-mobile-trigger-right strong {
   font-size: 0.74rem;
   font-weight: 800;
+  color: color-mix(in srgb, #35d89e 84%, var(--text) 16%);
 }
 
 .trade-checklist-mobile-trigger-right em {
@@ -148,18 +156,6 @@ const isMobileOnly = computed(() => props.mode === 'mobile')
 
 .trade-checklist-mobile-content {
   margin-top: 0.5rem;
-}
-
-.trade-checklist-mobile-trigger.is-ready {
-  border-color: color-mix(in srgb, var(--success) 44%, var(--border) 56%);
-}
-
-.trade-checklist-mobile-trigger.is-almost {
-  border-color: color-mix(in srgb, #d8ac4f 44%, var(--border) 56%);
-}
-
-.trade-checklist-mobile-trigger.is-not-ready {
-  border-color: color-mix(in srgb, var(--danger) 42%, var(--border) 58%);
 }
 
 @media (max-width: 1199px) {

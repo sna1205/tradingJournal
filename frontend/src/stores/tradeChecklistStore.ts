@@ -4,8 +4,10 @@ import api from '@/services/api'
 import type {
   Checklist,
   ChecklistItem,
+  TradeChecklistExecutionSnapshot,
   TradeChecklistItemWithResponse,
   TradeChecklistReadiness,
+  TradeChecklistResolverContext,
   TradeChecklistResponsePayload,
   TradeChecklistResponseRecord,
 } from '@/types/checklist'
@@ -23,12 +25,6 @@ function emptyReadiness(): TradeChecklistReadiness {
     missing_required: [],
     ready: true,
   }
-}
-
-function defaultValueForType(type: ChecklistItem['type']): unknown {
-  if (type === 'checkbox') return false
-  if (type === 'number' || type === 'scale') return null
-  return ''
 }
 
 function normalizeValue(item: ChecklistItem, value: unknown): unknown {
@@ -76,6 +72,27 @@ function buildReadiness(items: TradeChecklistItemWithResponse[]): TradeChecklist
   }
 }
 
+function normalizeNullableId(value: number | null | undefined): number | null {
+  if (typeof value !== 'number' || !Number.isInteger(value) || value <= 0) return null
+  return value
+}
+
+function buildFallbackResolverContext(
+  accountId: number | null,
+  strategyModelId: number | null,
+  tradeId: number | null
+): TradeChecklistResolverContext {
+  return {
+    requested_account_id: accountId,
+    requested_strategy_model_id: strategyModelId,
+    resolved_scope: null,
+    resolved_checklist_id: null,
+    resolved_account_id: null,
+    resolved_strategy_model_id: null,
+    trade_id: tradeId,
+  }
+}
+
 export const useTradeChecklistStore = defineStore('tradeChecklist', () => {
   const loading = ref(false)
   const saving = ref(false)
@@ -84,11 +101,15 @@ export const useTradeChecklistStore = defineStore('tradeChecklist', () => {
   const items = ref<TradeChecklistItemWithResponse[]>([])
   const archivedResponses = ref<TradeChecklistResponseRecord[]>([])
   const readiness = ref<TradeChecklistReadiness>(emptyReadiness())
+  const resolverContext = ref<TradeChecklistResolverContext | null>(null)
+  const executionSnapshot = ref<TradeChecklistExecutionSnapshot | null>(null)
   const submitAttempted = ref(false)
   const contextTradeId = ref<number | null>(null)
   const contextAccountId = ref<number | null>(null)
+  const contextStrategyModelId = ref<number | null>(null)
   let persistTimer: ReturnType<typeof setTimeout> | null = null
   let queuedPersist = false
+  let loadRequestVersion = 0
 
   const requiredItems = computed(() =>
     items.value.filter((item) => item.required && item.is_active)
@@ -100,6 +121,13 @@ export const useTradeChecklistStore = defineStore('tradeChecklist', () => {
   const isStrict = computed(() => enforcementMode.value === 'strict')
   const checklistIncomplete = computed(() => !readiness.value.ready)
   const hasChecklist = computed(() => checklist.value !== null)
+  const resolverContextCurrent = computed(() => {
+    const context = resolverContext.value
+    if (!context) return false
+    return context.requested_account_id === contextAccountId.value
+      && context.requested_strategy_model_id === contextStrategyModelId.value
+      && context.trade_id === contextTradeId.value
+  })
 
   function clearPersistTimer() {
     if (persistTimer) {
@@ -113,9 +141,12 @@ export const useTradeChecklistStore = defineStore('tradeChecklist', () => {
     items.value = []
     archivedResponses.value = []
     readiness.value = emptyReadiness()
+    resolverContext.value = null
+    executionSnapshot.value = null
     error.value = null
     contextTradeId.value = null
     contextAccountId.value = null
+    contextStrategyModelId.value = null
     clearPersistTimer()
     queuedPersist = false
   }
@@ -125,91 +156,74 @@ export const useTradeChecklistStore = defineStore('tradeChecklist', () => {
     items.value = payload.responses.items
     archivedResponses.value = payload.responses.archived_responses ?? []
     readiness.value = payload.readiness
+    resolverContext.value = payload.context ?? buildFallbackResolverContext(
+      contextAccountId.value,
+      contextStrategyModelId.value,
+      contextTradeId.value
+    )
+    executionSnapshot.value = payload.execution_snapshot ?? null
   }
 
   function rebuildReadinessLocal() {
     readiness.value = buildReadiness(items.value)
   }
 
-  async function resolveChecklistForCreate(accountId: number | null): Promise<Checklist | null> {
-    if (accountId !== null && accountId > 0) {
-      const { data: accountScoped } = await api.get<Checklist[]>('/checklists', {
+  async function loadForContext(
+    accountId: number | null,
+    strategyModelId: number | null,
+    tradeId: number | null
+  ) {
+    loading.value = true
+    error.value = null
+    contextTradeId.value = normalizeNullableId(tradeId)
+    contextAccountId.value = normalizeNullableId(accountId)
+    contextStrategyModelId.value = normalizeNullableId(strategyModelId)
+    clearPersistTimer()
+
+    const requestVersion = ++loadRequestVersion
+
+    try {
+      const { data } = await api.get<TradeChecklistResponsePayload>('/trade-checklist/resolve', {
         params: {
-          scope: 'account',
-          accountId,
+          trade_id: contextTradeId.value ?? undefined,
+          account_id: contextAccountId.value ?? undefined,
+          strategy_model_id: contextStrategyModelId.value ?? undefined,
         },
       })
-      const accountChecklist = (Array.isArray(accountScoped) ? accountScoped : [])
-        .find((entry) => entry.is_active)
-      if (accountChecklist) return accountChecklist
-    }
 
-    const { data: globalScoped } = await api.get<Checklist[]>('/checklists', {
-      params: {
-        scope: 'global',
-      },
-    })
-    return (Array.isArray(globalScoped) ? globalScoped : []).find((entry) => entry.is_active) ?? null
-  }
-
-  async function loadForCreate(accountId: number | null) {
-    loading.value = true
-    error.value = null
-    contextTradeId.value = null
-    contextAccountId.value = accountId
-    clearPersistTimer()
-
-    try {
-      const resolvedChecklist = await resolveChecklistForCreate(accountId)
-      if (!resolvedChecklist) {
-        resetState()
-        return
-      }
-
-      const { data } = await api.get<ChecklistItem[]>(`/checklists/${resolvedChecklist.id}/items`)
-      const sourceItems = (Array.isArray(data) ? data : [])
-        .filter((item) => item.is_active)
-        .sort((left, right) => left.order_index - right.order_index || left.id - right.id)
-
-      checklist.value = resolvedChecklist
-      items.value = sourceItems.map((item) => {
-        const value = defaultValueForType(item.type)
-        return {
-          ...item,
-          response: {
-            checklist_item_id: item.id,
-            value,
-            is_completed: isCompleted(item, value),
-            completed_at: null,
-            archived: false,
-          },
-        }
-      })
-      archivedResponses.value = []
-      rebuildReadinessLocal()
-    } catch {
-      resetState()
-      error.value = 'Failed to load pre-trade checklist.'
-    } finally {
-      loading.value = false
-    }
-  }
-
-  async function loadForTrade(tradeId: number) {
-    loading.value = true
-    error.value = null
-    contextTradeId.value = tradeId
-    clearPersistTimer()
-
-    try {
-      const { data } = await api.get<TradeChecklistResponsePayload>(`/trades/${tradeId}/checklist-responses`)
+      if (requestVersion !== loadRequestVersion) return
       applyPayload(data)
     } catch {
-      resetState()
-      error.value = 'Failed to load trade checklist responses.'
+      if (requestVersion !== loadRequestVersion) return
+
+      checklist.value = null
+      items.value = []
+      archivedResponses.value = []
+      readiness.value = emptyReadiness()
+      resolverContext.value = buildFallbackResolverContext(
+        contextAccountId.value,
+        contextStrategyModelId.value,
+        contextTradeId.value
+      )
+      executionSnapshot.value = null
+      error.value = 'Failed to load pre-trade checklist.'
     } finally {
-      loading.value = false
+      if (requestVersion === loadRequestVersion) {
+        loading.value = false
+      }
     }
+  }
+
+  async function loadForCreate(accountId: number | null, strategyModelId: number | null = null) {
+    await loadForContext(accountId, strategyModelId, null)
+  }
+
+  async function loadForTrade(
+    tradeId: number,
+    accountId: number | null = null,
+    strategyModelId: number | null = null
+  ) {
+    await loadForContext(accountId, strategyModelId, tradeId)
   }
 
   function buildWritePayload(): ResponseWriteRow[] {
@@ -220,7 +234,7 @@ export const useTradeChecklistStore = defineStore('tradeChecklist', () => {
   }
 
   async function persistNow(tradeIdOverride?: number) {
-    const activeTradeId = tradeIdOverride ?? contextTradeId.value
+    const activeTradeId = normalizeNullableId(tradeIdOverride) ?? contextTradeId.value
     if (!activeTradeId || !checklist.value) return
 
     if (saving.value) {
@@ -231,10 +245,14 @@ export const useTradeChecklistStore = defineStore('tradeChecklist', () => {
     saving.value = true
     error.value = null
     try {
-      const { data } = await api.put<TradeChecklistResponsePayload>(`/trades/${activeTradeId}/checklist-responses`, {
-        checklist_id: checklist.value.id,
-        responses: buildWritePayload(),
-      })
+      const { data } = await api.put<TradeChecklistResponsePayload>(
+        `/trades/${activeTradeId}/checklist-responses`,
+        {
+          account_id: contextAccountId.value,
+          strategy_model_id: contextStrategyModelId.value,
+          responses: buildWritePayload(),
+        }
+      )
       applyPayload(data)
     } catch {
       error.value = 'Failed to persist checklist responses.'
@@ -302,9 +320,13 @@ export const useTradeChecklistStore = defineStore('tradeChecklist', () => {
     items,
     archivedResponses,
     readiness,
+    resolverContext,
+    executionSnapshot,
+    resolverContextCurrent,
     submitAttempted,
     contextTradeId,
     contextAccountId,
+    contextStrategyModelId,
     requiredItems,
     optionalItems,
     enforcementMode,
@@ -312,6 +334,7 @@ export const useTradeChecklistStore = defineStore('tradeChecklist', () => {
     checklistIncomplete,
     hasChecklist,
     resetState,
+    loadForContext,
     loadForCreate,
     loadForTrade,
     updateResponse,

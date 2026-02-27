@@ -47,6 +47,12 @@ export interface Trade {
   account_balance_after_trade: string | null
   followed_rules: boolean
   checklist_incomplete?: boolean
+  executed_checklist_id?: number | null
+  executed_checklist_version?: number | null
+  executed_enforcement_mode?: 'strict' | 'soft' | 'off' | null
+  failed_rule_ids?: number[] | null
+  failed_rule_titles?: string[] | null
+  check_evaluated_at?: string | null
   emotion: TradeEmotion
   risk_override_reason?: string | null
   session: string

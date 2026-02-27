@@ -23,10 +23,14 @@ class ChecklistController extends Controller
         $userId = (int) $request->user()->id;
         $scope = $request->input('scope');
         $accountId = $request->has('accountId') ? (int) $request->integer('accountId') : null;
+        $strategyModelId = $request->has('strategyModelId')
+            ? (int) $request->integer('strategyModelId')
+            : null;
 
         $checklists = $this->checklistService->listForScope($userId, [
             'scope' => is_string($scope) && $scope !== '' ? $scope : null,
             'account_id' => $accountId,
+            'strategy_model_id' => $strategyModelId,
             'search' => $request->input('search'),
             'is_active' => $request->has('include_inactive')
                 ? null
@@ -45,7 +49,7 @@ class ChecklistController extends Controller
         $userId = (int) $request->user()->id;
         $this->assertAccountOwnership($payload, $userId);
 
-        $checklist = $this->checklistService->createChecklist($userId, $payload)->fresh(['account']);
+        $checklist = $this->checklistService->createChecklist($userId, $payload)->fresh(['account', 'strategyModel']);
 
         return response()->json($checklist, 201);
     }
@@ -57,7 +61,7 @@ class ChecklistController extends Controller
     {
         $this->authorize('update', $checklist);
 
-        $payload = $this->validatePayload($request, true);
+        $payload = $this->validatePayload($request, true, $checklist);
         $userId = (int) $request->user()->id;
         $this->assertAccountOwnership($payload, $userId);
         $updated = $this->checklistService->updateChecklist($checklist, $payload);
@@ -85,7 +89,7 @@ class ChecklistController extends Controller
     /**
      * @throws ValidationException
      */
-    private function validatePayload(Request $request, bool $isUpdate = false): array
+    private function validatePayload(Request $request, bool $isUpdate = false, ?Checklist $existingChecklist = null): array
     {
         $required = $isUpdate ? 'sometimes' : 'required';
 
@@ -94,19 +98,29 @@ class ChecklistController extends Controller
             'scope' => [$required, Rule::in(['global', 'account', 'strategy'])],
             'enforcement_mode' => ['sometimes', Rule::in(['soft', 'strict'])],
             'account_id' => ['sometimes', 'nullable', 'integer', 'exists:accounts,id'],
+            'strategy_model_id' => ['sometimes', 'nullable', 'integer', 'exists:strategy_models,id'],
             'is_active' => ['sometimes', 'boolean'],
         ]);
 
-        $validator->after(function ($validator) use ($request): void {
-            $scope = (string) $request->input('scope', '');
+        $validator->after(function ($validator) use ($request, $existingChecklist): void {
+            $scope = (string) $request->input('scope', (string) ($existingChecklist?->scope ?? ''));
             $accountId = $request->input('account_id');
+            $strategyModelId = $request->input('strategy_model_id');
 
             if ($scope === 'account' && !is_numeric($accountId)) {
                 $validator->errors()->add('account_id', 'account_id is required for account scope checklist.');
             }
 
+            if ($scope === 'strategy' && !is_numeric($strategyModelId)) {
+                $validator->errors()->add('strategy_model_id', 'strategy_model_id is required for strategy scope checklist.');
+            }
+
             if ($scope !== 'account' && $accountId !== null && $accountId !== '') {
                 $validator->errors()->add('account_id', 'account_id is only allowed for account scope checklist.');
+            }
+
+            if ($scope !== 'strategy' && $strategyModelId !== null && $strategyModelId !== '') {
+                $validator->errors()->add('strategy_model_id', 'strategy_model_id is only allowed for strategy scope checklist.');
             }
         });
 
