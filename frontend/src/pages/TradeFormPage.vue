@@ -35,12 +35,16 @@ const { accounts } = storeToRefs(accountStore)
 const { instruments, strategyModels, setups, killzones, tradeTags, sessionOptions } = storeToRefs(tradeStore)
 const {
   checklist: activeChecklist,
+  items: checklistItems,
   requiredItems: checklistRequiredItems,
   optionalItems: checklistOptionalItems,
   archivedResponses: checklistArchivedResponses,
   readiness: checklistReadiness,
+  executionSnapshot: checklistExecutionSnapshot,
   loading: checklistLoading,
   saving: checklistSaving,
+  resolverContext: checklistResolverContext,
+  resolverContextCurrent: checklistResolverContextCurrent,
   submitAttempted: checklistSubmitAttempted,
   isStrict: checklistStrictMode,
   checklistIncomplete,
@@ -267,6 +271,7 @@ const instrumentSymbol = computed(() => selectedInstrument.value?.symbol ?? form
 const precheckLoading = ref(false)
 const precheckError = ref('')
 const precheckResult = ref<TradePrecheckResult | null>(null)
+const failedRequiredRuleIds = ref<number[]>([])
 const localRiskOverrideAccepted = ref(false)
 let precheckTimer: ReturnType<typeof setTimeout> | null = null
 const isRiskEngineUnavailable = computed(() => Boolean(precheckResult.value?.risk_engine_unavailable))
@@ -278,6 +283,26 @@ const hasAcceptedLocalRiskOverride = computed(() =>
   canUseLocalRiskOverride.value
   && localRiskOverrideAccepted.value
 )
+const selectedChecklistAccountId = computed(() => {
+  const id = Number(form.account_id)
+  return Number.isInteger(id) && id > 0 ? id : null
+})
+const selectedChecklistStrategyModelId = computed(() => {
+  const id = Number(form.strategy_model_id)
+  return Number.isInteger(id) && id > 0 ? id : null
+})
+const selectedChecklistTradeId = computed(() =>
+  isEditMode.value && tradeId.value !== null ? tradeId.value : null
+)
+const isChecklistContextMismatch = computed(() => {
+  const context = checklistResolverContext.value
+  if (!context) return true
+  if (!checklistResolverContextCurrent.value) return true
+
+  return context.requested_account_id !== selectedChecklistAccountId.value
+    || context.requested_strategy_model_id !== selectedChecklistStrategyModelId.value
+    || context.trade_id !== selectedChecklistTradeId.value
+})
 const isSaveBlocked = computed(() =>
   isFxPending.value
   || Boolean(precheckError.value)
@@ -285,19 +310,26 @@ const isSaveBlocked = computed(() =>
   || Boolean(liveFxConversionError.value)
 )
 const isChecklistStrictBlocked = computed(() =>
-  checklistStrictMode.value && hasChecklist.value && checklistIncomplete.value
+  checklistStrictMode.value
+  && hasChecklist.value
+  && (checklistIncomplete.value || failedRequiredRuleIds.value.length > 0)
+)
+const checklistGateIncomplete = computed(() =>
+  hasChecklist.value && (checklistIncomplete.value || failedRequiredRuleIds.value.length > 0)
+)
+const showSoftChecklistNotice = computed(() =>
+  hasChecklist.value
+  && !checklistStrictMode.value
+  && checklistGateIncomplete.value
 )
 const isSubmittingDisabled = computed(() =>
   tradeStore.saving
   || uploadingImages.value
   || precheckLoading.value
+  || checklistLoading.value
   || isSaveBlocked.value
+  || isChecklistContextMismatch.value
   || isChecklistStrictBlocked.value
-)
-const softChecklistWarning = computed(() =>
-  hasChecklist.value
-  && !checklistStrictMode.value
-  && checklistIncomplete.value
 )
 const riskStatusLabel = computed(() => {
   if (precheckLoading.value) return 'Checking'
@@ -318,8 +350,9 @@ const riskStatusClass = computed(() => {
   return ''
 })
 const blockedSummary = computed(() => {
-  if (!submitAttempted.value || !isSaveBlocked.value) return ''
+  if (!submitAttempted.value || (!isSaveBlocked.value && !isChecklistContextMismatch.value)) return ''
   if (isFxPending.value) return 'Fetching FX quote...'
+  if (isChecklistContextMismatch.value) return 'Checklist context is refreshing for the selected account and strategy.'
   if (precheckError.value) return precheckError.value
   if (liveFxConversionError.value) return liveFxConversionError.value
   if (isRiskEngineUnavailable.value && !hasAcceptedLocalRiskOverride.value) {
@@ -867,6 +900,27 @@ function extractErrorMessage(error: unknown): string {
   return firstValidationError || responseMessage || 'Please review input values and try again.'
 }
 
+function extractFailingRuleIds(error: unknown): number[] {
+  const axiosError = error as AxiosError<{
+    failed_required_rule_ids?: Array<number | null>
+    failing_rules?: Array<{ checklist_item_id?: number | null }>
+  }>
+
+  const failedIds = axiosError.response?.data?.failed_required_rule_ids
+  if (Array.isArray(failedIds)) {
+    return failedIds
+      .map((value) => Number(value ?? 0))
+      .filter((id) => Number.isInteger(id) && id > 0)
+  }
+
+  const rows = axiosError.response?.data?.failing_rules
+  if (!Array.isArray(rows)) return []
+
+  return rows
+    .map((row) => Number(row?.checklist_item_id ?? 0))
+    .filter((id) => Number.isInteger(id) && id > 0)
+}
+
 function buildPayload(): TradePayload {
   if (!tradeCompleted.value) {
     throw new Error('Trade must be marked complete before saving.')
@@ -990,7 +1044,18 @@ function buildPayload(): TradePayload {
     legs,
     risk_override_reason: form.risk_override_reason.trim() ? form.risk_override_reason.trim() : null,
     followed_rules: form.followed_rules,
-    checklist_incomplete: checklistIncomplete.value,
+    checklist_responses: checklistItems.value.map((item) => ({
+      checklist_item_id: item.id,
+      value: item.response.value,
+    })),
+    checklist_evaluation: {
+      status: checklistReadiness.value.status,
+      ready: checklistReadiness.value.ready,
+      completed_required: checklistReadiness.value.completed_required,
+      total_required: checklistReadiness.value.total_required,
+    },
+    precheck_snapshot: precheckResult.value?.calculated ?? null,
+    checklist_incomplete: checklistGateIncomplete.value,
     emotion: form.emotion,
     notes: form.notes.trim() ? form.notes.trim() : null,
   }
@@ -1195,7 +1260,7 @@ function handleGlobalHotkeys(event: KeyboardEvent) {
 
   if (key === 's') {
     event.preventDefault()
-    void submitForm()
+    handleExecuteClick()
   }
 }
 
@@ -1220,14 +1285,16 @@ async function submitForm() {
     return
   }
 
-  if (isChecklistStrictBlocked.value) {
+  if (isChecklistContextMismatch.value) {
     uiStore.toast({
-      type: 'error',
-      title: 'Checklist incomplete',
-      message: 'Complete all required checklist items before saving.',
+      type: 'info',
+      title: 'Checklist refreshing',
+      message: 'Waiting for checklist context to match selected account and strategy.',
     })
     return
   }
+
+  if (isChecklistStrictBlocked.value) return
 
   try {
     const payload = buildPayload()
@@ -1239,8 +1306,6 @@ async function submitForm() {
     } else {
       savedTrade = await tradeStore.addTrade(payload)
     }
-
-    await tradeChecklistStore.persistForTrade(savedTrade.id)
 
     await tradeStore.upsertTradePsychology(savedTrade.id, buildPsychologyPayload())
 
@@ -1257,12 +1322,22 @@ async function submitForm() {
     tradeChecklistStore.clearSubmitAttempted()
     void router.push('/trades')
   } catch (error) {
+    const failingRuleIds = extractFailingRuleIds(error)
+    if (failingRuleIds.length > 0) {
+      failedRequiredRuleIds.value = failingRuleIds
+    }
+
     uiStore.toast({
       type: 'error',
       title: 'Failed to save execution',
       message: extractErrorMessage(error),
     })
   }
+}
+
+function handleExecuteClick() {
+  if (isSubmittingDisabled.value) return
+  void submitForm()
 }
 
 async function loadTradeIfNeeded() {
@@ -1296,18 +1371,19 @@ async function loadTradeIfNeeded() {
 
 async function loadChecklistState() {
   tradeChecklistStore.clearSubmitAttempted()
-
-  if (isEditMode.value && tradeId.value !== null) {
-    await tradeChecklistStore.loadForTrade(tradeId.value)
-    return
-  }
-
-  const accountId = Number(form.account_id)
-  await tradeChecklistStore.loadForCreate(Number.isInteger(accountId) && accountId > 0 ? accountId : null)
+  await tradeChecklistStore.loadForContext(
+    selectedChecklistAccountId.value,
+    selectedChecklistStrategyModelId.value,
+    selectedChecklistTradeId.value
+  )
 }
 
 function onChecklistResponseChange(itemId: number, value: unknown) {
-  tradeChecklistStore.updateResponse(itemId, value, true)
+  tradeChecklistStore.updateResponse(itemId, value, false)
+}
+
+function onChecklistEvaluationChange(payload: { failedRequiredIds: number[]; firstFailingId: number | null }) {
+  failedRequiredRuleIds.value = payload.failedRequiredIds
 }
 
 onMounted(async () => {
@@ -1358,14 +1434,10 @@ onMounted(async () => {
 })
 
 watch(
-  () => form.account_id,
-  (value, previous) => {
-    if (value === previous) return
-    if (!isEditMode.value) {
-      const accountId = Number(value)
-      void tradeChecklistStore.loadForCreate(Number.isInteger(accountId) && accountId > 0 ? accountId : null)
-    }
-    schedulePrecheck()
+  () => [form.account_id, form.strategy_model_id],
+  ([accountId, strategyModelId], [previousAccountId, previousStrategyModelId]) => {
+    if (accountId === previousAccountId && strategyModelId === previousStrategyModelId) return
+    void loadChecklistState()
   }
 )
 
@@ -1576,14 +1648,16 @@ async function loadImage(file: File): Promise<HTMLImageElement> {
       </div>
 
       <div v-else class="trade-form-with-checklist">
-        <form :id="tradeFormId" class="form-block space-y-4 trade-form-main" @submit.prevent="submitForm">
+        <form :id="tradeFormId" class="form-block space-y-4 trade-form-main" @submit.prevent="handleExecuteClick">
         <div v-if="hasAcceptedLocalRiskOverride" class="risk-unverified-watermark">
           RISK UNVERIFIED · LOCAL DRAFT
         </div>
         <div class="execution-long-header">
           <div>
             <h2 class="section-title">{{ pageTitle }}</h2>
-            <p class="section-note">Minimal form for fast execution logging.</p>
+            <p class="section-note">
+              Minimal form for fast execution logging.
+            </p>
           </div>
           <button type="button" class="btn btn-ghost inline-flex items-center gap-2 px-3 py-2 text-sm" @click="router.push('/trades')">
             <ArrowLeft class="h-4 w-4" />
@@ -1603,9 +1677,6 @@ async function loadImage(file: File): Promise<HTMLImageElement> {
             <span>I accept risk (local-only draft)</span>
           </label>
         </div>
-        <p v-if="softChecklistWarning" class="field-error-text">
-          Checklist is incomplete. Save is allowed in soft mode and this trade will be flagged.
-        </p>
 
         <section class="trade-form-section execution-long-section">
           <div class="execution-section-heading">
@@ -1738,18 +1809,6 @@ async function loadImage(file: File): Promise<HTMLImageElement> {
               :options="sessionEnumOptions"
               :error="fieldError('session_enum')"
             />
-            <button
-              type="button"
-              class="execution-complete-toggle execution-rule-toggle md:col-span-2"
-              :class="{ 'is-on': form.followed_rules }"
-              :aria-pressed="form.followed_rules"
-              @click="form.followed_rules = !form.followed_rules"
-            >
-              <span class="execution-complete-toggle-icon" aria-hidden="true">
-                <Check class="h-3.5 w-3.5" />
-              </span>
-              <span>Rules checklist follows my plan</span>
-            </button>
           </div>
         </section>
 
@@ -1760,11 +1819,14 @@ async function loadImage(file: File): Promise<HTMLImageElement> {
           :optional-items="checklistOptionalItems"
           :archived-responses="checklistArchivedResponses"
           :readiness="checklistReadiness"
+          :execution-snapshot="checklistExecutionSnapshot"
           :loading="checklistLoading"
           :saving="checklistSaving"
           :submit-attempted="checklistSubmitAttempted || submitAttempted"
           :strict-mode="checklistStrictMode"
+          :risk-precheck="precheckResult"
           @update-response="onChecklistResponseChange"
+          @evaluation-change="onChecklistEvaluationChange"
         />
 
         <section class="trade-form-section execution-long-section">
@@ -2062,24 +2124,29 @@ async function loadImage(file: File): Promise<HTMLImageElement> {
           <span v-if="hasAcceptedLocalRiskOverride" class="execution-status-chip is-blocked">
             Risk unverified (local-only)
           </span>
+          <span v-if="showSoftChecklistNotice" class="text-xs muted">
+            Soft mode: checklist incomplete, execution allowed.
+          </span>
           <button type="button" class="btn btn-ghost px-4 py-2 text-sm" @click="router.push('/trades')">Cancel</button>
           <button
-            type="submit"
+            type="button"
             class="btn btn-primary px-4 py-2 text-sm"
             :disabled="isSubmittingDisabled"
+            :class="{ 'opacity-60': isChecklistStrictBlocked }"
+            :title="isChecklistStrictBlocked ? 'Strict mode: complete all required checklist rules to enable execution.' : ''"
+            @click="handleExecuteClick"
           >
             {{
               uploadingImages
                 ? 'Uploading images...'
                 : tradeStore.saving
                   ? 'Saving...'
-                  : isEditMode ? 'Update Execute' : 'Save Execute'
+                  : isChecklistStrictBlocked
+                    ? 'Blocked by Checklist'
+                    : isEditMode ? 'Update Execute' : 'Save Execute'
             }}
           </button>
         </div>
-        <p v-if="isChecklistStrictBlocked" class="field-error-text mt-2">
-          Complete required checklist items to proceed.
-        </p>
         </form>
 
         <TradeChecklistPanel
@@ -2089,11 +2156,14 @@ async function loadImage(file: File): Promise<HTMLImageElement> {
           :optional-items="checklistOptionalItems"
           :archived-responses="checklistArchivedResponses"
           :readiness="checklistReadiness"
+          :execution-snapshot="checklistExecutionSnapshot"
           :loading="checklistLoading"
           :saving="checklistSaving"
           :submit-attempted="checklistSubmitAttempted || submitAttempted"
           :strict-mode="checklistStrictMode"
+          :risk-precheck="precheckResult"
           @update-response="onChecklistResponseChange"
+          @evaluation-change="onChecklistEvaluationChange"
         />
       </div>
     </GlassPanel>
