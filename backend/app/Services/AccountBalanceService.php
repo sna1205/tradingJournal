@@ -4,14 +4,15 @@ namespace App\Services;
 
 use App\Models\Account;
 use App\Models\Trade;
+use Carbon\CarbonImmutable;
 use Illuminate\Support\Facades\DB;
 
 class AccountBalanceService
 {
     public function __construct(
-        private readonly TradeCalculationEngine $calculationEngine
-    ) {
-    }
+        private readonly TradeCalculationEngine $calculationEngine,
+        private readonly CurrencyConversionService $currencyConversionService
+    ) {}
 
     public function rebuildAccountState(int $accountId): void
     {
@@ -19,7 +20,7 @@ class AccountBalanceService
             ->lockForUpdate()
             ->find($accountId);
 
-        if (!$account) {
+        if (! $account) {
             return;
         }
 
@@ -32,6 +33,34 @@ class AccountBalanceService
             ->get();
 
         foreach ($trades as $trade) {
+            $tradeDate = $trade->date !== null
+                ? CarbonImmutable::parse((string) $trade->date)
+                : CarbonImmutable::now();
+            $tickValueInAccountCurrency = (float) ($trade->instrument?->tick_value ?? 0);
+            $quoteCurrency = strtoupper(trim((string) ($trade->instrument?->quote_currency ?? '')));
+            $accountCurrency = strtoupper(trim((string) ($account->currency ?? 'USD')));
+            if (
+                $tickValueInAccountCurrency > 0
+                && $quoteCurrency !== ''
+                && $accountCurrency !== ''
+                && $quoteCurrency !== $accountCurrency
+            ) {
+                $quoteToAccountRate = $this->currencyConversionService
+                    ->resolveRateOrNull($quoteCurrency, $accountCurrency, $tradeDate);
+                if ($quoteToAccountRate === null || $quoteToAccountRate <= 0) {
+                    throw new \RuntimeException(sprintf(
+                        'Missing FX conversion rate for %s to %s while rebuilding account state.',
+                        $quoteCurrency,
+                        $accountCurrency
+                    ));
+                }
+                $tickValueInAccountCurrency *= $quoteToAccountRate;
+            }
+
+            $quoteToUsd = $quoteCurrency !== ''
+                ? $this->currencyConversionService->resolveRateOrNull($quoteCurrency, 'USD', $tradeDate)
+                : null;
+
             $calculated = $this->calculationEngine->calculate([
                 'direction' => (string) $trade->direction,
                 'entry_price' => (float) $trade->entry_price,
@@ -40,7 +69,7 @@ class AccountBalanceService
                 'actual_exit_price' => (float) $trade->actual_exit_price,
                 'lot_size' => (float) $trade->lot_size,
                 'instrument_tick_size' => (float) ($trade->instrument?->tick_size ?? 0),
-                'instrument_tick_value' => (float) ($trade->instrument?->tick_value ?? 0),
+                'instrument_tick_value' => $tickValueInAccountCurrency,
                 'commission' => (float) ($trade->commission ?? 0),
                 'swap' => (float) ($trade->swap ?? 0),
                 'spread_cost' => (float) ($trade->spread_cost ?? 0),
@@ -71,6 +100,9 @@ class AccountBalanceService
                     'swap' => $calculated['swap'],
                     'spread_cost' => $calculated['spread_cost'],
                     'slippage_cost' => $calculated['slippage_cost'],
+                    'fx_rate_quote_to_usd' => $quoteToUsd !== null && $quoteToUsd > 0 ? $quoteToUsd : null,
+                    'fx_symbol_used' => $quoteCurrency !== '' && $quoteCurrency !== 'USD' ? "{$quoteCurrency}USD" : null,
+                    'fx_rate_timestamp' => $tradeDate->toDateTimeString(),
                     'profit_loss' => $calculated['profit_loss'],
                     'rr' => $calculated['rr'],
                     'r_multiple' => $calculated['r_multiple'],
@@ -94,7 +126,7 @@ class AccountBalanceService
     }
 
     /**
-     * @param array<int, int|string|null> $accountIds
+     * @param  array<int, int|string|null>  $accountIds
      */
     public function rebuildMany(array $accountIds): void
     {

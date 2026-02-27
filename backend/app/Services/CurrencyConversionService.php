@@ -4,6 +4,7 @@ namespace App\Services;
 
 use App\Models\FxRate;
 use App\Models\FxRateSnapshot;
+use App\Services\PriceFeed\PriceFeedService;
 use Carbon\CarbonInterface;
 
 class CurrencyConversionService
@@ -13,6 +14,10 @@ class CurrencyConversionService
      */
     private array $rateCache = [];
 
+    public function __construct(
+        private readonly ?PriceFeedService $priceFeedService = null
+    ) {}
+
     public function convert(float $amount, string $fromCurrency, string $toCurrency, ?CarbonInterface $asOf = null): float
     {
         $rate = $this->resolveRate($fromCurrency, $toCurrency, $asOf);
@@ -21,6 +26,13 @@ class CurrencyConversionService
     }
 
     public function resolveRate(string $fromCurrency, string $toCurrency, ?CarbonInterface $asOf = null): float
+    {
+        $resolved = $this->resolveRateOrNull($fromCurrency, $toCurrency, $asOf);
+
+        return $resolved !== null && $resolved > 0 ? $resolved : 1.0;
+    }
+
+    public function resolveRateOrNull(string $fromCurrency, string $toCurrency, ?CarbonInterface $asOf = null): ?float
     {
         $from = strtoupper(trim($fromCurrency));
         $to = strtoupper(trim($toCurrency));
@@ -43,8 +55,10 @@ class CurrencyConversionService
             }
         }
 
-        $rate = $resolved !== null && $resolved > 0 ? $resolved : 1.0;
-        $this->rateCache[$cacheKey] = $rate;
+        $rate = $resolved !== null && $resolved > 0 ? $resolved : null;
+        if ($rate !== null) {
+            $this->rateCache[$cacheKey] = $rate;
+        }
 
         return $rate;
     }
@@ -79,6 +93,11 @@ class CurrencyConversionService
             return 1 / (float) $latestInverse;
         }
 
+        $liveRate = $this->lookupLiveRate($from, $to);
+        if ($liveRate !== null && $liveRate > 0) {
+            return $liveRate;
+        }
+
         return null;
     }
 
@@ -88,7 +107,7 @@ class CurrencyConversionService
             ->where('from_currency', $from)
             ->where('to_currency', $to);
         if ($asOfDate !== null) {
-            $query->where('snapshot_date', '<=', $asOfDate);
+            $query->whereDate('snapshot_date', '<=', $asOfDate);
         }
 
         $value = $query
@@ -100,6 +119,60 @@ class CurrencyConversionService
         }
 
         $rate = (float) $value;
+
         return $rate > 0 ? $rate : null;
+    }
+
+    private function lookupLiveRate(string $from, string $to): ?float
+    {
+        if ($this->priceFeedService === null) {
+            return null;
+        }
+
+        $directCandidates = [
+            "{$from}{$to}",
+            "{$from}/{$to}",
+        ];
+
+        foreach ($directCandidates as $symbol) {
+            try {
+                $quote = $this->priceFeedService->getQuote($symbol);
+            } catch (\Throwable) {
+                $quote = null;
+            }
+
+            if (! is_array($quote)) {
+                continue;
+            }
+
+            $mid = (float) ($quote['mid'] ?? 0);
+            if ($mid > 0) {
+                return $mid;
+            }
+        }
+
+        $inverseCandidates = [
+            "{$to}{$from}",
+            "{$to}/{$from}",
+        ];
+
+        foreach ($inverseCandidates as $symbol) {
+            try {
+                $quote = $this->priceFeedService->getQuote($symbol);
+            } catch (\Throwable) {
+                $quote = null;
+            }
+
+            if (! is_array($quote)) {
+                continue;
+            }
+
+            $mid = (float) ($quote['mid'] ?? 0);
+            if ($mid > 0) {
+                return 1 / $mid;
+            }
+        }
+
+        return null;
     }
 }

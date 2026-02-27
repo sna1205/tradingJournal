@@ -17,8 +17,7 @@ class TradeChecklistResponseController extends Controller
     public function __construct(
         private readonly ChecklistService $checklistService,
         private readonly TradeChecklistService $tradeChecklistService
-    ) {
-    }
+    ) {}
 
     public function resolve(Request $request)
     {
@@ -119,6 +118,7 @@ class TradeChecklistResponseController extends Controller
 
         if ($checklist === null) {
             $this->checklistService->syncChecklistIncompleteFlag($trade, false);
+
             return response()->json(
                 $this->blankResponsePayload(
                     $requestedContext['account_id'],
@@ -129,7 +129,7 @@ class TradeChecklistResponseController extends Controller
         }
 
         $result = $this->tradeChecklistService->upsertResponses($trade, $checklist, $payload['responses']);
-        $this->checklistService->syncChecklistIncompleteFlag($trade, !$result['readiness']['ready']);
+        $this->checklistService->syncChecklistIncompleteFlag($trade, ! $result['readiness']['ready']);
 
         return response()->json([
             ...$result,
@@ -195,8 +195,7 @@ class TradeChecklistResponseController extends Controller
         ?int $requestedStrategyModelId,
         ?int $tradeId,
         bool $legacyUnfrozen = false
-    ): array
-    {
+    ): array {
         return [
             'responses' => [
                 'checklist' => null,
@@ -364,6 +363,7 @@ class TradeChecklistResponseController extends Controller
 
     /**
      * @return array{account_id:int|null,strategy_model_id:int|null}
+     *
      * @throws ValidationException
      */
     private function resolveRequestedContext(Request $request, int $userId, ?Trade $trade, bool $fromBody): array
@@ -380,8 +380,27 @@ class TradeChecklistResponseController extends Controller
             : null;
 
         if ($trade !== null) {
+            if (
+                $accountId !== null
+                && $trade->account_id !== null
+                && $accountId !== (int) $trade->account_id
+            ) {
+                throw ValidationException::withMessages([
+                    'account_id' => ['account_id must match the trade account.'],
+                ]);
+            }
             if ($accountId === null && $trade->account_id !== null) {
                 $accountId = (int) $trade->account_id;
+            }
+
+            if (
+                $strategyModelId !== null
+                && $trade->strategy_model_id !== null
+                && $strategyModelId !== (int) $trade->strategy_model_id
+            ) {
+                throw ValidationException::withMessages([
+                    'strategy_model_id' => ['strategy_model_id must match the trade strategy model.'],
+                ]);
             }
             if ($strategyModelId === null && $trade->strategy_model_id !== null) {
                 $strategyModelId = (int) $trade->strategy_model_id;
@@ -393,7 +412,7 @@ class TradeChecklistResponseController extends Controller
                 ->whereKey($accountId)
                 ->where('user_id', $userId)
                 ->exists();
-            if (!$owned) {
+            if (! $owned) {
                 throw ValidationException::withMessages([
                     'account_id' => ['account_id is outside your scope.'],
                 ]);

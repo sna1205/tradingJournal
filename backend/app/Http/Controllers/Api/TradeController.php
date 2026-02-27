@@ -4,11 +4,11 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Models\Checklist;
-use App\Models\Instrument;
 use App\Models\Trade;
 use App\Models\TradeImage;
 use App\Services\AccountBalanceService;
 use App\Services\ChecklistService;
+use App\Services\CurrencyConversionService;
 use App\Services\TradeCalculationEngine;
 use App\Services\TradeChecklistService;
 use App\Services\TradeRiskPolicyService;
@@ -47,9 +47,9 @@ class TradeController extends Controller
         private readonly AccountBalanceService $accountBalanceService,
         private readonly TradeRiskPolicyService $tradeRiskPolicyService,
         private readonly ChecklistService $checklistService,
-        private readonly TradeChecklistService $tradeChecklistService
-    ) {
-    }
+        private readonly TradeChecklistService $tradeChecklistService,
+        private readonly CurrencyConversionService $currencyConversionService
+    ) {}
 
     public function index(Request $request)
     {
@@ -84,6 +84,7 @@ class TradeController extends Controller
             )->values();
 
             $trade->setRelation('images', $serialized);
+
             return $trade;
         });
 
@@ -372,6 +373,9 @@ class TradeController extends Controller
             'avg_exit_price' => ['prohibited'],
             'realized_r_multiple' => ['prohibited'],
             'risk_percent' => ['prohibited'],
+            'fx_rate_quote_to_usd' => ['prohibited'],
+            'fx_symbol_used' => ['prohibited'],
+            'fx_rate_timestamp' => ['prohibited'],
             'account_balance_before_trade' => ['prohibited'],
             'account_balance_after_trade' => ['prohibited'],
             'executed_checklist_id' => ['prohibited'],
@@ -450,14 +454,53 @@ class TradeController extends Controller
                 }
             }
 
-            if ($instrumentId !== null && $pair !== '') {
-                $instrumentSymbol = (string) (DB::table('instruments')
+            $instrumentSpec = null;
+            if ($instrumentId !== null) {
+                $instrumentSpec = DB::table('instruments')
                     ->where('id', $instrumentId)
-                    ->value('symbol') ?? '');
-                if ($instrumentSymbol !== '' && strtoupper($instrumentSymbol) !== $pair) {
+                    ->first(['symbol', 'min_lot', 'lot_step']);
+            }
+
+            if ($instrumentSpec !== null && $pair !== '') {
+                $instrumentSymbol = strtoupper((string) ($instrumentSpec->symbol ?? ''));
+                if ($instrumentSymbol !== '' && $instrumentSymbol !== $pair) {
                     $validator->errors()->add('pair', 'Pair must match selected instrument symbol.');
                 }
             }
+
+            if ($instrumentSpec !== null) {
+                $minLot = (float) ($instrumentSpec->min_lot ?? 0);
+                $lotStep = (float) ($instrumentSpec->lot_step ?? 0);
+
+                if (array_key_exists('legs', $input)) {
+                    foreach ($legs as $index => $leg) {
+                        $quantityLots = (float) ($leg['quantity_lots'] ?? 0);
+                        if (! $this->isValidLotSizeForInstrument($quantityLots, $minLot, $lotStep)) {
+                            $validator->errors()->add(
+                                "legs.$index.quantity_lots",
+                                sprintf(
+                                    'Leg quantity must be >= %s and aligned to lot step %s.',
+                                    rtrim(rtrim(number_format($minLot, 8, '.', ''), '0'), '.'),
+                                    rtrim(rtrim(number_format($lotStep, 8, '.', ''), '0'), '.')
+                                )
+                            );
+                        }
+                    }
+                } else {
+                    $lotSize = $this->readFloatFromInputOrTrade($input, 'lot_size', $existingTrade);
+                    if ($lotSize !== null && ! $this->isValidLotSizeForInstrument($lotSize, $minLot, $lotStep)) {
+                        $validator->errors()->add(
+                            'lot_size',
+                            sprintf(
+                                'Lot size must be >= %s and aligned to lot step %s.',
+                                rtrim(rtrim(number_format($minLot, 8, '.', ''), '0'), '.'),
+                                rtrim(rtrim(number_format($lotStep, 8, '.', ''), '0'), '.')
+                            )
+                        );
+                    }
+                }
+            }
+
             if ($instrumentId === null) {
                 $validator->errors()->add('instrument_id', 'Instrument is required.');
             }
@@ -472,7 +515,7 @@ class TradeController extends Controller
                 }
             }
 
-            if (!$isUpdate && !array_key_exists('pair', $input)) {
+            if (! $isUpdate && ! array_key_exists('pair', $input)) {
                 $validator->errors()->add('pair', 'Symbol is required.');
             }
         });
@@ -482,37 +525,37 @@ class TradeController extends Controller
 
     private function normalizedInput(array $input): array
     {
-        if (!array_key_exists('pair', $input) && array_key_exists('symbol', $input)) {
+        if (! array_key_exists('pair', $input) && array_key_exists('symbol', $input)) {
             $input['pair'] = $input['symbol'];
         }
-        if (!array_key_exists('lot_size', $input) && array_key_exists('position_size', $input)) {
+        if (! array_key_exists('lot_size', $input) && array_key_exists('position_size', $input)) {
             $input['lot_size'] = $input['position_size'];
         }
-        if (!array_key_exists('model', $input) && array_key_exists('strategy_model', $input)) {
+        if (! array_key_exists('model', $input) && array_key_exists('strategy_model', $input)) {
             $input['model'] = $input['strategy_model'];
         }
-        if (!array_key_exists('strategy_model_id', $input) && array_key_exists('model_id', $input)) {
+        if (! array_key_exists('strategy_model_id', $input) && array_key_exists('model_id', $input)) {
             $input['strategy_model_id'] = $input['model_id'];
         }
-        if (!array_key_exists('session_enum', $input) && array_key_exists('sessionEnum', $input)) {
+        if (! array_key_exists('session_enum', $input) && array_key_exists('sessionEnum', $input)) {
             $input['session_enum'] = $input['sessionEnum'];
         }
-        if (!array_key_exists('tag_ids', $input) && array_key_exists('tags', $input)) {
+        if (! array_key_exists('tag_ids', $input) && array_key_exists('tags', $input)) {
             $input['tag_ids'] = $input['tags'];
         }
-        if (!array_key_exists('date', $input) && array_key_exists('close_date', $input)) {
+        if (! array_key_exists('date', $input) && array_key_exists('close_date', $input)) {
             $input['date'] = $input['close_date'];
         }
-        if (!array_key_exists('checklist_incomplete', $input) && array_key_exists('checklistIncomplete', $input)) {
+        if (! array_key_exists('checklist_incomplete', $input) && array_key_exists('checklistIncomplete', $input)) {
             $input['checklist_incomplete'] = $input['checklistIncomplete'];
         }
-        if (!array_key_exists('checklist_responses', $input) && array_key_exists('checklistResponses', $input)) {
+        if (! array_key_exists('checklist_responses', $input) && array_key_exists('checklistResponses', $input)) {
             $input['checklist_responses'] = $input['checklistResponses'];
         }
-        if (!array_key_exists('checklist_evaluation', $input) && array_key_exists('checklistEvaluation', $input)) {
+        if (! array_key_exists('checklist_evaluation', $input) && array_key_exists('checklistEvaluation', $input)) {
             $input['checklist_evaluation'] = $input['checklistEvaluation'];
         }
-        if (!array_key_exists('precheck_snapshot', $input) && array_key_exists('precheckSnapshot', $input)) {
+        if (! array_key_exists('precheck_snapshot', $input) && array_key_exists('precheckSnapshot', $input)) {
             $input['precheck_snapshot'] = $input['precheckSnapshot'];
         }
 
@@ -559,24 +602,40 @@ class TradeController extends Controller
         return null;
     }
 
+    private function isValidLotSizeForInstrument(float $lotSize, float $minLot, float $lotStep): bool
+    {
+        $epsilon = 0.0000001;
+        if ($lotSize <= 0 || $minLot <= 0 || $lotStep <= 0) {
+            return false;
+        }
+
+        if ($lotSize + $epsilon < $minLot) {
+            return false;
+        }
+
+        $steps = $lotSize / $lotStep;
+
+        return abs($steps - round($steps)) < 0.000001;
+    }
+
     private function normalizedFilterInputs(array $input): array
     {
-        if (!array_key_exists('pair', $input) && array_key_exists('symbol', $input)) {
+        if (! array_key_exists('pair', $input) && array_key_exists('symbol', $input)) {
             $input['pair'] = $input['symbol'];
         }
-        if (!array_key_exists('model', $input) && array_key_exists('strategy_model', $input)) {
+        if (! array_key_exists('model', $input) && array_key_exists('strategy_model', $input)) {
             $input['model'] = $input['strategy_model'];
         }
-        if (!array_key_exists('strategy_model_id', $input) && array_key_exists('model_id', $input)) {
+        if (! array_key_exists('strategy_model_id', $input) && array_key_exists('model_id', $input)) {
             $input['strategy_model_id'] = $input['model_id'];
         }
-        if (!array_key_exists('tag_ids', $input) && array_key_exists('tags', $input)) {
+        if (! array_key_exists('tag_ids', $input) && array_key_exists('tags', $input)) {
             $input['tag_ids'] = $input['tags'];
         }
-        if (!array_key_exists('date_from', $input) && array_key_exists('close_date_from', $input)) {
+        if (! array_key_exists('date_from', $input) && array_key_exists('close_date_from', $input)) {
             $input['date_from'] = $input['close_date_from'];
         }
-        if (!array_key_exists('date_to', $input) && array_key_exists('close_date_to', $input)) {
+        if (! array_key_exists('date_to', $input) && array_key_exists('close_date_to', $input)) {
             $input['date_to'] = $input['close_date_to'];
         }
 
@@ -685,13 +744,16 @@ class TradeController extends Controller
     }
 
     /**
-     * @param array<string, mixed> $payload
-     * @param object{id:int,starting_balance:numeric-string|int|float,current_balance:numeric-string|int|float} $account
-     * @param object{id:int,tick_size:numeric-string|int|float,tick_value:numeric-string|int|float,symbol:string} $instrument
+     * @param  array<string, mixed>  $payload
+     * @param  object{id:int,starting_balance:numeric-string|int|float,current_balance:numeric-string|int|float,currency:string}  $account
+     * @param  object{id:int,tick_size:numeric-string|int|float,tick_value:numeric-string|int|float,symbol:string,quote_currency:string}  $instrument
      * @return array<string, mixed>
      */
     private function buildPayloadWithCalculatedFields(array $payload, object $account, object $instrument): array
     {
+        $tradeDate = $this->parsePayloadDate((string) ($payload['date'] ?? CarbonImmutable::now()->toIso8601String()));
+        $valuationContext = $this->resolveInstrumentValuationContext($instrument, $account, $tradeDate);
+
         $normalizedLegs = $this->normalizeLegsForCalculation(
             $payload['legs'] ?? null,
             (string) ($payload['date'] ?? CarbonImmutable::now()->toIso8601String())
@@ -706,11 +768,14 @@ class TradeController extends Controller
             'lot_size' => (float) ($payload['lot_size'] ?? 0),
             'account_balance_before_trade' => (float) $account->current_balance,
             'instrument_tick_size' => (float) $instrument->tick_size,
-            'instrument_tick_value' => (float) $instrument->tick_value,
+            'instrument_tick_value' => $valuationContext['tick_value_in_account_currency'],
             'commission' => (float) ($payload['commission'] ?? 0),
             'swap' => (float) ($payload['swap'] ?? 0),
             'spread_cost' => (float) ($payload['spread_cost'] ?? 0),
             'slippage_cost' => (float) ($payload['slippage_cost'] ?? 0),
+            'fx_rate_quote_to_usd' => $valuationContext['fx_rate_quote_to_usd'],
+            'fx_symbol_used' => $valuationContext['fx_symbol_used'],
+            'fx_rate_timestamp' => $tradeDate->toIso8601String(),
             'legs' => $normalizedLegs,
             'tag_ids' => $this->extractTagIds($payload),
         ];
@@ -735,8 +800,74 @@ class TradeController extends Controller
         ];
     }
 
+    private function parsePayloadDate(string $value): CarbonImmutable
+    {
+        try {
+            return CarbonImmutable::parse($value);
+        } catch (\Throwable) {
+            return CarbonImmutable::now();
+        }
+    }
+
     /**
-     * @param mixed $legs
+     * @param  object{tick_value:numeric-string|int|float,quote_currency:string,symbol:string}  $instrument
+     * @param  object{currency:string}  $account
+     * @return array{
+     *   tick_value_in_account_currency:float,
+     *   fx_rate_quote_to_usd:float|null,
+     *   fx_symbol_used:string|null
+     * }
+     *
+     * @throws ValidationException
+     */
+    private function resolveInstrumentValuationContext(
+        object $instrument,
+        object $account,
+        CarbonImmutable $tradeDate
+    ): array {
+        $quoteCurrency = strtoupper(trim((string) ($instrument->quote_currency ?? '')));
+        $accountCurrency = strtoupper(trim((string) ($account->currency ?? 'USD')));
+        $baseTickValue = (float) ($instrument->tick_value ?? 0);
+
+        if ($baseTickValue <= 0) {
+            throw ValidationException::withMessages([
+                'instrument_id' => ['Instrument tick value must be greater than zero.'],
+            ]);
+        }
+
+        $quoteToAccountRate = 1.0;
+        if ($quoteCurrency !== '' && $accountCurrency !== '' && $quoteCurrency !== $accountCurrency) {
+            $resolved = $this->currencyConversionService->resolveRateOrNull($quoteCurrency, $accountCurrency, $tradeDate);
+            if ($resolved === null || $resolved <= 0) {
+                throw ValidationException::withMessages([
+                    'instrument_id' => [sprintf(
+                        'Missing FX conversion rate for %s to %s.',
+                        $quoteCurrency,
+                        $accountCurrency
+                    )],
+                ]);
+            }
+            $quoteToAccountRate = $resolved;
+        }
+
+        $quoteToUsdRate = null;
+        if ($quoteCurrency !== '') {
+            $resolvedQuoteToUsd = $this->currencyConversionService->resolveRateOrNull($quoteCurrency, 'USD', $tradeDate);
+            $quoteToUsdRate = $resolvedQuoteToUsd !== null && $resolvedQuoteToUsd > 0
+                ? $resolvedQuoteToUsd
+                : null;
+        }
+
+        return [
+            'tick_value_in_account_currency' => $baseTickValue * $quoteToAccountRate,
+            'fx_rate_quote_to_usd' => $quoteToUsdRate,
+            'fx_symbol_used' => $quoteCurrency !== '' && $quoteCurrency !== 'USD'
+                ? "{$quoteCurrency}USD"
+                : null,
+        ];
+    }
+
+    /**
      * @return array<int,array{
      *   leg_type:string,
      *   price:float,
@@ -748,7 +879,7 @@ class TradeController extends Controller
      */
     private function normalizeLegsForCalculation(mixed $legs, string $fallbackExecutedAt): array
     {
-        if (!is_array($legs)) {
+        if (! is_array($legs)) {
             return [];
         }
 
@@ -762,7 +893,7 @@ class TradeController extends Controller
             }
 
             $legType = strtolower((string) ($row['leg_type'] ?? ''));
-            if (!in_array($legType, ['entry', 'exit'], true)) {
+            if (! in_array($legType, ['entry', 'exit'], true)) {
                 continue;
             }
 
@@ -838,7 +969,7 @@ class TradeController extends Controller
     }
 
     /**
-     * @param array<int,array{price:float,quantity_lots:float}> $legs
+     * @param  array<int,array{price:float,quantity_lots:float}>  $legs
      */
     private function weightedAveragePrice(array $legs): float
     {
@@ -880,7 +1011,7 @@ class TradeController extends Controller
     }
 
     /**
-     * @param array<string,mixed> $payloadWithMetrics
+     * @param  array<string,mixed>  $payloadWithMetrics
      * @return array<string,mixed>
      */
     private function extractTradeAttributes(array $payloadWithMetrics): array
@@ -899,7 +1030,7 @@ class TradeController extends Controller
     }
 
     /**
-     * @param array<string,mixed> $payload
+     * @param  array<string,mixed>  $payload
      * @return array<string,mixed>
      */
     private function applyTaxonomyLabels(array $payload): array
@@ -937,8 +1068,8 @@ class TradeController extends Controller
         $modelLabel = $strategyModelName !== ''
             ? $strategyModelName
             : ((string) ($payload['model'] ?? 'General'));
-        if ($setupName !== '' && !str_contains(strtolower($modelLabel), strtolower($setupName))) {
-            $modelLabel = trim($modelLabel . ' - ' . $setupName);
+        if ($setupName !== '' && ! str_contains(strtolower($modelLabel), strtolower($setupName))) {
+            $modelLabel = trim($modelLabel.' - '.$setupName);
         }
 
         return [
@@ -962,7 +1093,7 @@ class TradeController extends Controller
     }
 
     /**
-     * @param array<string,mixed> $payload
+     * @param  array<string,mixed>  $payload
      * @return array<int,int>
      */
     private function extractTagIds(array $payload): array
@@ -971,7 +1102,7 @@ class TradeController extends Controller
         if (is_string($raw)) {
             $raw = explode(',', $raw);
         }
-        if (!is_array($raw)) {
+        if (! is_array($raw)) {
             return [];
         }
 
@@ -984,7 +1115,7 @@ class TradeController extends Controller
     }
 
     /**
-     * @param array<int,int> $tagIds
+     * @param  array<int,int>  $tagIds
      */
     private function syncTradeTags(Trade $trade, array $tagIds): void
     {
@@ -992,8 +1123,8 @@ class TradeController extends Controller
     }
 
     /**
-     * @param array<string,mixed> $contextPayload
-     * @param array<string,mixed> $responseSourcePayload
+     * @param  array<string,mixed>  $contextPayload
+     * @param  array<string,mixed>  $responseSourcePayload
      * @return array{
      *   checklist:Checklist|null,
      *   responses:array<int,array{checklist_item_id:int,value:mixed}>,
@@ -1116,7 +1247,7 @@ class TradeController extends Controller
             ]];
         }
 
-        if ($enforcementMode === 'strict' && !$ready) {
+        if ($enforcementMode === 'strict' && ! $ready) {
             $this->throwChecklistStrictBlocked(
                 $checklist,
                 $failingRules,
@@ -1152,7 +1283,7 @@ class TradeController extends Controller
             'snapshot_frozen' => $frozenExistingSnapshot,
             'checklist_incomplete' => $frozenExistingSnapshot
                 ? (bool) ($existingTrade?->checklist_incomplete ?? false)
-                : (!$ready),
+                : (! $ready),
             'snapshot_attributes' => $snapshotAttributes,
             'readiness' => $evaluation['readiness'],
             'failing_rules' => $failingRules,
@@ -1162,7 +1293,7 @@ class TradeController extends Controller
     }
 
     /**
-     * @param array<string,mixed> $payload
+     * @param  array<string,mixed>  $payload
      * @return array<int,array{checklist_item_id:int,value:mixed}>
      */
     private function resolveChecklistResponsesForGate(array $payload, ?Trade $existingTrade, int $checklistId): array
@@ -1188,12 +1319,11 @@ class TradeController extends Controller
     }
 
     /**
-     * @param mixed $rawResponses
      * @return array<int,array{checklist_item_id:int,value:mixed}>
      */
     private function normalizeChecklistResponses(mixed $rawResponses): array
     {
-        if (!is_array($rawResponses)) {
+        if (! is_array($rawResponses)) {
             return [];
         }
 
@@ -1225,8 +1355,7 @@ class TradeController extends Controller
         ?int $checklistVersion = null,
         array $failedRequiredRuleIds = [],
         array $failedRuleReasons = []
-    ): void
-    {
+    ): void {
         throw new HttpResponseException(
             response()->json([
                 'message' => 'Checklist strict validation failed.',
@@ -1299,7 +1428,7 @@ class TradeController extends Controller
     }
 
     /**
-     * @param array<int,array{checklist_item_id:int,value:mixed}> $responses
+     * @param  array<int,array{checklist_item_id:int,value:mixed}>  $responses
      */
     private function persistChecklistState(
         Trade $trade,
@@ -1316,12 +1445,14 @@ class TradeController extends Controller
 
         if ($checklist === null) {
             $this->checklistService->syncChecklistIncompleteFlag($trade, $checklistIncomplete);
+
             return;
         }
 
         if ($responsesFromRequest && count($responses) > 0) {
             $result = $this->tradeChecklistService->upsertResponses($trade, $checklist, $responses, $precheckMetrics);
-            $this->checklistService->syncChecklistIncompleteFlag($trade, !(bool) ($result['readiness']['ready'] ?? true));
+            $this->checklistService->syncChecklistIncompleteFlag($trade, ! (bool) ($result['readiness']['ready'] ?? true));
+
             return;
         }
 
@@ -1329,8 +1460,8 @@ class TradeController extends Controller
     }
 
     /**
-     * @param array<string,mixed> $contextPayload
-     * @param array<string,mixed> $responseSourcePayload
+     * @param  array<string,mixed>  $contextPayload
+     * @param  array<string,mixed>  $responseSourcePayload
      * @return array<string,float>
      */
     private function buildChecklistPrecheckMetrics(array $contextPayload, array $responseSourcePayload): array
@@ -1338,7 +1469,7 @@ class TradeController extends Controller
         $metrics = [];
 
         foreach ($contextPayload as $key => $value) {
-            if (!is_string($key) || !is_numeric($value)) {
+            if (! is_string($key) || ! is_numeric($value)) {
                 continue;
             }
             $metrics[$key] = (float) $value;
@@ -1348,7 +1479,7 @@ class TradeController extends Controller
         $snapshot = $responseSourcePayload['precheck_snapshot'] ?? null;
         if (is_array($snapshot)) {
             foreach ($snapshot as $key => $value) {
-                if (!is_string($key) || !is_numeric($value)) {
+                if (! is_string($key) || ! is_numeric($value)) {
                     continue;
                 }
                 $metrics[$key] = (float) $value;
@@ -1356,17 +1487,17 @@ class TradeController extends Controller
             }
         }
 
-        if (!array_key_exists('risk_amount', $metrics) && array_key_exists('monetary_risk', $metrics)) {
+        if (! array_key_exists('risk_amount', $metrics) && array_key_exists('monetary_risk', $metrics)) {
             $metrics['risk_amount'] = (float) $metrics['monetary_risk'];
         }
-        if (!array_key_exists('monetary_risk', $metrics) && array_key_exists('risk_amount', $metrics)) {
+        if (! array_key_exists('monetary_risk', $metrics) && array_key_exists('risk_amount', $metrics)) {
             $metrics['monetary_risk'] = (float) $metrics['risk_amount'];
         }
 
-        if (!array_key_exists('realized_r_multiple', $metrics) && array_key_exists('r_multiple', $metrics)) {
+        if (! array_key_exists('realized_r_multiple', $metrics) && array_key_exists('r_multiple', $metrics)) {
             $metrics['realized_r_multiple'] = (float) $metrics['r_multiple'];
         }
-        if (!array_key_exists('r_multiple', $metrics) && array_key_exists('realized_r_multiple', $metrics)) {
+        if (! array_key_exists('r_multiple', $metrics) && array_key_exists('realized_r_multiple', $metrics)) {
             $metrics['r_multiple'] = (float) $metrics['realized_r_multiple'];
         }
 
@@ -1374,7 +1505,7 @@ class TradeController extends Controller
     }
 
     /**
-     * @param array<string,mixed> $checklistGate
+     * @param  array<string,mixed>  $checklistGate
      */
     private function attachChecklistEvaluationPayload(Trade $trade, array $checklistGate): void
     {
@@ -1395,8 +1526,8 @@ class TradeController extends Controller
     }
 
     /**
-     * @param array<string, mixed> $payloadWithMetrics
-     * @param object{id:int,starting_balance:numeric-string|int|float,current_balance:numeric-string|int|float} $account
+     * @param  array<string, mixed>  $payloadWithMetrics
+     * @param  object{id:int,starting_balance:numeric-string|int|float,current_balance:numeric-string|int|float}  $account
      * @return array{
      *   allowed:bool,
      *   requires_override_reason:bool,
@@ -1425,6 +1556,7 @@ class TradeController extends Controller
      *   requires_override_reason:bool,
      *   violations:array<int,array{code:string,message:string,limit:float,actual:float}>
      * } $evaluation
+     *
      * @throws ValidationException
      */
     private function throwIfRiskPolicyBlocked(array $evaluation): void
@@ -1452,7 +1584,7 @@ class TradeController extends Controller
 
     private function touchAnalyticsCacheVersion(): void
     {
-        if (!Cache::has('analytics:version')) {
+        if (! Cache::has('analytics:version')) {
             Cache::forever('analytics:version', 1);
         }
 
@@ -1526,16 +1658,17 @@ class TradeController extends Controller
         }
 
         $parts = parse_url($value);
-        if (!is_array($parts)) {
+        if (! is_array($parts)) {
             return null;
         }
 
         $path = $parts['path'] ?? null;
-        if (!is_string($path) || !str_starts_with($path, '/storage/')) {
+        if (! is_string($path) || ! str_starts_with($path, '/storage/')) {
             return null;
         }
 
-        $query = isset($parts['query']) ? ('?' . $parts['query']) : '';
-        return $path . $query;
+        $query = isset($parts['query']) ? ('?'.$parts['query']) : '';
+
+        return $path.$query;
     }
 }

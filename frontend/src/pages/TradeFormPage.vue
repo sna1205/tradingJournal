@@ -12,7 +12,12 @@ import InstrumentPairSelect from '@/components/form/InstrumentPairSelect.vue'
 import TradeImageUploader from '@/components/trades/TradeImageUploader.vue'
 import TradeChecklistPanel from '@/components/checklists/TradeChecklistPanel.vue'
 import api from '@/services/api'
-import { FxRateResolutionError, FxToUsdService, type FxQuoteToUsdResolution } from '@/services/fxToUsdService'
+import {
+  FxRateResolutionError,
+  FxToUsdService,
+  resolveQuoteToUsdFromTable,
+  type FxQuoteToUsdResolution,
+} from '@/services/fxToUsdService'
 import { livePriceFeedService } from '@/services/priceFeedService'
 import { useAccountStore } from '@/stores/accountStore'
 import {
@@ -32,7 +37,7 @@ const tradeChecklistStore = useTradeChecklistStore()
 const accountStore = useAccountStore()
 const uiStore = useUiStore()
 const { accounts } = storeToRefs(accountStore)
-const { instruments, strategyModels, setups, killzones, tradeTags, sessionOptions } = storeToRefs(tradeStore)
+const { instruments, strategyModels, setups, killzones, tradeTags, sessionOptions, fxRates } = storeToRefs(tradeStore)
 const {
   checklist: activeChecklist,
   items: checklistItems,
@@ -400,6 +405,14 @@ async function refreshLiveFxConversion() {
     liveFxAttemptedSymbols.value = []
   } catch (error) {
     if (requestId !== liveFxResolveRequestId) return
+    const fallback = resolveQuoteToUsdFromTable(quoteCurrency, fxRates.value)
+    if (fallback) {
+      liveFxConversion.value = fallback
+      liveFxConversionErrorMessage.value = ''
+      liveFxAttemptedSymbols.value = []
+      return
+    }
+
     liveFxConversion.value = null
     if (error instanceof FxRateResolutionError) {
       liveFxAttemptedSymbols.value = error.attemptedSymbols
@@ -1393,6 +1406,7 @@ onMounted(async () => {
     await Promise.all([
       accountStore.fetchAccounts(),
       tradeStore.fetchInstruments(),
+      tradeStore.fetchFxRates(),
       tradeStore.fetchDictionaries(),
     ])
   } catch {

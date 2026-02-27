@@ -6,7 +6,12 @@ import BaseSelect from '@/components/form/BaseSelect.vue'
 import InstrumentPairSelect from '@/components/form/InstrumentPairSelect.vue'
 import FieldWrapper from '@/components/form/FieldWrapper.vue'
 import api from '@/services/api'
-import { FxRateResolutionError, FxToUsdService, type FxQuoteToUsdResolution } from '@/services/fxToUsdService'
+import {
+  FxRateResolutionError,
+  FxToUsdService,
+  resolveQuoteToUsdFromTable,
+  type FxQuoteToUsdResolution,
+} from '@/services/fxToUsdService'
 import { livePriceFeedService } from '@/services/priceFeedService'
 import { useAccountStore } from '@/stores/accountStore'
 import { useTradeStore } from '@/stores/tradeStore'
@@ -34,7 +39,7 @@ const props = withDefaults(
 const accountStore = useAccountStore()
 const tradeStore = useTradeStore()
 const { accounts } = storeToRefs(accountStore)
-const { instruments } = storeToRefs(tradeStore)
+const { instruments, fxRates } = storeToRefs(tradeStore)
 
 const selectedAccountId = ref('')
 const selectedInstrumentId = ref('')
@@ -214,6 +219,14 @@ async function refreshFxConversion() {
     fxAttemptedSymbols.value = []
   } catch (error) {
     if (requestId !== fxResolveRequestId) return
+    const fallback = resolveQuoteToUsdFromTable(quoteCurrency, fxRates.value)
+    if (fallback) {
+      fxConversion.value = fallback
+      fxErrorMessage.value = ''
+      fxAttemptedSymbols.value = []
+      return
+    }
+
     fxConversion.value = null
     if (error instanceof FxRateResolutionError) {
       fxAttemptedSymbols.value = error.attemptedSymbols
@@ -297,6 +310,7 @@ onMounted(async () => {
   await Promise.all([
     accountStore.fetchAccounts().catch(() => undefined),
     tradeStore.fetchInstruments().catch(() => undefined),
+    tradeStore.fetchFxRates().catch(() => undefined),
   ])
 
   if (!selectedAccountId.value && accounts.value.length > 0) {
@@ -346,6 +360,27 @@ function asNumber(value: number, decimals = 2) {
   const safeValue = Number.isFinite(value) ? value : 0
   return safeValue.toFixed(decimals)
 }
+
+function switchRiskMode(nextMode: RiskMode) {
+  if (riskMode.value === nextMode) return
+
+  const balance = Number(form.account_balance)
+  if (Number.isFinite(balance) && balance > 0) {
+    if (nextMode === 'percent') {
+      const fixed = Number(form.risk_amount_fixed)
+      if (Number.isFinite(fixed) && fixed >= 0) {
+        form.risk_percent = ((fixed / balance) * 100).toFixed(2)
+      }
+    } else {
+      const percent = Number(form.risk_percent)
+      if (Number.isFinite(percent) && percent >= 0) {
+        form.risk_amount_fixed = ((balance * percent) / 100).toFixed(2)
+      }
+    }
+  }
+
+  riskMode.value = nextMode
+}
 </script>
 
 <template>
@@ -390,7 +425,7 @@ function asNumber(value: number, decimals = 2) {
                 type="button"
                 class="lot-calc-segment-btn"
                 :class="{ active: riskMode === 'percent' }"
-                @click="riskMode = 'percent'"
+                @click="switchRiskMode('percent')"
               >
                 % of balance
               </button>
@@ -398,7 +433,7 @@ function asNumber(value: number, decimals = 2) {
                 type="button"
                 class="lot-calc-segment-btn"
                 :class="{ active: riskMode === 'fixed' }"
-                @click="riskMode = 'fixed'"
+                @click="switchRiskMode('fixed')"
               >
                 Fixed amount
               </button>

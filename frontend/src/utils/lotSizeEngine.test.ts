@@ -98,6 +98,26 @@ describe('calculateLotSize FX-aware sizing', () => {
     expect(result.actual_risk_at_stop).toBeCloseTo(100, 2)
   })
 
+  it('rejects percentage risk above 100%', () => {
+    const result = calculateLotSize({
+      ...BASE_INPUT,
+      risk_mode: 'percent',
+      risk_percent: '960',
+      entry_price: '1.1000',
+      stop_loss: '1.0990',
+      instrument: EURUSD,
+      fx_rate_quote_to_usd: 1,
+      fx_symbol_used: null,
+      fx_conversion_method: 'identity',
+      fx_rate_timestamp: null,
+      fx_rate_mode: 'mid',
+    })
+
+    expect(result.valid).toBe(false)
+    expect(result.field_errors.risk_percent).toBe('Risk % must be between 0 and 100.')
+    expect(result.target_risk_amount).toBe(0)
+  })
+
   it('EURJPY uses inverse USDJPY conversion', () => {
     const result = runCase(EURJPY, '160.00', '159.50', {
       rate: 1 / 150,
@@ -130,8 +150,8 @@ describe('calculateLotSize FX-aware sizing', () => {
       ts: 1700000000100,
     })
 
-    expect(first.lot_size).not.toBe(second.lot_size)
-    expect(second.lot_size).toBeGreaterThan(first.lot_size)
+    expect(second.lot_size_raw).toBeGreaterThan(first.lot_size_raw)
+    expect(second.risk_per_one_lot).toBeLessThan(first.risk_per_one_lot)
   })
 
   it('EURGBP uses direct GBPUSD conversion', () => {

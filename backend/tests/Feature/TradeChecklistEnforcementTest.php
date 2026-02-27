@@ -22,6 +22,7 @@ class TradeChecklistEnforcementTest extends TestCase
     use RefreshDatabase;
 
     private User $user;
+
     private int $instrumentId;
 
     protected function setUp(): void
@@ -240,7 +241,7 @@ class TradeChecklistEnforcementTest extends TestCase
         $this->createChecklistWithRequiredRule('strategy', null, $strategyModelId);
         $secondStrategyChecklist = $this->createChecklistWithRequiredRule('strategy', null, $strategyModelId);
 
-        $response = $this->getJson('/api/trade-checklist/resolve?' . http_build_query([
+        $response = $this->getJson('/api/trade-checklist/resolve?'.http_build_query([
             'account_id' => (int) $account->id,
             'strategy_model_id' => $strategyModelId,
         ]));
@@ -316,6 +317,42 @@ class TradeChecklistEnforcementTest extends TestCase
         ]);
     }
 
+    public function test_trade_checklist_response_upsert_rejects_account_context_mismatch(): void
+    {
+        $accountA = $this->createOwnedAccount();
+        $accountB = $this->createOwnedAccount();
+        $checklist = $this->createChecklistWithRequiredRule('account', (int) $accountA->id, null);
+        $requiredItem = $checklist->items()->firstOrFail();
+
+        $trade = Trade::factory()->create([
+            'account_id' => (int) $accountA->id,
+            'instrument_id' => $this->instrumentId,
+            'pair' => 'EURUSD',
+            'direction' => 'buy',
+            'entry_price' => 1.1000,
+            'stop_loss' => 1.0990,
+            'take_profit' => 1.1020,
+            'actual_exit_price' => 1.1010,
+            'lot_size' => 0.10,
+            'date' => now()->subDay(),
+            'followed_rules' => true,
+            'emotion' => 'calm',
+        ]);
+
+        $response = $this->putJson("/api/trades/{$trade->id}/checklist-responses", [
+            'account_id' => (int) $accountB->id,
+            'responses' => [
+                [
+                    'checklist_item_id' => (int) $requiredItem->id,
+                    'value' => true,
+                ],
+            ],
+        ]);
+
+        $response->assertStatus(422);
+        $response->assertJsonValidationErrors(['account_id']);
+    }
+
     private function createOwnedAccount(): Account
     {
         return Account::factory()->create([
@@ -338,7 +375,7 @@ class TradeChecklistEnforcementTest extends TestCase
             'user_id' => $this->user->id,
             'account_id' => $scope === 'account' ? $accountId : null,
             'strategy_model_id' => $scope === 'strategy' ? $strategyModelId : null,
-            'name' => ucfirst($scope) . ' Checklist ' . Str::uuid()->toString(),
+            'name' => ucfirst($scope).' Checklist '.Str::uuid()->toString(),
             'scope' => $scope,
             'enforcement_mode' => $enforcementMode,
             'is_active' => true,

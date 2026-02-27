@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { FxRateResolutionError, FxToUsdService } from '@/services/fxToUsdService'
+import { FxRateResolutionError, FxToUsdService, resolveQuoteToUsdFromTable } from '@/services/fxToUsdService'
 import type { PriceQuote } from '@/services/priceFeedService'
 
 type PendingWaiter = {
@@ -156,5 +156,38 @@ describe('FxToUsdService live quote resolution', () => {
     await expect(service.getRate('JPY', 'mid')).rejects.toMatchObject({
       attemptedSymbols: expect.arrayContaining(['JPYUSD', 'JPY/USD', 'USDJPY', 'USD/JPY']),
     })
+  })
+})
+
+describe('resolveQuoteToUsdFromTable', () => {
+  it('resolves inverse from USDJPY table row', () => {
+    const result = resolveQuoteToUsdFromTable('JPY', [
+      { from_currency: 'USD', to_currency: 'JPY', rate: '150.0' },
+    ])
+
+    expect(result).not.toBeNull()
+    expect(result?.method).toBe('inverse')
+    expect(result?.rate).toBeCloseTo(1 / 150, 8)
+  })
+
+  it('resolves direct when quote->USD row exists', () => {
+    const result = resolveQuoteToUsdFromTable('GBP', [
+      { from_currency: 'GBP', to_currency: 'USD', rate: 1.27 },
+    ])
+
+    expect(result).not.toBeNull()
+    expect(result?.method).toBe('direct')
+    expect(result?.rate).toBeCloseTo(1.27, 8)
+  })
+
+  it('resolves pivot using cross rates in table', () => {
+    const result = resolveQuoteToUsdFromTable('JPY', [
+      { from_currency: 'EUR', to_currency: 'JPY', rate: 150.0 },
+      { from_currency: 'EUR', to_currency: 'USD', rate: 1.1 },
+    ])
+
+    expect(result).not.toBeNull()
+    expect(result?.method).toBe('pivot')
+    expect(result?.rate).toBeCloseTo(1.1 / 150, 8)
   })
 })

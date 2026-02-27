@@ -45,6 +45,15 @@ interface FxCacheEntry {
   expiresAt: number
 }
 
+export interface FxRateTableRow {
+  from_currency: string
+  to_currency: string
+  rate: string | number
+  rate_updated_at?: string | null
+  updated_at?: string
+  created_at?: string
+}
+
 export class FxToUsdService {
   private readonly priceFeedService: PriceFeedService
   private readonly symbolResolver: SymbolResolver
@@ -337,6 +346,84 @@ function normalizeCurrency(value: string): string {
   return String(value ?? '').trim().toUpperCase()
 }
 
+export function resolveQuoteToUsdFromTable(
+  quoteCurrency: string,
+  rows: FxRateTableRow[]
+): FxQuoteToUsdResolution | null {
+  const quote = normalizeCurrency(quoteCurrency)
+  if (!quote) return null
+  if (quote === 'USD') {
+    return {
+      rate: 1,
+      symbolUsed: null,
+      method: 'identity',
+      mode: 'mid',
+      ts: null,
+      attemptedSymbols: [],
+    }
+  }
+
+  const matrix = new Map<string, number>()
+  for (const row of rows) {
+    const from = normalizeCurrency(row.from_currency)
+    const to = normalizeCurrency(row.to_currency)
+    const rate = Number(row.rate ?? 0)
+    if (!from || !to || !(rate > 0)) continue
+    matrix.set(`${from}:${to}`, rate)
+  }
+
+  const direct = matrix.get(`${quote}:USD`)
+  if (direct && direct > 0) {
+    return {
+      rate: direct,
+      symbolUsed: `${quote}USD (table)`,
+      method: 'direct',
+      mode: 'mid',
+      ts: Date.now(),
+      attemptedSymbols: [],
+    }
+  }
+
+  const inverse = matrix.get(`USD:${quote}`)
+  if (inverse && inverse > 0) {
+    return {
+      rate: 1 / inverse,
+      symbolUsed: `USD${quote} (table)`,
+      method: 'inverse',
+      mode: 'mid',
+      ts: Date.now(),
+      attemptedSymbols: [],
+    }
+  }
+
+  const currencies = new Set<string>()
+  for (const key of matrix.keys()) {
+    const [from, to] = key.split(':')
+    if (from) currencies.add(from)
+    if (to) currencies.add(to)
+  }
+
+  for (const pivot of currencies) {
+    if (pivot === quote || pivot === 'USD') continue
+
+    const quoteToPivot = rateBetween(matrix, quote, pivot)
+    if (!(quoteToPivot > 0)) continue
+    const pivotToUsd = rateBetween(matrix, pivot, 'USD')
+    if (!(pivotToUsd > 0)) continue
+
+    return {
+      rate: quoteToPivot * pivotToUsd,
+      symbolUsed: `${quote}${pivot} + ${pivot}USD (table)`,
+      method: 'pivot',
+      mode: 'mid',
+      ts: Date.now(),
+      attemptedSymbols: [],
+    }
+  }
+
+  return null
+}
+
 function normalizePivotCurrencies(pivots: string[]): string[] {
   const normalized = pivots
     .map((value) => normalizeCurrency(value))
@@ -353,3 +440,13 @@ function cloneResolution(value: FxQuoteToUsdResolution): FxQuoteToUsdResolution 
 }
 
 export type FxPriceQuote = PriceQuote
+
+function rateBetween(matrix: Map<string, number>, from: string, to: string): number {
+  const direct = matrix.get(`${from}:${to}`)
+  if (direct && direct > 0) return direct
+
+  const inverse = matrix.get(`${to}:${from}`)
+  if (inverse && inverse > 0) return 1 / inverse
+
+  return 0
+}

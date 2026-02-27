@@ -140,6 +140,8 @@ export function calculateLotSize(input: LotSizeInput): LotSizeResult {
   if (input.risk_mode === 'percent') {
     if (riskPercent === null || riskPercent <= 0n) {
       fieldErrors.risk_percent = 'Risk % must be greater than 0.'
+    } else if (riskPercent > fromInt(100)) {
+      fieldErrors.risk_percent = 'Risk % must be between 0 and 100.'
     } else if (accountBalance !== null && accountBalance > 0n) {
       targetRiskAmount = mulFixed(accountBalance, divFixed(riskPercent, fromInt(100)))
     }
