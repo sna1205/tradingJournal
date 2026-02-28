@@ -21,17 +21,20 @@ import {
   ShieldAlert,
   SwatchBook,
   LogOut,
+  Settings2,
 } from 'lucide-vue-next'
 import { storeToRefs } from 'pinia'
 import { useUiStore, type ThemeMode } from '@/stores/uiStore'
 import { useSyncStatusStore } from '@/stores/syncStatusStore'
 import { useAuthStore } from '@/stores/authStore'
+import { useUserPreferencesStore } from '@/stores/userPreferencesStore'
 
 const route = useRoute()
 const router = useRouter()
 const uiStore = useUiStore()
 const syncStatusStore = useSyncStatusStore()
 const authStore = useAuthStore()
+const userPreferencesStore = useUserPreferencesStore()
 const { theme } = storeToRefs(uiStore)
 const {
   isFallbackMode,
@@ -109,6 +112,14 @@ const navSections: NavSection[] = [
         navHint: 'Targets',
       },
       {
+        label: 'Settings',
+        to: '/settings',
+        icon: Settings2,
+        title: 'Workspace Settings',
+        subtitle: 'Manage profile preferences, theme sync, security sessions, and governance pointers.',
+        navHint: 'Preferences',
+      },
+      {
         label: 'Checklists',
         to: '/settings/checklists',
         icon: ListChecks,
@@ -134,13 +145,20 @@ const navSections: NavSection[] = [
 ]
 
 const navItems = computed(() => navSections.flatMap((section) => section.items))
-const currentItem = computed(() =>
-  navItems.value.find((item) => route.path === item.to || route.path.startsWith(`${item.to}/`)) ?? navItems.value[0]!
-)
+const currentItem = computed(() => {
+  const exactMatch = navItems.value.find((item) => route.path === item.to)
+  if (exactMatch) return exactMatch
+
+  const prefixMatch = navItems.value
+    .filter((item) => route.path.startsWith(`${item.to}/`))
+    .sort((left, right) => right.to.length - left.to.length)[0]
+
+  return prefixMatch ?? navItems.value[0]!
+})
 const showPageHero = computed(() => currentItem.value.to !== '/dashboard')
 const compactHeroRoutes = new Set(['/trades', '/missed-trades'])
 const useCompactHero = computed(() => compactHeroRoutes.has(route.path))
-const hideGlobalFabOnRoutes = new Set(['trades-new', 'trades-edit', 'tools-lots-calculate', 'settings-checklists'])
+const hideGlobalFabOnRoutes = new Set(['trades-new', 'trades-edit', 'tools-lots-calculate', 'settings-checklists', 'settings'])
 const showGlobalFab = computed(() => !hideGlobalFabOnRoutes.has(String(route.name ?? '')))
 const mobileThemeMenuOpen = ref(false)
 const mobileNavOpen = ref(false)
@@ -171,7 +189,7 @@ function toggleMobileThemeMenu() {
 }
 
 function chooseTheme(mode: ThemeMode) {
-  uiStore.setTheme(mode)
+  void userPreferencesStore.setThemePreference(mode)
   mobileThemeMenuOpen.value = false
 }
 

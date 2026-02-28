@@ -4,10 +4,8 @@ import { RouterView, useRoute, useRouter } from 'vue-router'
 import SidebarLayout from '@/components/layout/SidebarLayout.vue'
 import ToastCenter from '@/components/layout/ToastCenter.vue'
 import ConfirmDialog from '@/components/layout/ConfirmDialog.vue'
-import { useUiStore } from '@/stores/uiStore'
 import { useAuthStore } from '@/stores/authStore'
 
-const uiStore = useUiStore()
 const authStore = useAuthStore()
 const route = useRoute()
 const router = useRouter()
@@ -23,7 +21,6 @@ function handleUnauthorized() {
 }
 
 onMounted(() => {
-  uiStore.initTheme()
   window.addEventListener('auth:unauthorized', handleUnauthorized)
 })
 

@@ -4,12 +4,14 @@ import { isAxiosError } from 'axios'
 import { useRoute, useRouter } from 'vue-router'
 import { Eye, EyeOff, LineChart, ShieldCheck, Sparkles, UserRound } from 'lucide-vue-next'
 import { useAuthStore } from '@/stores/authStore'
+import { useUserPreferencesStore } from '@/stores/userPreferencesStore'
 
 type AuthMode = 'login' | 'register'
 
 const route = useRoute()
 const router = useRouter()
 const authStore = useAuthStore()
+const userPreferencesStore = useUserPreferencesStore()
 
 const mode = ref<AuthMode>('login')
 const name = ref('')
@@ -75,6 +77,7 @@ async function submit() {
     } else {
       await authStore.register(name.value, email.value, password.value, passwordConfirmation.value)
     }
+    await userPreferencesStore.initialize(true)
 
     const redirectTarget = typeof route.query.redirect === 'string' && route.query.redirect !== ''
       ? route.query.redirect

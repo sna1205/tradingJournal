@@ -13,6 +13,12 @@ interface AuthResponse {
   user: AuthUser
 }
 
+interface LogoutAllResponse {
+  message: string
+  revoked_sessions: number
+  revoked_tokens: number
+}
+
 let unauthorizedListenerBound = false
 
 export const useAuthStore = defineStore('auth', () => {
@@ -103,6 +109,18 @@ export const useAuthStore = defineStore('auth', () => {
     }
   }
 
+  async function logoutAll() {
+    loading.value = true
+    try {
+      await ensureCsrfCookie()
+      const { data } = await api.post<LogoutAllResponse>('/auth/logout-all')
+      initialized.value = true
+      return data
+    } finally {
+      loading.value = false
+    }
+  }
+
   return {
     user,
     initialized,
@@ -113,6 +131,7 @@ export const useAuthStore = defineStore('auth', () => {
     login,
     register,
     logout,
+    logoutAll,
     clearSession,
   }
 })

@@ -17,6 +17,7 @@ use App\Http\Controllers\Api\TradeChecklistResponseController;
 use App\Http\Controllers\Api\TradeLegController;
 use App\Http\Controllers\Api\TradeImageController;
 use App\Http\Controllers\Api\TradePsychologyController;
+use App\Http\Controllers\Api\UserPreferenceController;
 use Illuminate\Support\Facades\Route;
 
 Route::get('health', fn () => response()->json([
@@ -30,13 +31,15 @@ Route::prefix('auth')->middleware('web')->group(function () {
     Route::post('login', [AuthController::class, 'login'])->middleware('throttle:auth-login');
 });
 
-Route::prefix('auth')->middleware(['web', 'auth:sanctum'])->group(function () {
-    Route::get('me', [AuthController::class, 'me']);
-    Route::post('logout', [AuthController::class, 'logout']);
-    Route::post('logout-all', [AuthController::class, 'logoutAll']);
-});
+    Route::prefix('auth')->middleware(['web', 'auth:sanctum'])->group(function () {
+        Route::get('me', [AuthController::class, 'me']);
+        Route::post('logout', [AuthController::class, 'logout']);
+        Route::post('logout-all', [AuthController::class, 'logoutAll']);
+    });
 
 Route::middleware('auth:sanctum')->group(function () {
+    Route::get('user/preferences', [UserPreferenceController::class, 'show']);
+    Route::put('user/preferences', [UserPreferenceController::class, 'update']);
     Route::apiResource('accounts', AccountController::class);
     Route::get('accounts/{account}/equity', [AccountController::class, 'equity']);
     Route::get('accounts/{account}/analytics', [AccountController::class, 'analytics'])->middleware('throttle:analytics-high');
