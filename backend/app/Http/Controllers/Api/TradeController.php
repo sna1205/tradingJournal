@@ -17,6 +17,7 @@ use Illuminate\Http\Exceptions\HttpResponseException;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Facades\Validator;
 use Illuminate\Validation\Rule;
@@ -24,6 +25,23 @@ use Illuminate\Validation\ValidationException;
 
 class TradeController extends Controller
 {
+    private const UNTRUSTED_PRECHECK_METRIC_KEYS = [
+        'risk_percent',
+        'monetary_risk',
+        'risk_amount',
+        'lot_size',
+        'position_size',
+        'pip_value',
+        'pip_size',
+        'risk_per_unit',
+        'reward_per_unit',
+        'instrument_tick_value',
+        'instrument_tick_size',
+        'rr',
+        'r_multiple',
+        'realized_r_multiple',
+    ];
+
     private const SESSION_ENUM_VALUES = [
         'asia',
         'london',
@@ -1356,6 +1374,15 @@ class TradeController extends Controller
         array $failedRequiredRuleIds = [],
         array $failedRuleReasons = []
     ): void {
+        Log::warning('Trade rejected by strict checklist enforcement.', [
+            'checklist_id' => $checklist !== null ? (int) $checklist->id : null,
+            'checklist_scope' => $checklist !== null ? (string) $checklist->scope : null,
+            'checklist_version' => $checklistVersion ?? ($checklist !== null ? (int) ($checklist->revision ?? 1) : null),
+            'enforcement_mode' => $enforcementMode ?? ($checklist !== null ? (string) $checklist->enforcement_mode : 'strict'),
+            'failed_required_rule_ids' => $failedRequiredRuleIds,
+            'failed_rule_reasons' => $failedRuleReasons,
+        ]);
+
         throw new HttpResponseException(
             response()->json([
                 'message' => 'Checklist strict validation failed.',
@@ -1476,16 +1503,7 @@ class TradeController extends Controller
             $metrics[strtolower($key)] = (float) $value;
         }
 
-        $snapshot = $responseSourcePayload['precheck_snapshot'] ?? null;
-        if (is_array($snapshot)) {
-            foreach ($snapshot as $key => $value) {
-                if (! is_string($key) || ! is_numeric($value)) {
-                    continue;
-                }
-                $metrics[$key] = (float) $value;
-                $metrics[strtolower($key)] = (float) $value;
-            }
-        }
+        $this->logIgnoredPrecheckSnapshotMetrics($responseSourcePayload, $contextPayload);
 
         if (! array_key_exists('risk_amount', $metrics) && array_key_exists('monetary_risk', $metrics)) {
             $metrics['risk_amount'] = (float) $metrics['monetary_risk'];
@@ -1502,6 +1520,46 @@ class TradeController extends Controller
         }
 
         return $metrics;
+    }
+
+    /**
+     * @param  array<string,mixed>  $responseSourcePayload
+     * @param  array<string,mixed>  $contextPayload
+     */
+    private function logIgnoredPrecheckSnapshotMetrics(array $responseSourcePayload, array $contextPayload): void
+    {
+        $snapshot = $responseSourcePayload['precheck_snapshot'] ?? null;
+        if (! is_array($snapshot)) {
+            return;
+        }
+
+        $ignored = [];
+        foreach (array_keys($snapshot) as $key) {
+            if (! is_string($key)) {
+                continue;
+            }
+
+            $normalized = strtolower(trim($key));
+            if ($normalized === '') {
+                continue;
+            }
+
+            if (in_array($normalized, self::UNTRUSTED_PRECHECK_METRIC_KEYS, true)) {
+                $ignored[] = $normalized;
+            }
+        }
+
+        if (count($ignored) === 0) {
+            return;
+        }
+
+        Log::warning('Ignored client-supplied precheck_snapshot metric fields during checklist enforcement.', [
+            'ignored_fields' => array_values(array_unique($ignored)),
+            'account_id' => isset($contextPayload['account_id']) && is_numeric($contextPayload['account_id'])
+                ? (int) $contextPayload['account_id']
+                : null,
+            'trade_date' => isset($contextPayload['date']) ? (string) $contextPayload['date'] : null,
+        ]);
     }
 
     /**
@@ -1564,6 +1622,13 @@ class TradeController extends Controller
         if ((bool) $evaluation['allowed']) {
             return;
         }
+
+        Log::warning('Trade rejected by risk policy.', [
+            'requires_override_reason' => (bool) ($evaluation['requires_override_reason'] ?? false),
+            'violations' => $evaluation['violations'] ?? [],
+            'policy' => $evaluation['policy'] ?? [],
+            'stats' => $evaluation['stats'] ?? [],
+        ]);
 
         $messages = collect($evaluation['violations'] ?? [])
             ->map(fn (array $violation): string => (string) ($violation['message'] ?? 'Risk policy violation.'))

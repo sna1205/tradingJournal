@@ -281,6 +281,43 @@ class TradeChecklistEnforcementTest extends TestCase
         $this->assertDatabaseCount('trades', 0);
     }
 
+    public function test_strict_auto_metric_rule_cannot_be_bypassed_by_precheck_snapshot_metrics(): void
+    {
+        $account = $this->createOwnedAccount();
+        $checklist = $this->createChecklistWithRequiredRule(
+            'account',
+            (int) $account->id,
+            null,
+            'strict',
+            'number',
+            [
+                'auto_metric' => 'risk_percent',
+                'comparator' => '<=',
+                'threshold' => 0.0001,
+            ]
+        );
+        $requiredItem = $checklist->items()->firstOrFail();
+
+        $payload = $this->tradePayload((int) $account->id);
+        $payload['checklist_responses'] = [
+            ['checklist_item_id' => (int) $requiredItem->id, 'value' => null],
+        ];
+        $payload['precheck_snapshot'] = [
+            'risk_percent' => 0.0,
+            'monetary_risk' => 0.0,
+            'lot_size' => 0.0001,
+            'pip_value' => 0.0,
+        ];
+
+        $response = $this->postJson('/api/trades', $payload);
+        $response->assertStatus(422);
+        $response->assertJsonPath('message', 'Checklist strict validation failed.');
+        $response->assertJsonPath('failed_required_rule_ids.0', (int) $requiredItem->id);
+        $response->assertJsonPath('failed_rule_reasons.0.checklist_item_id', (int) $requiredItem->id);
+        $this->assertStringContainsString('0.0001', (string) $response->json('failed_rule_reasons.0.reason'));
+        $this->assertDatabaseCount('trades', 0);
+    }
+
     public function test_soft_auto_metric_rule_failure_allows_save_and_returns_failed_rule_payload(): void
     {
         $account = $this->createOwnedAccount();

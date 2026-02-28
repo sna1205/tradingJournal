@@ -15,11 +15,18 @@ return [
 
     'paths' => ['api/*', 'sanctum/csrf-cookie'],
 
-    'allowed_methods' => ['*'],
+    'allowed_methods' => [
+        'GET',
+        'POST',
+        'PUT',
+        'PATCH',
+        'DELETE',
+        'OPTIONS',
+    ],
 
     'allowed_origins' => array_filter(array_map(
-        static fn (string $origin) => trim($origin),
-        explode(',', (string) env('CORS_ALLOWED_ORIGINS', '*'))
+        static fn (string $origin) => rtrim(trim($origin), '/'),
+        explode(',', (string) env('CORS_ALLOWED_ORIGINS', ''))
     )),
 
     'allowed_origins_patterns' => array_filter(array_map(
@@ -27,7 +34,15 @@ return [
         explode(',', (string) env('CORS_ALLOWED_ORIGIN_PATTERNS', ''))
     )),
 
-    'allowed_headers' => ['*'],
+    'allowed_headers' => [
+        'Accept',
+        'Authorization',
+        'Content-Type',
+        'Origin',
+        'X-Requested-With',
+        'X-CSRF-TOKEN',
+        'X-XSRF-TOKEN',
+    ],
 
     'exposed_headers' => [],
 

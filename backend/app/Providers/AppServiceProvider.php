@@ -12,13 +12,17 @@ use App\Policies\ChecklistPolicy;
 use App\Policies\MissedTradePolicy;
 use App\Policies\SavedReportPolicy;
 use App\Policies\TradePolicy;
+use App\Support\CorsConfigValidator;
 use App\Services\PriceFeed\CachePriceFeedService;
 use App\Services\PriceFeed\ChainedPriceFeedService;
 use App\Services\PriceFeed\ExchangeRateApiPriceFeedService;
 use App\Services\PriceFeed\PriceFeedService;
+use Illuminate\Cache\RateLimiting\Limit;
 use Illuminate\Contracts\Cache\Repository as CacheRepository;
 use Illuminate\Http\Client\Factory as HttpClientFactory;
+use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Gate;
+use Illuminate\Support\Facades\RateLimiter;
 use Illuminate\Support\ServiceProvider;
 
 class AppServiceProvider extends ServiceProvider
@@ -65,6 +69,92 @@ class AppServiceProvider extends ServiceProvider
      */
     public function boot(): void
     {
+        CorsConfigValidator::validate(
+            (string) config('app.env', 'production'),
+            is_array(config('cors.allowed_origins')) ? config('cors.allowed_origins') : [],
+            is_array(config('cors.allowed_origins_patterns')) ? config('cors.allowed_origins_patterns') : []
+        );
+
+        RateLimiter::for('auth-login', function (Request $request): array {
+            $ip = (string) ($request->ip() ?? 'unknown');
+            $email = strtolower(trim((string) $request->input('email', '')));
+
+            $emailKey = $email !== ''
+                ? "auth:login:ip-email:{$ip}|{$email}"
+                : "auth:login:ip-email:{$ip}|missing-email";
+
+            return [
+                Limit::perMinute(5)->by($emailKey),
+                Limit::perMinute(20)->by("auth:login:ip:{$ip}"),
+            ];
+        });
+
+        RateLimiter::for('auth-register', function (Request $request): array {
+            $ip = (string) ($request->ip() ?? 'unknown');
+            $email = strtolower(trim((string) $request->input('email', '')));
+            $emailKey = $email !== ''
+                ? "auth:register:ip-email:{$ip}|{$email}"
+                : "auth:register:ip-email:{$ip}|missing-email";
+
+            return [
+                Limit::perMinute(3)->by("auth:register:ip:{$ip}"),
+                Limit::perMinute(3)->by($emailKey),
+            ];
+        });
+
+        RateLimiter::for('analytics-high', function (Request $request): array {
+            $ip = (string) ($request->ip() ?? 'unknown');
+            $user = $request->user();
+            $userKey = $user !== null
+                ? "analytics:user:{$user->getAuthIdentifier()}"
+                : "analytics:user-fallback-ip:{$ip}";
+
+            return [
+                Limit::perMinute(20)->by($userKey),
+                Limit::perMinute(60)->by("analytics:ip:{$ip}"),
+            ];
+        });
+
+        RateLimiter::for('reports-export', function (Request $request): array {
+            $ip = (string) ($request->ip() ?? 'unknown');
+            $user = $request->user();
+            $userKey = $user !== null
+                ? "reports-export:user:{$user->getAuthIdentifier()}"
+                : "reports-export:user-fallback-ip:{$ip}";
+
+            return [
+                Limit::perMinute(5)->by($userKey),
+                Limit::perMinute(20)->by("reports-export:ip:{$ip}"),
+            ];
+        });
+
+        RateLimiter::for('trades-precheck', function (Request $request): array {
+            $ip = (string) ($request->ip() ?? 'unknown');
+            $user = $request->user();
+            $userKey = $user !== null
+                ? "trades-precheck:user:{$user->getAuthIdentifier()}"
+                : "trades-precheck:user-fallback-ip:{$ip}";
+
+            return [
+                Limit::perMinute(30)->by($userKey),
+                Limit::perSecond(5)->by("trades-precheck:burst:{$userKey}"),
+                Limit::perMinute(120)->by("trades-precheck:ip:{$ip}"),
+            ];
+        });
+
+        RateLimiter::for('market-data', function (Request $request): array {
+            $ip = (string) ($request->ip() ?? 'unknown');
+            $user = $request->user();
+            $userKey = $user !== null
+                ? "market-data:user:{$user->getAuthIdentifier()}"
+                : "market-data:user-fallback-ip:{$ip}";
+
+            return [
+                Limit::perMinute(60)->by($userKey),
+                Limit::perMinute(120)->by("market-data:ip:{$ip}"),
+            ];
+        });
+
         Gate::policy(Account::class, AccountPolicy::class);
         Gate::policy(Trade::class, TradePolicy::class);
         Gate::policy(Checklist::class, ChecklistPolicy::class);

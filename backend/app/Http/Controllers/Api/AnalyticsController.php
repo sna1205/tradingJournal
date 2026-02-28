@@ -922,13 +922,72 @@ class AnalyticsController extends Controller
     private function remember(string $namespace, Request $request, callable $callback, int $ttlSeconds = 90)
     {
         $version = (int) Cache::get('analytics:version', 1);
-        $queryHash = md5((string) json_encode([
-            ...$request->query(),
-            '_reporting_currency' => $this->reportingCurrency($request),
-        ]));
-        $cacheKey = "analytics:{$namespace}:v{$version}:{$queryHash}";
+        $userId = (int) ($request->user()?->id ?? auth()->id() ?? 0);
+        $scopeKey = $this->effectiveCacheScopeKey($request);
+        $normalizedParams = $this->normalizedCacheParams($request);
+        $serializedParams = json_encode($normalizedParams, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+        $paramsHash = hash('sha256', is_string($serializedParams) ? $serializedParams : '');
+        $cacheKey = "analytics:v1:{$namespace}:v{$version}:user:{$userId}:scope:{$scopeKey}:params:{$paramsHash}";
 
         return Cache::remember($cacheKey, $ttlSeconds, $callback);
+    }
+
+    private function effectiveCacheScopeKey(Request $request): string
+    {
+        $accountId = (int) $request->integer('account_id', 0);
+        if ($accountId > 0) {
+            return "account-{$accountId}";
+        }
+
+        $accountIds = $this->requestedAccountIds($request);
+        if (count($accountIds) > 0) {
+            return 'accounts-' . hash('sha256', implode(',', $accountIds));
+        }
+
+        return 'accounts-all';
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function normalizedCacheParams(Request $request): array
+    {
+        $params = $request->query();
+        $params['_reporting_currency'] = $this->reportingCurrency($request);
+        $params['_account_scope'] = $this->effectiveCacheScopeKey($request);
+
+        if (array_key_exists('account_id', $params)) {
+            $params['account_id'] = (int) $request->integer('account_id', 0);
+        }
+        if (array_key_exists('account_ids', $params)) {
+            $params['account_ids'] = $this->requestedAccountIds($request);
+        }
+        if (array_key_exists('followed_rules', $params)) {
+            $params['followed_rules'] = $request->boolean('followed_rules');
+        }
+        if (array_key_exists('is_active', $params)) {
+            $params['is_active'] = $request->boolean('is_active');
+        }
+
+        return $this->sortArrayRecursively($params);
+    }
+
+    private function sortArrayRecursively(mixed $value): mixed
+    {
+        if (!is_array($value)) {
+            return $value;
+        }
+
+        if (array_is_list($value)) {
+            return array_map(fn ($item) => $this->sortArrayRecursively($item), $value);
+        }
+
+        ksort($value);
+        foreach ($value as $key => $item) {
+            $value[$key] = $this->sortArrayRecursively($item);
+        }
+
+        return $value;
     }
 
     /**
@@ -949,6 +1008,7 @@ class AnalyticsController extends Controller
             ->map(fn ($value): int => (int) $value)
             ->filter(fn (int $value): bool => $value > 0)
             ->unique()
+            ->sort()
             ->values()
             ->all();
     }

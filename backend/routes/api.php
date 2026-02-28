@@ -26,8 +26,8 @@ Route::get('health', fn () => response()->json([
 ]));
 
 Route::prefix('auth')->group(function () {
-    Route::post('register', [AuthController::class, 'register']);
-    Route::post('login', [AuthController::class, 'login']);
+    Route::post('register', [AuthController::class, 'register'])->middleware('throttle:auth-register');
+    Route::post('login', [AuthController::class, 'login'])->middleware('throttle:auth-login');
 });
 
 Route::middleware('auth:sanctum')->group(function () {
@@ -38,15 +38,15 @@ Route::middleware('auth:sanctum')->group(function () {
 
     Route::apiResource('accounts', AccountController::class);
     Route::get('accounts/{account}/equity', [AccountController::class, 'equity']);
-    Route::get('accounts/{account}/analytics', [AccountController::class, 'analytics']);
+    Route::get('accounts/{account}/analytics', [AccountController::class, 'analytics'])->middleware('throttle:analytics-high');
     Route::get('accounts/{account}/risk-policy', [AccountController::class, 'riskPolicy']);
     Route::put('accounts/{account}/risk-policy', [AccountController::class, 'upsertRiskPolicy']);
     Route::get('accounts/{account}/challenge', [AccountController::class, 'challenge']);
     Route::put('accounts/{account}/challenge', [AccountController::class, 'upsertChallenge']);
     Route::get('accounts/{account}/challenge-status', [AccountController::class, 'challengeStatus']);
     Route::get('instruments', [InstrumentController::class, 'index']);
-    Route::get('fx-rates', [FxRateController::class, 'index']);
-    Route::get('price-feed/quotes', [PriceFeedController::class, 'quotes']);
+    Route::get('fx-rates', [FxRateController::class, 'index'])->middleware('throttle:market-data');
+    Route::get('price-feed/quotes', [PriceFeedController::class, 'quotes'])->middleware('throttle:market-data');
     Route::get('checklists', [ChecklistController::class, 'index']);
     Route::post('checklists', [ChecklistController::class, 'store']);
     Route::put('checklists/{checklist}', [ChecklistController::class, 'update']);
@@ -65,7 +65,7 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('sessions', [DictionaryController::class, 'sessions']);
     });
     Route::get('trade-checklist/resolve', [TradeChecklistResponseController::class, 'resolve']);
-    Route::post('trades/precheck', [TradeController::class, 'precheck']);
+    Route::post('trades/precheck', [TradeController::class, 'precheck'])->middleware('throttle:trades-precheck');
     Route::apiResource('trades', TradeController::class);
     Route::get('trades/{trade}/checklist-responses', [TradeChecklistResponseController::class, 'show']);
     Route::put('trades/{trade}/checklist-responses', [TradeChecklistResponseController::class, 'upsert']);
@@ -78,16 +78,16 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('trades/{trade}/images', [TradeImageController::class, 'store']);
     Route::put('trade-images/{tradeImage}', [TradeImageController::class, 'update']);
     Route::delete('trade-images/{tradeImage}', [TradeImageController::class, 'destroy']);
-    Route::get('reports/export.csv', [ReportController::class, 'exportCsvFromQuery']);
+    Route::get('reports/export.csv', [ReportController::class, 'exportCsvFromQuery'])->middleware('throttle:reports-export');
     Route::get('reports/{report}/run', [ReportController::class, 'run']);
-    Route::get('reports/{report}/export.csv', [ReportController::class, 'exportCsv']);
+    Route::get('reports/{report}/export.csv', [ReportController::class, 'exportCsv'])->middleware('throttle:reports-export');
     Route::apiResource('reports', ReportController::class);
     Route::apiResource('missed-trades', MissedTradeController::class);
     Route::post('missed-trades/{missedTrade}/images', [MissedTradeImageController::class, 'store']);
     Route::delete('missed-trade-images/{missedTradeImage}', [MissedTradeImageController::class, 'destroy']);
-    Route::get('portfolio/analytics', [AnalyticsController::class, 'portfolioAnalytics']);
+    Route::get('portfolio/analytics', [AnalyticsController::class, 'portfolioAnalytics'])->middleware('throttle:analytics-high');
 
-    Route::prefix('analytics')->group(function () {
+    Route::prefix('analytics')->middleware('throttle:analytics-high')->group(function () {
         Route::get('dashboard-summary', [AnalyticsController::class, 'dashboardSummary']);
         Route::get('overview', [AnalyticsController::class, 'overview']);
         Route::get('daily', [AnalyticsController::class, 'daily']);
