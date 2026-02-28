@@ -1,8 +1,7 @@
 import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
-import api, { getAuthToken, setAuthToken } from '@/services/api'
-
-const AUTH_USER_ID_KEY = 'tj_auth_user_id'
+import api, { ensureCsrfCookie } from '@/services/api'
+import { setSyncQueueUserScope } from '@/services/offlineSyncQueue'
 
 interface AuthUser {
   id: number
@@ -11,8 +10,6 @@ interface AuthUser {
 }
 
 interface AuthResponse {
-  token: string
-  token_type: string
   user: AuthUser
 }
 
@@ -23,20 +20,15 @@ export const useAuthStore = defineStore('auth', () => {
   const initialized = ref(false)
   const loading = ref(false)
 
-  const isAuthenticated = computed(() => Boolean(user.value && getAuthToken()))
+  const isAuthenticated = computed(() => Boolean(user.value))
 
   function clearSession() {
     user.value = null
-    setAuthToken(null)
-    localStorage.removeItem(AUTH_USER_ID_KEY)
+    setSyncQueueUserScope(null)
   }
 
   function setUserScope(nextUser: AuthUser | null) {
-    if (!nextUser) {
-      localStorage.removeItem(AUTH_USER_ID_KEY)
-      return
-    }
-    localStorage.setItem(AUTH_USER_ID_KEY, String(nextUser.id))
+    setSyncQueueUserScope(nextUser?.id ?? null)
   }
 
   async function initialize() {
@@ -46,15 +38,11 @@ export const useAuthStore = defineStore('auth', () => {
       unauthorizedListenerBound = true
     }
 
-    const token = getAuthToken()
-    if (!token) {
-      initialized.value = true
-      return
-    }
-
     loading.value = true
     try {
       await fetchMe()
+    } catch {
+      clearSession()
     } finally {
       loading.value = false
       initialized.value = true
@@ -71,8 +59,8 @@ export const useAuthStore = defineStore('auth', () => {
   async function login(email: string, password: string) {
     loading.value = true
     try {
+      await ensureCsrfCookie()
       const { data } = await api.post<AuthResponse>('/auth/login', { email, password })
-      setAuthToken(data.token)
       user.value = data.user
       setUserScope(data.user)
       initialized.value = true
@@ -85,13 +73,13 @@ export const useAuthStore = defineStore('auth', () => {
   async function register(name: string, email: string, password: string, passwordConfirmation: string) {
     loading.value = true
     try {
+      await ensureCsrfCookie()
       const { data } = await api.post<AuthResponse>('/auth/register', {
         name,
         email,
         password,
         password_confirmation: passwordConfirmation,
       })
-      setAuthToken(data.token)
       user.value = data.user
       setUserScope(data.user)
       initialized.value = true
@@ -104,9 +92,8 @@ export const useAuthStore = defineStore('auth', () => {
   async function logout() {
     loading.value = true
     try {
-      if (getAuthToken()) {
-        await api.post('/auth/logout')
-      }
+      await ensureCsrfCookie()
+      await api.post('/auth/logout')
     } catch {
       // Session state is cleared locally regardless of API response.
     } finally {

@@ -4,15 +4,24 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Models\User;
+use App\Services\Auth\AuthEventLogger;
 use Illuminate\Http\Exceptions\HttpResponseException;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\RateLimiter;
 use Illuminate\Support\Facades\Validator;
+use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
 
 class AuthController extends Controller
 {
+    public function __construct(
+        private readonly AuthEventLogger $authEventLogger
+    ) {
+    }
+
     /**
      * @throws ValidationException
      */
@@ -30,11 +39,20 @@ class AuthController extends Controller
             'password' => (string) $payload['password'],
         ]);
 
-        $token = $user->createToken('api')->plainTextToken;
+        Auth::guard('web')->login($user);
+        if ($request->hasSession()) {
+            $request->session()->regenerate();
+        }
+
+        $this->authEventLogger->log(
+            request: $request,
+            action: 'register',
+            outcome: 'success',
+            user: $user,
+            email: $user->email
+        );
 
         return response()->json([
-            'token' => $token,
-            'token_type' => 'Bearer',
             'user' => $user,
         ], 201);
     }
@@ -56,6 +74,13 @@ class AuthController extends Controller
 
         if (RateLimiter::tooManyAttempts($backoffKey, 1)) {
             $retryAfter = max(1, RateLimiter::availableIn($backoffKey));
+            $this->authEventLogger->log(
+                request: $request,
+                action: 'login',
+                outcome: 'fail',
+                email: $email,
+                reason: 'rate_limited'
+            );
 
             throw new HttpResponseException(
                 response()->json([
@@ -75,6 +100,15 @@ class AuthController extends Controller
                 RateLimiter::hit($backoffKey, $backoffSeconds);
             }
 
+            $this->authEventLogger->log(
+                request: $request,
+                action: 'login',
+                outcome: 'fail',
+                user: $user,
+                email: $email,
+                reason: 'invalid_credentials'
+            );
+
             throw ValidationException::withMessages([
                 'email' => ['Invalid email or password.'],
             ]);
@@ -83,11 +117,20 @@ class AuthController extends Controller
         RateLimiter::clear($failureKey);
         RateLimiter::clear($backoffKey);
 
-        $token = $user->createToken('api')->plainTextToken;
+        Auth::guard('web')->login($user);
+        if ($request->hasSession()) {
+            $request->session()->regenerate();
+        }
+
+        $this->authEventLogger->log(
+            request: $request,
+            action: 'login',
+            outcome: 'success',
+            user: $user,
+            email: $user->email
+        );
 
         return response()->json([
-            'token' => $token,
-            'token_type' => 'Bearer',
             'user' => $user,
         ]);
     }
@@ -118,13 +161,82 @@ class AuthController extends Controller
 
     public function logout(Request $request)
     {
-        $token = $request->user()?->currentAccessToken();
-        if ($token !== null) {
-            $token->delete();
+        $user = $request->user();
+        Auth::guard('web')->logout();
+
+        if ($request->hasSession()) {
+            $request->session()->invalidate();
+            $request->session()->regenerateToken();
         }
+
+        $this->authEventLogger->log(
+            request: $request,
+            action: 'logout',
+            outcome: 'success',
+            user: $user,
+            email: $user?->email
+        );
 
         return response()->json([
             'message' => 'Logged out.',
+        ])
+            ->withoutCookie((string) config('session.cookie'))
+            ->withoutCookie('XSRF-TOKEN');
+    }
+
+    public function logoutAll(Request $request)
+    {
+        $user = $request->user();
+        if ($user === null) {
+            $this->authEventLogger->log(
+                request: $request,
+                action: 'logout_all',
+                outcome: 'fail',
+                reason: 'unauthenticated'
+            );
+
+            throw new HttpResponseException(response()->json([
+                'message' => 'Unauthenticated.',
+            ], 401));
+        }
+
+        $currentSessionId = $request->hasSession() ? (string) $request->session()->getId() : '';
+
+        $revokedSessions = 0;
+        if ((string) config('session.driver', 'file') === 'database') {
+            $sessions = DB::table((string) config('session.table', 'sessions'))
+                ->where('user_id', $user->getAuthIdentifier());
+
+            if ($currentSessionId !== '') {
+                $sessions->where('id', '!=', $currentSessionId);
+            }
+
+            $revokedSessions = (int) $sessions->delete();
+        }
+
+        $revokedTokens = (int) $user->tokens()->delete();
+
+        $user->forceFill([
+            'remember_token' => Str::random(60),
+        ])->save();
+
+        if ($request->hasSession()) {
+            $request->session()->regenerate();
+            $request->session()->regenerateToken();
+        }
+
+        $this->authEventLogger->log(
+            request: $request,
+            action: 'logout_all',
+            outcome: 'success',
+            user: $user,
+            email: $user->email
+        );
+
+        return response()->json([
+            'message' => 'Other sessions and tokens revoked.',
+            'revoked_sessions' => $revokedSessions,
+            'revoked_tokens' => $revokedTokens,
         ]);
     }
 }

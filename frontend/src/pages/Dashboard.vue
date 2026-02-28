@@ -437,7 +437,7 @@ async function applyDashboardSavedView(reportId: string) {
 }
 
 function exportDashboardCsv() {
-  reportStore.exportAdHocCsv({
+  void reportStore.exportAdHocCsv({
     scope: 'dashboard',
     name: 'dashboard-view',
     account_id: scopedSelectedAccountId.value ?? undefined,

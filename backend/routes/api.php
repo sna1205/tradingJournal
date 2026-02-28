@@ -25,17 +25,18 @@ Route::get('health', fn () => response()->json([
     'time' => now()->toIso8601String(),
 ]));
 
-Route::prefix('auth')->group(function () {
+Route::prefix('auth')->middleware('web')->group(function () {
     Route::post('register', [AuthController::class, 'register'])->middleware('throttle:auth-register');
     Route::post('login', [AuthController::class, 'login'])->middleware('throttle:auth-login');
 });
 
-Route::middleware('auth:sanctum')->group(function () {
-    Route::prefix('auth')->group(function () {
-        Route::get('me', [AuthController::class, 'me']);
-        Route::post('logout', [AuthController::class, 'logout']);
-    });
+Route::prefix('auth')->middleware(['web', 'auth:sanctum'])->group(function () {
+    Route::get('me', [AuthController::class, 'me']);
+    Route::post('logout', [AuthController::class, 'logout']);
+    Route::post('logout-all', [AuthController::class, 'logoutAll']);
+});
 
+Route::middleware('auth:sanctum')->group(function () {
     Route::apiResource('accounts', AccountController::class);
     Route::get('accounts/{account}/equity', [AccountController::class, 'equity']);
     Route::get('accounts/{account}/analytics', [AccountController::class, 'analytics'])->middleware('throttle:analytics-high');

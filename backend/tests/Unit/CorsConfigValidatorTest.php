@@ -48,4 +48,12 @@ class CorsConfigValidatorTest extends TestCase
 
         $this->expectNotToPerformAssertions();
     }
+
+    public function test_production_requires_cors_credentials_support(): void
+    {
+        $this->expectException(RuntimeException::class);
+        $this->expectExceptionMessage('CORS_SUPPORTS_CREDENTIALS must be true');
+
+        CorsConfigValidator::validate('production', ['https://app.example.com'], [], false);
+    }
 }

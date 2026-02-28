@@ -10,7 +10,12 @@ final class CorsConfigValidator
      * @param array<int, string> $allowedOrigins
      * @param array<int, string> $allowedOriginPatterns
      */
-    public static function validate(string $appEnv, array $allowedOrigins, array $allowedOriginPatterns = []): void
+    public static function validate(
+        string $appEnv,
+        array $allowedOrigins,
+        array $allowedOriginPatterns = [],
+        bool $supportsCredentials = true
+    ): void
     {
         if (strtolower($appEnv) !== 'production') {
             return;
@@ -28,6 +33,12 @@ final class CorsConfigValidator
         if (count($patterns) > 0) {
             throw new RuntimeException(
                 'Invalid CORS configuration: CORS_ALLOWED_ORIGIN_PATTERNS is not allowed in production. Use explicit CORS_ALLOWED_ORIGINS only.'
+            );
+        }
+
+        if ($supportsCredentials !== true) {
+            throw new RuntimeException(
+                'Invalid CORS configuration: CORS_SUPPORTS_CREDENTIALS must be true in production for Sanctum SPA cookie authentication.'
             );
         }
 

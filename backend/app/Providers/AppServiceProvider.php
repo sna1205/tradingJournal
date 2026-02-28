@@ -12,6 +12,7 @@ use App\Policies\ChecklistPolicy;
 use App\Policies\MissedTradePolicy;
 use App\Policies\SavedReportPolicy;
 use App\Policies\TradePolicy;
+use App\Support\AuthLifetimeConfigValidator;
 use App\Support\CorsConfigValidator;
 use App\Services\PriceFeed\CachePriceFeedService;
 use App\Services\PriceFeed\ChainedPriceFeedService;
@@ -24,6 +25,7 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Gate;
 use Illuminate\Support\Facades\RateLimiter;
 use Illuminate\Support\ServiceProvider;
+use Laravel\Sanctum\PersonalAccessToken;
 
 class AppServiceProvider extends ServiceProvider
 {
@@ -69,10 +71,29 @@ class AppServiceProvider extends ServiceProvider
      */
     public function boot(): void
     {
+        AuthLifetimeConfigValidator::validate(
+            (int) config('session.lifetime', 0),
+            (int) config('sanctum.expiration', 0)
+        );
+
+        PersonalAccessToken::creating(function (PersonalAccessToken $token): void {
+            if ($token->expires_at !== null) {
+                return;
+            }
+
+            $expirationMinutes = (int) config('sanctum.expiration', 0);
+            if ($expirationMinutes <= 0) {
+                return;
+            }
+
+            $token->expires_at = now()->addMinutes($expirationMinutes);
+        });
+
         CorsConfigValidator::validate(
             (string) config('app.env', 'production'),
             is_array(config('cors.allowed_origins')) ? config('cors.allowed_origins') : [],
-            is_array(config('cors.allowed_origins_patterns')) ? config('cors.allowed_origins_patterns') : []
+            is_array(config('cors.allowed_origins_patterns')) ? config('cors.allowed_origins_patterns') : [],
+            (bool) config('cors.supports_credentials', true)
         );
 
         RateLimiter::for('auth-login', function (Request $request): array {

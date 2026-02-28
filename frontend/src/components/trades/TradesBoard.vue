@@ -584,7 +584,7 @@ async function applySavedView(reportId: string) {
 }
 
 function exportCurrentCsv() {
-  reportStore.exportAdHocCsv({
+  void reportStore.exportAdHocCsv({
     scope: 'trades',
     name: 'trade-log-view',
     ...filters.value,

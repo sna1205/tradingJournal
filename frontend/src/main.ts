@@ -14,6 +14,7 @@ import VueECharts from 'vue-echarts'
 import './style.css'
 import App from './App.vue'
 import router from '@/router'
+import { useAuthStore } from '@/stores/authStore'
 
 use([
   CanvasRenderer,
@@ -28,8 +29,18 @@ use([
   LegendComponent,
 ])
 
-const app = createApp(App)
-app.use(createPinia())
-app.use(router)
-app.component('VChart', VueECharts)
-app.mount('#app')
+async function bootstrap() {
+  const app = createApp(App)
+  const pinia = createPinia()
+
+  app.use(pinia)
+
+  const authStore = useAuthStore(pinia)
+  await authStore.initialize()
+
+  app.use(router)
+  app.component('VChart', VueECharts)
+  app.mount('#app')
+}
+
+void bootstrap()
