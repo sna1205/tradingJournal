@@ -17,6 +17,10 @@ export default defineConfig(({ mode }) => {
     server: {
       port: 5173,
       proxy: {
+        '/sanctum': {
+          target: apiProxyTarget,
+          changeOrigin: true,
+        },
         '/api': {
           target: apiProxyTarget,
           changeOrigin: true,
