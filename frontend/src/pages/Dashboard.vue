@@ -41,6 +41,10 @@ const CalendarHeatmap = defineAsyncComponent(() => import('@/components/analytic
 type DashboardTab = 'overview' | 'chart' | 'calendar'
 type RangePreset = '30d' | 'custom'
 type DashboardMode = 'live' | 'prop'
+type RefreshTrigger = 'mount' | 'filters' | 'focus' | 'interval' | 'saved-view'
+
+const DASHBOARD_REFRESH_DEBOUNCE_MS = 180
+const DASHBOARD_REFRESH_INTERVAL_MS = 45000
 
 const analyticsStore = useAnalyticsStore()
 const accountStore = useAccountStore()
@@ -82,6 +86,14 @@ const challengeStatus = ref<AccountChallengeStatusPayload | null>(null)
 const challengeStatusLoading = ref(false)
 const selectedDashboardReportId = ref('')
 let recentTradesRefreshHandle: number | null = null
+let dashboardRefreshDebounceHandle: number | null = null
+let dashboardRefreshGeneration = 0
+let inFlightDashboardRefresh: {
+  key: string
+  generation: number
+  controller: AbortController
+  promise: Promise<void>
+} | null = null
 
 const propAccounts = computed(() => accounts.value.filter((account) => isPropAccountType(account.account_type)))
 const liveAccounts = computed(() => accounts.value.filter((account) => isLiveAccountType(account.account_type)))
@@ -309,7 +321,7 @@ const dashboardSavedViewOptions = computed(() => [
 onMounted(async () => {
   await accountStore.fetchAccounts()
   await loadDashboardSavedViews()
-  await refreshDashboardData()
+  await runDashboardRefresh('mount')
   startRecentTradesAutoRefresh()
   window.addEventListener('focus', handleVisibilityOrFocus)
   document.addEventListener('visibilitychange', handleVisibilityOrFocus)
@@ -317,6 +329,7 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   stopRecentTradesAutoRefresh()
+  cancelDashboardRefreshScheduler()
   window.removeEventListener('focus', handleVisibilityOrFocus)
   document.removeEventListener('visibilitychange', handleVisibilityOrFocus)
 })
@@ -329,8 +342,8 @@ watch(
     () => customDateFrom.value,
     () => customDateTo.value,
   ],
-  async () => {
-    await refreshDashboardData()
+  () => {
+    scheduleDashboardRefresh('filters')
   }
 )
 
@@ -351,14 +364,95 @@ watch(
   { immediate: true }
 )
 
-async function refreshDashboardData() {
+async function refreshDashboardData(signal?: AbortSignal) {
   const filters = activeRangeFilters.value
   await Promise.allSettled([
-    analyticsStore.fetchAnalytics(filters, scopedSelectedAccountId.value),
-    fetchChallengeStatus(),
-    fetchRecentTrades(filters),
-    fetchRecentMissedTrades(filters),
+    analyticsStore.fetchAnalytics(filters, scopedSelectedAccountId.value, signal),
+    fetchChallengeStatus(signal),
+    fetchRecentTrades(filters, signal),
+    fetchRecentMissedTrades(filters, signal),
   ])
+}
+
+function buildDashboardRefreshKey() {
+  const filters = activeRangeFilters.value
+  return JSON.stringify({
+    mode: effectiveDashboardMode.value,
+    account_id: scopedSelectedAccountId.value,
+    date_from: filters.date_from ?? '',
+    date_to: filters.date_to ?? '',
+  })
+}
+
+function clearDashboardRefreshDebounce() {
+  if (dashboardRefreshDebounceHandle === null) return
+  window.clearTimeout(dashboardRefreshDebounceHandle)
+  dashboardRefreshDebounceHandle = null
+}
+
+function scheduleDashboardRefresh(trigger: RefreshTrigger) {
+  void trigger
+  clearDashboardRefreshDebounce()
+  dashboardRefreshDebounceHandle = window.setTimeout(() => {
+    dashboardRefreshDebounceHandle = null
+    void runDashboardRefresh(trigger)
+  }, DASHBOARD_REFRESH_DEBOUNCE_MS)
+}
+
+async function runDashboardRefresh(trigger: RefreshTrigger) {
+  void trigger
+  clearDashboardRefreshDebounce()
+  const key = buildDashboardRefreshKey()
+  const activeRequest = inFlightDashboardRefresh
+
+  if (activeRequest) {
+    if (activeRequest.key === key) {
+      await activeRequest.promise
+      return
+    }
+
+    activeRequest.controller.abort()
+    try {
+      await activeRequest.promise
+    } catch (error) {
+      if (!isAbortError(error)) {
+        throw error
+      }
+    }
+  }
+
+  const controller = new AbortController()
+  const generation = dashboardRefreshGeneration + 1
+  dashboardRefreshGeneration = generation
+  const promise = refreshDashboardData(controller.signal)
+    .catch((error) => {
+      if (isAbortError(error)) {
+        return
+      }
+      throw error
+    })
+    .finally(() => {
+      if (inFlightDashboardRefresh?.generation === generation) {
+        inFlightDashboardRefresh = null
+      }
+    })
+
+  inFlightDashboardRefresh = {
+    key,
+    generation,
+    controller,
+    promise,
+  }
+
+  await promise
+}
+
+function cancelDashboardRefreshScheduler() {
+  clearDashboardRefreshDebounce()
+
+  if (!inFlightDashboardRefresh) return
+  inFlightDashboardRefresh.controller.abort()
+  inFlightDashboardRefresh = null
 }
 
 async function loadDashboardSavedViews() {
@@ -433,7 +527,7 @@ async function applyDashboardSavedView(reportId: string) {
     activeTab.value = tab
   }
 
-  await refreshDashboardData()
+  scheduleDashboardRefresh('saved-view')
 }
 
 function exportDashboardCsv() {
@@ -447,7 +541,7 @@ function exportDashboardCsv() {
   })
 }
 
-async function fetchChallengeStatus() {
+async function fetchChallengeStatus(signal?: AbortSignal) {
   const account = scopedSelectedAccount.value
   const accountId = scopedSelectedAccountId.value
   if (
@@ -463,15 +557,18 @@ async function fetchChallengeStatus() {
 
   challengeStatusLoading.value = true
   try {
-    challengeStatus.value = await accountStore.fetchAccountChallengeStatus(accountId)
-  } catch {
+    challengeStatus.value = await accountStore.fetchAccountChallengeStatus(accountId, signal)
+  } catch (error) {
+    if (isAbortError(error)) {
+      throw error
+    }
     challengeStatus.value = null
   } finally {
     challengeStatusLoading.value = false
   }
 }
 
-async function fetchRecentTrades(filters: { date_from?: string; date_to?: string } = {}) {
+async function fetchRecentTrades(filters: { date_from?: string; date_to?: string } = {}, signal?: AbortSignal) {
   recentTradesLoading.value = true
   try {
     const params: Record<string, number | string> = {
@@ -492,7 +589,7 @@ async function fetchRecentTrades(filters: { date_from?: string; date_to?: string
       params.date_to = filters.date_to
     }
 
-    const { data } = await api.get<Paginated<Trade>>('/trades', { params })
+    const { data } = await api.get<Paginated<Trade>>('/trades', { params, signal })
     syncStatusStore.markServerHealthy()
     let rows = data.data ?? []
 
@@ -526,7 +623,7 @@ async function fetchRecentTrades(filters: { date_from?: string; date_to?: string
   }
 }
 
-async function fetchRecentMissedTrades(filters: { date_from?: string; date_to?: string } = {}) {
+async function fetchRecentMissedTrades(filters: { date_from?: string; date_to?: string } = {}, signal?: AbortSignal) {
   recentMissedTradesLoading.value = true
   try {
     const params: Record<string, number | string> = {
@@ -542,7 +639,7 @@ async function fetchRecentMissedTrades(filters: { date_from?: string; date_to?: 
       params.date_to = filters.date_to
     }
 
-    const { data } = await api.get<Paginated<MissedTrade>>('/missed-trades', { params })
+    const { data } = await api.get<Paginated<MissedTrade>>('/missed-trades', { params, signal })
     syncStatusStore.markServerHealthy()
     const rows = (data.data ?? []).slice()
 
@@ -574,11 +671,8 @@ async function fetchRecentMissedTrades(filters: { date_from?: string; date_to?: 
 function startRecentTradesAutoRefresh() {
   stopRecentTradesAutoRefresh()
   recentTradesRefreshHandle = window.setInterval(() => {
-    void Promise.allSettled([
-      fetchRecentTrades(activeRangeFilters.value),
-      fetchRecentMissedTrades(activeRangeFilters.value),
-    ])
-  }, 45000)
+    scheduleDashboardRefresh('interval')
+  }, DASHBOARD_REFRESH_INTERVAL_MS)
 }
 
 function stopRecentTradesAutoRefresh() {
@@ -589,10 +683,16 @@ function stopRecentTradesAutoRefresh() {
 
 function handleVisibilityOrFocus() {
   if (document.visibilityState && document.visibilityState !== 'visible') return
-  void Promise.allSettled([
-    fetchRecentTrades(activeRangeFilters.value),
-    fetchRecentMissedTrades(activeRangeFilters.value),
-  ])
+  scheduleDashboardRefresh('focus')
+}
+
+function isAbortError(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false
+  const candidate = error as { name?: string; code?: string; __CANCEL__?: boolean }
+  return candidate.name === 'AbortError'
+    || candidate.name === 'CanceledError'
+    || candidate.code === 'ERR_CANCELED'
+    || candidate.__CANCEL__ === true
 }
 
 function getTodayIso() {

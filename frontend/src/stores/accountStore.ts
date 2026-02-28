@@ -302,9 +302,9 @@ export const useAccountStore = defineStore('accounts', () => {
     }
   }
 
-  async function fetchAccountChallengeStatus(id: number): Promise<AccountChallengeStatusPayload | null> {
+  async function fetchAccountChallengeStatus(id: number, signal?: AbortSignal): Promise<AccountChallengeStatusPayload | null> {
     try {
-      const { data } = await api.get<AccountChallengeStatusPayload>(`/accounts/${id}/challenge-status`)
+      const { data } = await api.get<AccountChallengeStatusPayload>(`/accounts/${id}/challenge-status`, { signal })
       syncStatusStore.markServerHealthy()
       return data
     } catch (error) {

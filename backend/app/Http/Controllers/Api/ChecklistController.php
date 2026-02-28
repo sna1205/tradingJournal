@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Api;
 
+use App\Exceptions\ChecklistConcurrencyException;
 use App\Http\Controllers\Controller;
 use App\Models\Account;
 use App\Models\Checklist;
@@ -51,7 +52,9 @@ class ChecklistController extends Controller
 
         $checklist = $this->checklistService->createChecklist($userId, $payload)->fresh(['account', 'strategyModel']);
 
-        return response()->json($checklist, 201);
+        return response()
+            ->json($checklist, 201)
+            ->header('ETag', $this->checklistService->buildChecklistEtag($checklist));
     }
 
     /**
@@ -64,9 +67,31 @@ class ChecklistController extends Controller
         $payload = $this->validatePayload($request, true, $checklist);
         $userId = (int) $request->user()->id;
         $this->assertAccountOwnership($payload, $userId);
-        $updated = $this->checklistService->updateChecklist($checklist, $payload);
+        try {
+            $updated = $this->checklistService->updateChecklist($checklist, $payload, [
+                'if_match' => $request->header('If-Match'),
+                'expected_revision' => $request->has('revision') ? (int) $request->integer('revision') : null,
+                'expected_updated_at' => $request->input('updated_at'),
+                'actor_user_id' => $userId,
+                'ip' => $request->ip(),
+                'user_agent' => $request->userAgent(),
+            ]);
+        } catch (ChecklistConcurrencyException $exception) {
+            return response()
+                ->json([
+                    'message' => $exception->getMessage(),
+                    'current' => [
+                        'revision' => $exception->currentRevision(),
+                        'updated_at' => $exception->currentUpdatedAt(),
+                        'etag' => $exception->currentEtag(),
+                    ],
+                ], 409)
+                ->header('ETag', $exception->currentEtag());
+        }
 
-        return response()->json($updated);
+        return response()
+            ->json($updated)
+            ->header('ETag', $this->checklistService->buildChecklistEtag($updated));
     }
 
     public function destroy(Request $request, Checklist $checklist)
@@ -100,6 +125,8 @@ class ChecklistController extends Controller
             'account_id' => ['sometimes', 'nullable', 'integer', 'exists:accounts,id'],
             'strategy_model_id' => ['sometimes', 'nullable', 'integer', 'exists:strategy_models,id'],
             'is_active' => ['sometimes', 'boolean'],
+            'revision' => ['sometimes', 'integer', 'min:1'],
+            'updated_at' => ['sometimes', 'date'],
         ]);
 
         $validator->after(function ($validator) use ($request, $existingChecklist): void {

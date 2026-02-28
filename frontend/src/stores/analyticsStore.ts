@@ -339,14 +339,18 @@ export const useAnalyticsStore = defineStore('analytics', () => {
     }
   })
 
-  async function fetchAnalytics(filters?: AnalyticsRangeFilters, accountIdOverride?: number | null) {
+  async function fetchAnalytics(
+    filters?: AnalyticsRangeFilters,
+    accountIdOverride?: number | null,
+    signal?: AbortSignal
+  ) {
     loading.value = true
     const activeAccountId =
       accountIdOverride === undefined ? accountStore.selectedAccountId : accountIdOverride
     const params = analyticsQueryParams(activeAccountId, filters)
 
     try {
-      const { data: summaryRes } = await api.get<DashboardSummaryPayload>('/analytics/dashboard-summary', { params })
+      const { data: summaryRes } = await api.get<DashboardSummaryPayload>('/analytics/dashboard-summary', { params, signal })
       syncStatusStore.markServerHealthy()
       reportingCurrency.value = String(summaryRes.reporting_currency || 'USD').toUpperCase()
       fxNormalized.value = Boolean(summaryRes.fx_normalized)

@@ -1,5 +1,6 @@
 <?php
 
+use App\Jobs\PruneFxRateSnapshotsJob;
 use Illuminate\Foundation\Inspiring;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
@@ -27,4 +28,11 @@ Schedule::call(function (): void {
 })
     ->name('auth:prune-expired-database-sessions')
     ->dailyAt('02:20')
+    ->withoutOverlapping();
+
+Schedule::call(function (): void {
+    PruneFxRateSnapshotsJob::dispatchSync();
+})
+    ->name('fx:archive-and-prune-snapshots')
+    ->dailyAt('02:30')
     ->withoutOverlapping();
