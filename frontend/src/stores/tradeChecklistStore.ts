@@ -1,6 +1,7 @@
 import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
 import api from '@/services/api'
+import { createRequestManager, isAbortError, stableSerialize } from '@/services/requestManager'
 import type {
   Checklist,
   ChecklistItem,
@@ -94,6 +95,7 @@ function buildFallbackResolverContext(
 }
 
 export const useTradeChecklistStore = defineStore('tradeChecklist', () => {
+  const requestManager = createRequestManager()
   const loading = ref(false)
   const saving = ref(false)
   const error = ref<string | null>(null)
@@ -181,19 +183,35 @@ export const useTradeChecklistStore = defineStore('tradeChecklist', () => {
     clearPersistTimer()
 
     const requestVersion = ++loadRequestVersion
+    const requestParams = {
+      trade_id: contextTradeId.value ?? undefined,
+      account_id: contextAccountId.value ?? undefined,
+      strategy_model_id: contextStrategyModelId.value ?? undefined,
+    }
+    const fingerprint = stableSerialize(requestParams)
 
     try {
-      const { data } = await api.get<TradeChecklistResponsePayload>('/trade-checklist/resolve', {
-        params: {
-          trade_id: contextTradeId.value ?? undefined,
-          account_id: contextAccountId.value ?? undefined,
-          strategy_model_id: contextStrategyModelId.value ?? undefined,
+      const response = await requestManager.run({
+        key: 'loadForContext',
+        fingerprint,
+        cacheKey: `tradeChecklist:resolve:${fingerprint}`,
+        cacheTtlMs: 1_500,
+        execute: async ({ signal }) => {
+          const { data } = await api.get<TradeChecklistResponsePayload>('/trade-checklist/resolve', {
+            params: requestParams,
+            signal,
+          })
+          return data
         },
       })
+      if (response.stale || requestVersion !== loadRequestVersion) return
+      const data = response.value
 
-      if (requestVersion !== loadRequestVersion) return
       applyPayload(data)
-    } catch {
+    } catch (err) {
+      if (isAbortError(err)) {
+        return
+      }
       if (requestVersion !== loadRequestVersion) return
 
       checklist.value = null

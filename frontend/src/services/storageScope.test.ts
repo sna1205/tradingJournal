@@ -1,5 +1,12 @@
 import { beforeEach, describe, expect, it } from 'vitest'
-import { createLocalAccount, fetchLocalAccounts, migrateLegacyLocalFallbackKeys } from '@/services/localFallback'
+import {
+  __readPersistedLocalFallbackEnvelopeForTests,
+  __resetLocalFallbackPersistenceForTests,
+  createLocalAccount,
+  fetchLocalAccounts,
+  initializeLocalFallbackPersistence,
+  migrateLegacyLocalFallbackKeys,
+} from '@/services/localFallback'
 import { getScope, scopedKey, setScope, setScopeUserId } from '@/services/storageScope'
 
 class MemoryStorage implements Storage {
@@ -42,8 +49,9 @@ function installMemoryStorage() {
 }
 
 describe('storage scope + local fallback scoping', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     installMemoryStorage()
+    await __resetLocalFallbackPersistenceForTests()
     setScope({ userId: null, accountId: null })
   })
 
@@ -55,7 +63,7 @@ describe('storage scope + local fallback scoping', () => {
     expect(scopedKey('local-fallback', 'trades_v1')).toBe('tj:v3:u:anon:a:all:local-fallback:trades_v1')
   })
 
-  it('stores local fallback data in user-scoped keys and isolates users', () => {
+  it('stores local fallback data in user-scoped IDB records and isolates users', async () => {
     setScopeUserId(101)
     createLocalAccount({
       name: 'User A',
@@ -66,15 +74,11 @@ describe('storage scope + local fallback scoping', () => {
       is_active: true,
     })
 
-    const userAKey = scopedKey('local-fallback', 'accounts_v1')
-    const userAEnvelope = JSON.parse(localStorage.getItem(userAKey) ?? '{}') as {
-      created_at?: string
-      expire_at?: string | null
-      data?: unknown
-    }
-    expect(userAEnvelope.created_at).toBeTypeOf('string')
-    expect(userAEnvelope.expire_at).toBeNull()
-    expect(Array.isArray(userAEnvelope.data)).toBe(true)
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    const userAEnvelope = await __readPersistedLocalFallbackEnvelopeForTests('accounts_v1')
+    expect(userAEnvelope?.created_at).toBeTypeOf('string')
+    expect(typeof userAEnvelope?.expire_at === 'string').toBe(true)
+    expect(Array.isArray(userAEnvelope?.data)).toBe(true)
 
     setScopeUserId(202)
     const userBAccounts = fetchLocalAccounts()
@@ -82,21 +86,28 @@ describe('storage scope + local fallback scoping', () => {
     expect(userBAccounts.length).toBeGreaterThan(0)
   })
 
-  it('migrates legacy unscoped tj_* draft keys into scoped keys for authenticated user', () => {
+  it('migrates legacy unscoped tj_* draft keys into scoped IDB records for authenticated user', async () => {
     localStorage.setItem('tj_local_accounts_v1', JSON.stringify([{ id: 1, name: 'Legacy Account' }]))
     localStorage.setItem('tj_local_trades_v1', JSON.stringify([{ id: 1, pair: 'EURUSD' }]))
     localStorage.setItem('tj_local_missed_trades_v1', JSON.stringify([{ id: 1, pair: 'GBPUSD' }]))
 
     setScopeUserId(88)
     migrateLegacyLocalFallbackKeys()
+    await initializeLocalFallbackPersistence()
 
     expect(localStorage.getItem('tj_local_accounts_v1')).toBeNull()
     expect(localStorage.getItem('tj_local_trades_v1')).toBeNull()
     expect(localStorage.getItem('tj_local_missed_trades_v1')).toBeNull()
+    expect(localStorage.getItem(scopedKey('local-fallback', 'accounts_v1'))).toBeNull()
+    expect(localStorage.getItem(scopedKey('local-fallback', 'trades_v1'))).toBeNull()
+    expect(localStorage.getItem(scopedKey('local-fallback', 'missed_trades_v1'))).toBeNull()
 
-    expect(localStorage.getItem(scopedKey('local-fallback', 'accounts_v1'))).not.toBeNull()
-    expect(localStorage.getItem(scopedKey('local-fallback', 'trades_v1'))).not.toBeNull()
-    expect(localStorage.getItem(scopedKey('local-fallback', 'missed_trades_v1'))).not.toBeNull()
+    const accounts = await __readPersistedLocalFallbackEnvelopeForTests('accounts_v1')
+    const trades = await __readPersistedLocalFallbackEnvelopeForTests('trades_v1')
+    const missedTrades = await __readPersistedLocalFallbackEnvelopeForTests('missed_trades_v1')
+    expect(accounts).not.toBeNull()
+    expect(trades).not.toBeNull()
+    expect(missedTrades).not.toBeNull()
   })
 
   it('purges unsafe anonymous legacy tj_* keys and keeps only feature flags', () => {

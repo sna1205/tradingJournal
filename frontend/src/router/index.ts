@@ -70,8 +70,9 @@ const router = createRouter({
       component: LotsCalculatorPage,
     },
     {
-      path: '/settings',
+      path: '/settings/hub',
       name: 'settings',
+      alias: ['/settings'],
       component: SettingsPage,
     },
     {

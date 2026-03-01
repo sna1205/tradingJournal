@@ -2,7 +2,11 @@ import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
 import api, { ensureCsrfCookie } from '@/services/api'
 import { setSyncQueueUserScope } from '@/services/offlineSyncQueue'
-import { migrateLegacyLocalFallbackKeys } from '@/services/localFallback'
+import {
+  initializeLocalFallbackPersistence,
+  migrateLegacyLocalFallbackKeys,
+  purgeLocalFallbackPersistenceForUser,
+} from '@/services/localFallback'
 import { getScope, purgeScopedStorageForUser, setScopeAccountId, setScopeUserId } from '@/services/storageScope'
 
 interface AuthUser {
@@ -30,9 +34,10 @@ export const useAuthStore = defineStore('auth', () => {
 
   const isAuthenticated = computed(() => Boolean(user.value))
 
-  function clearSession() {
+  async function clearSession() {
     const previousUserId = user.value?.id ?? getScope().userId
     purgeScopedStorageForUser(previousUserId)
+    await purgeLocalFallbackPersistenceForUser(previousUserId)
     setScopeUserId(null)
     setScopeAccountId(null)
     user.value = null
@@ -40,18 +45,21 @@ export const useAuthStore = defineStore('auth', () => {
     migrateLegacyLocalFallbackKeys()
   }
 
-  function setUserScope(nextUser: AuthUser | null) {
+  async function setUserScope(nextUser: AuthUser | null) {
     const userId = nextUser?.id ?? null
     setSyncQueueUserScope(userId)
     setScopeUserId(userId)
     setScopeAccountId(null)
     migrateLegacyLocalFallbackKeys()
+    await initializeLocalFallbackPersistence()
   }
 
   async function initialize() {
     if (initialized.value) return
     if (!unauthorizedListenerBound) {
-      window.addEventListener('auth:unauthorized', clearSession)
+      window.addEventListener('auth:unauthorized', () => {
+        void clearSession()
+      })
       unauthorizedListenerBound = true
     }
 
@@ -59,7 +67,7 @@ export const useAuthStore = defineStore('auth', () => {
     try {
       await fetchMe()
     } catch {
-      clearSession()
+      await clearSession()
     } finally {
       loading.value = false
       initialized.value = true
@@ -69,7 +77,7 @@ export const useAuthStore = defineStore('auth', () => {
   async function fetchMe() {
     const { data } = await api.get<AuthUser>('/auth/me')
     user.value = data
-    setUserScope(data)
+    await setUserScope(data)
     return data
   }
 
@@ -79,7 +87,7 @@ export const useAuthStore = defineStore('auth', () => {
       await ensureCsrfCookie()
       const { data } = await api.post<AuthResponse>('/auth/login', { email, password })
       user.value = data.user
-      setUserScope(data.user)
+      await setUserScope(data.user)
       initialized.value = true
       return data.user
     } finally {
@@ -98,7 +106,7 @@ export const useAuthStore = defineStore('auth', () => {
         password_confirmation: passwordConfirmation,
       })
       user.value = data.user
-      setUserScope(data.user)
+      await setUserScope(data.user)
       initialized.value = true
       return data.user
     } finally {
@@ -114,7 +122,7 @@ export const useAuthStore = defineStore('auth', () => {
     } catch {
       // Session state is cleared locally regardless of API response.
     } finally {
-      clearSession()
+      await clearSession()
       loading.value = false
       initialized.value = true
     }

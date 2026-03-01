@@ -27,7 +27,10 @@ export function getScope(): StorageScope {
 }
 
 export function scopedKey(namespace: string, key: string): string {
-  const scope = getScope()
+  return scopedKeyForScope(getScope(), namespace, key)
+}
+
+export function scopedKeyForScope(scope: StorageScope, namespace: string, key: string): string {
   const userPart = scope.userId === null ? 'anon' : String(scope.userId)
   const accountPart = scope.accountId === null ? 'all' : String(scope.accountId)
   return `${SCOPE_PREFIX}:u:${userPart}:a:${accountPart}:${namespace}:${key}`

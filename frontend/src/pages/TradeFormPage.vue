@@ -12,6 +12,7 @@ import InstrumentPairSelect from '@/components/form/InstrumentPairSelect.vue'
 import TradeImageUploader from '@/components/trades/TradeImageUploader.vue'
 import TradeChecklistPanel from '@/components/checklists/TradeChecklistPanel.vue'
 import api from '@/services/api'
+import { createTradeEditLock, type TradeEditLockHandle, type TradeEditLockState } from '@/services/editLockService'
 import {
   FxRateResolutionError,
   FxToUsdService,
@@ -62,6 +63,9 @@ const {
 
 const loadingTrade = ref(false)
 const submitAttempted = ref(false)
+const loadedTradeUpdatedAt = ref<string | null>(null)
+const staleWriteCheckInProgress = ref(false)
+const staleWriteConfirmedFingerprint = ref<string | null>(null)
 const emotionOptions: TradeEmotion[] = ['neutral', 'calm', 'confident', 'fearful', 'greedy', 'hesitant', 'revenge']
 const directionOptions = [
   { label: 'Buy', value: 'buy' },
@@ -223,6 +227,15 @@ const imageUploadError = ref('')
 const uploadingImages = ref(false)
 const deletingImageIds = ref<number[]>([])
 const uploadProgressByPendingId = ref<Record<string, number>>({})
+const editLockState = ref<TradeEditLockState | null>(null)
+const staleWriteWarning = ref<{
+  fingerprint: string
+  loaded_updated_at: string
+  latest_updated_at: string
+  diffs: Array<{ field: string; local: string; latest: string }>
+} | null>(null)
+let editLockHandle: TradeEditLockHandle | null = null
+let releaseEditLockSubscription: (() => void) | null = null
 
 const tradeId = computed(() => {
   const value = Number(route.params.id)
@@ -332,15 +345,25 @@ const showSoftChecklistNotice = computed(() =>
   && !checklistStrictMode.value
   && checklistGateIncomplete.value
 )
+const isLockedByOtherTab = computed(() =>
+  isEditMode.value
+  && editLockState.value?.holder === 'other'
+)
 const isSubmittingDisabled = computed(() =>
   tradeStore.saving
   || uploadingImages.value
   || precheckLoading.value
+  || staleWriteCheckInProgress.value
   || checklistLoading.value
   || isSaveBlocked.value
+  || (isEditMode.value && isLockedByOtherTab.value)
   || isChecklistContextMismatch.value
   || isChecklistStrictBlocked.value
 )
+const lockHolderLabel = computed(() => {
+  const label = editLockState.value?.record?.holder_label?.trim()
+  return label || 'another tab'
+})
 const riskStatusLabel = computed(() => {
   if (precheckLoading.value && precheckActiveRequestId.value !== null) return 'Checking...'
   if (isFxPending.value) return 'Fetching FX'
@@ -1354,6 +1377,201 @@ function buildPsychologyPayload() {
   }
 }
 
+function setupEditLock() {
+  if (!isEditMode.value || tradeId.value === null) {
+    editLockState.value = null
+    return
+  }
+
+  if (releaseEditLockSubscription) {
+    releaseEditLockSubscription()
+    releaseEditLockSubscription = null
+  }
+  if (editLockHandle) {
+    editLockHandle.stop()
+    editLockHandle = null
+  }
+
+  editLockHandle = createTradeEditLock(tradeId.value)
+  releaseEditLockSubscription = editLockHandle.subscribe((next) => {
+    editLockState.value = next
+  })
+  editLockHandle.start()
+}
+
+function teardownEditLock() {
+  if (releaseEditLockSubscription) {
+    releaseEditLockSubscription()
+    releaseEditLockSubscription = null
+  }
+  if (editLockHandle) {
+    editLockHandle.stop()
+    editLockHandle = null
+  }
+  editLockState.value = null
+}
+
+function takeOverEditLock() {
+  if (!editLockHandle) return
+  const approved = typeof window === 'undefined'
+    ? true
+    : window.confirm('Take over edit lock from the other tab?')
+  if (!approved) return
+
+  const acquired = editLockHandle.takeOver()
+  if (acquired) {
+    uiStore.toast({
+      type: 'success',
+      title: 'Edit lock acquired',
+      message: 'This tab now controls saving for this trade.',
+    })
+    return
+  }
+
+  uiStore.toast({
+    type: 'error',
+    title: 'Could not take over lock',
+    message: 'Try again in a moment.',
+  })
+}
+
+function normalizeUpdatedAt(value: unknown): string | null {
+  if (typeof value !== 'string') return null
+  const trimmed = value.trim()
+  if (!trimmed) return null
+  const parsed = Date.parse(trimmed)
+  if (!Number.isFinite(parsed)) return null
+  return new Date(parsed).toISOString()
+}
+
+function formatUpdatedAtForBanner(value: string): string {
+  const parsed = Date.parse(value)
+  if (!Number.isFinite(parsed)) return value
+  return new Date(parsed).toLocaleString()
+}
+
+function stringValue(value: unknown): string {
+  if (value === null || value === undefined) return ''
+  if (typeof value === 'boolean') return value ? 'Yes' : 'No'
+  if (Array.isArray(value)) return value.map((item) => String(item)).join(', ')
+  return String(value)
+}
+
+function pushDiff(
+  diffs: Array<{ field: string; local: string; latest: string }>,
+  field: string,
+  localValue: unknown,
+  latestValue: unknown
+) {
+  const local = stringValue(localValue).trim()
+  const latest = stringValue(latestValue).trim()
+  if (local === latest) return
+  diffs.push({
+    field,
+    local: local || '-',
+    latest: latest || '-',
+  })
+}
+
+function staleWriteDiffs(payload: TradePayload, latestTrade: Trade): Array<{ field: string; local: string; latest: string }> {
+  const diffs: Array<{ field: string; local: string; latest: string }> = []
+  pushDiff(diffs, 'Account', payload.account_id, latestTrade.account_id)
+  pushDiff(diffs, 'Symbol', payload.symbol.toUpperCase(), latestTrade.pair)
+  pushDiff(diffs, 'Direction', payload.direction, latestTrade.direction)
+  pushDiff(diffs, 'Entry Price', payload.entry_price, latestTrade.entry_price)
+  pushDiff(diffs, 'Stop Loss', payload.stop_loss, latestTrade.stop_loss)
+  pushDiff(diffs, 'Take Profit', payload.take_profit, latestTrade.take_profit)
+  pushDiff(diffs, 'Exit Price', payload.actual_exit_price, latestTrade.actual_exit_price)
+  pushDiff(diffs, 'Position Size', payload.position_size, latestTrade.lot_size)
+  pushDiff(diffs, 'Close Date', payload.close_date, latestTrade.date)
+  pushDiff(diffs, 'Emotion', payload.emotion, latestTrade.emotion)
+  pushDiff(diffs, 'Followed Rules', payload.followed_rules, latestTrade.followed_rules)
+  pushDiff(
+    diffs,
+    'Tags',
+    [...(payload.tag_ids ?? [])].sort((a, b) => a - b).join(','),
+    [...(latestTrade.tag_ids ?? [])].sort((a, b) => a - b).join(',')
+  )
+  pushDiff(diffs, 'Notes', payload.notes ?? '', latestTrade.notes ?? '')
+  return diffs
+}
+
+function clearStaleWriteWarning() {
+  staleWriteWarning.value = null
+  staleWriteConfirmedFingerprint.value = null
+}
+
+async function verifyStaleWriteBeforeSave(payload: TradePayload): Promise<boolean> {
+  if (!isEditMode.value || tradeId.value === null) return true
+  const baselineUpdatedAt = normalizeUpdatedAt(loadedTradeUpdatedAt.value)
+  if (!baselineUpdatedAt) return true
+
+  let latestTrade: Trade | null = null
+  const snapshot = tradeStore.trades.find((row) => row.id === tradeId.value) ?? null
+  const snapshotUpdatedAt = normalizeUpdatedAt(snapshot?.updated_at)
+  if (snapshot && snapshotUpdatedAt && snapshotUpdatedAt !== baselineUpdatedAt) {
+    latestTrade = snapshot
+  }
+
+  if (!latestTrade) {
+    staleWriteCheckInProgress.value = true
+    try {
+      const latest = await tradeStore.fetchTradeDetails(tradeId.value)
+      latestTrade = latest.trade
+    } catch {
+      staleWriteCheckInProgress.value = false
+      return true
+    } finally {
+      staleWriteCheckInProgress.value = false
+    }
+  }
+
+  const latestUpdatedAt = normalizeUpdatedAt(latestTrade.updated_at)
+  if (!latestUpdatedAt || latestUpdatedAt === baselineUpdatedAt) {
+    clearStaleWriteWarning()
+    return true
+  }
+
+  const fingerprint = `${baselineUpdatedAt}|${latestUpdatedAt}`
+  staleWriteWarning.value = {
+    fingerprint,
+    loaded_updated_at: baselineUpdatedAt,
+    latest_updated_at: latestUpdatedAt,
+    diffs: staleWriteDiffs(payload, latestTrade),
+  }
+
+  if (staleWriteConfirmedFingerprint.value === fingerprint) {
+    return true
+  }
+
+  uiStore.toast({
+    type: 'info',
+    title: 'Trade was updated elsewhere',
+    message: 'Review differences and confirm overwrite before saving.',
+  })
+  return false
+}
+
+function confirmStaleOverwriteAndSave() {
+  if (!staleWriteWarning.value) return
+  staleWriteConfirmedFingerprint.value = staleWriteWarning.value.fingerprint
+  void submitForm()
+}
+
+async function reloadTradeFromLatest() {
+  if (!isEditMode.value || tradeId.value === null) return
+  const approved = typeof window === 'undefined'
+    ? true
+    : window.confirm('Reload latest server trade data? Unsaved changes and pending images will be discarded.')
+  if (!approved) return
+
+  clearPendingImages()
+  clearStaleWriteWarning()
+  await loadTradeIfNeeded()
+  await loadChecklistState()
+  schedulePrecheck()
+}
+
 function handleGlobalHotkeys(event: KeyboardEvent) {
   const key = event.key.toLowerCase()
   if (!(event.ctrlKey || event.metaKey)) return
@@ -1365,6 +1583,16 @@ function handleGlobalHotkeys(event: KeyboardEvent) {
 }
 
 async function submitForm() {
+  editLockHandle?.refresh()
+  if (isEditMode.value && isLockedByOtherTab.value) {
+    uiStore.toast({
+      type: 'error',
+      title: 'Edit locked by another tab',
+      message: 'Use "Take over" before saving from this tab.',
+    })
+    return
+  }
+
   submitAttempted.value = true
   tradeChecklistStore.markSubmitAttempted(true)
   const firstError = Object.values(formErrors.value)[0]
@@ -1398,6 +1626,11 @@ async function submitForm() {
 
   try {
     const payload = buildPayload()
+    const staleSafe = await verifyStaleWriteBeforeSave(payload)
+    if (!staleSafe) {
+      return
+    }
+
     const hadPendingImages = pendingImages.value.length > 0
     let savedTrade: Trade
 
@@ -1410,6 +1643,8 @@ async function submitForm() {
     await tradeStore.upsertTradePsychology(savedTrade.id, buildPsychologyPayload())
 
     await uploadPendingImages(savedTrade)
+    loadedTradeUpdatedAt.value = normalizeUpdatedAt(savedTrade.updated_at)
+    clearStaleWriteWarning()
 
     uiStore.toast({
       type: 'success',
@@ -1443,6 +1678,8 @@ function handleExecuteClick() {
 async function loadTradeIfNeeded() {
   if (!isEditMode.value || tradeId.value === null) {
     tradeCompleted.value = true
+    loadedTradeUpdatedAt.value = null
+    clearStaleWriteWarning()
     form.date = nowLocalDateTime()
     ensureDefaultExitLeg()
     setPsychologyFromPayload(null)
@@ -1453,6 +1690,8 @@ async function loadTradeIfNeeded() {
   loadingTrade.value = true
   try {
     const data = await tradeStore.fetchTradeDetails(tradeId.value)
+    loadedTradeUpdatedAt.value = normalizeUpdatedAt(data.trade.updated_at)
+    clearStaleWriteWarning()
     setFormFromTrade(data.trade, data.legs ?? [], data.psychology ?? null)
     existingImages.value = (data.images ?? [])
       .slice()
@@ -1488,6 +1727,7 @@ function onChecklistEvaluationChange(payload: { failedRequiredIds: number[]; fir
 
 onMounted(async () => {
   window.addEventListener('keydown', handleGlobalHotkeys)
+  setupEditLock()
 
   try {
     await Promise.all([
@@ -1533,6 +1773,17 @@ onMounted(async () => {
   await loadChecklistState()
   schedulePrecheck()
 })
+
+watch(
+  () => tradeId.value,
+  (next, previous) => {
+    if (next === previous) return
+    setupEditLock()
+    void loadTradeIfNeeded()
+    void loadChecklistState()
+    schedulePrecheck()
+  }
+)
 
 watch(
   () => [form.account_id, form.strategy_model_id],
@@ -1666,6 +1917,7 @@ watch(
 
 onBeforeUnmount(() => {
   window.removeEventListener('keydown', handleGlobalHotkeys)
+  teardownEditLock()
   clearPendingImages()
   tradeChecklistStore.resetState()
   precheckRunner.cancel()
@@ -1766,6 +2018,43 @@ async function loadImage(file: File): Promise<HTMLImageElement> {
         </div>
 
         <p v-if="blockedSummary" class="field-error-text">{{ blockedSummary }}</p>
+        <div v-if="isLockedByOtherTab" class="panel p-3 text-sm risk-unverified-banner">
+          <p class="font-semibold">Edit lock active in {{ lockHolderLabel }}</p>
+          <p class="mt-1">
+            Another tab currently owns this trade edit session. Saving is blocked in this tab until you take over.
+          </p>
+          <div class="mt-3 flex flex-wrap gap-2">
+            <button type="button" class="btn btn-secondary px-3 py-1.5 text-sm" @click="takeOverEditLock">
+              Take over
+            </button>
+            <button type="button" class="btn btn-ghost px-3 py-1.5 text-sm" @click="void loadTradeIfNeeded()">
+              Refresh
+            </button>
+          </div>
+        </div>
+
+        <div v-if="staleWriteWarning" class="panel p-3 text-sm">
+          <p class="font-semibold">Stale write warning</p>
+          <p class="mt-1">
+            This trade changed after you loaded the edit form.
+            Loaded: <strong>{{ formatUpdatedAtForBanner(staleWriteWarning.loaded_updated_at) }}</strong> ·
+            Latest: <strong>{{ formatUpdatedAtForBanner(staleWriteWarning.latest_updated_at) }}</strong>
+          </p>
+          <ul v-if="staleWriteWarning.diffs.length > 0" class="mt-2 list-disc pl-5">
+            <li v-for="diff in staleWriteWarning.diffs" :key="diff.field">
+              {{ diff.field }}: current form <strong>{{ diff.local }}</strong> vs latest <strong>{{ diff.latest }}</strong>
+            </li>
+          </ul>
+          <div class="mt-3 flex flex-wrap gap-2">
+            <button type="button" class="btn btn-secondary px-3 py-1.5 text-sm" @click="confirmStaleOverwriteAndSave">
+              Confirm overwrite and save
+            </button>
+            <button type="button" class="btn btn-ghost px-3 py-1.5 text-sm" @click="void reloadTradeFromLatest()">
+              Reload latest
+            </button>
+          </div>
+        </div>
+
         <div v-if="isRiskEngineUnavailable" class="panel p-3 text-sm risk-unverified-banner">
           <p class="font-semibold">Risk engine unavailable</p>
           <p class="mt-1">

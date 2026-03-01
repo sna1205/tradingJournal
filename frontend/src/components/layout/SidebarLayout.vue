@@ -113,11 +113,11 @@ const navSections: NavSection[] = [
       },
       {
         label: 'Settings',
-        to: '/settings',
+        to: '/settings/hub',
         icon: Settings2,
-        title: 'Workspace Settings',
-        subtitle: 'Manage profile preferences, theme sync, security sessions, and governance pointers.',
-        navHint: 'Preferences',
+        title: 'Settings Hub',
+        subtitle: 'Profile, theme, offline mode, security sessions, and governance shortcuts in one place.',
+        navHint: 'Control center',
       },
       {
         label: 'Checklists',

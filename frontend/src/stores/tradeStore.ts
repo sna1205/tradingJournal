@@ -18,6 +18,7 @@ import {
   updateLocalTrade,
   uploadLocalTradeImage,
 } from '@/services/localFallback'
+import { createRequestManager, isAbortError, stableSerialize } from '@/services/requestManager'
 import { scopedKey } from '@/services/storageScope'
 import { useAnalyticsStore } from '@/stores/analyticsStore'
 import { useAccountStore } from '@/stores/accountStore'
@@ -197,6 +198,8 @@ export const useTradeStore = defineStore('trades', () => {
   const tradeTags = ref<TradeTag[]>([])
   const sessionOptions = ref<SessionOption[]>([])
   const includeDraftsUnverified = ref(readTradeQualityPreference())
+  const requestManager = createRequestManager()
+  let fetchTradesRequestVersion = 0
 
   const hasFilters = computed(() => Object.values(filters.value).some((value) => value !== ''))
   const hasActiveFilters = computed(() => hasFilters.value)
@@ -231,21 +234,42 @@ export const useTradeStore = defineStore('trades', () => {
     includeDraftsUnverified.value = readTradeQualityPreference()
   }
 
+  function invalidateTradeLoadCaches(): void {
+    requestManager.invalidateCacheByPrefix('fetchTrades:')
+  }
+
   async function fetchTrades(page = 1) {
     refreshTradeQualityPreference()
+    const requestVersion = ++fetchTradesRequestVersion
     loading.value = true
     error.value = null
+    const params = {
+      page,
+      per_page: pagination.value.per_page,
+      include_drafts_unverified: includeDraftsUnverified.value ? 1 : 0,
+      local_sync_status: includeDraftsUnverified.value ? undefined : 'synced',
+      risk_validation_status: includeDraftsUnverified.value ? undefined : 'verified',
+      ...filters.value,
+    }
+    const fingerprint = stableSerialize(params)
+    const cacheKey = `fetchTrades:${fingerprint}`
+
     try {
-      const { data } = await api.get<Paginated<Trade>>('/trades', {
-        params: {
-          page,
-          per_page: pagination.value.per_page,
-          include_drafts_unverified: includeDraftsUnverified.value ? 1 : 0,
-          local_sync_status: includeDraftsUnverified.value ? undefined : 'synced',
-          risk_validation_status: includeDraftsUnverified.value ? undefined : 'verified',
-          ...filters.value,
+      const response = await requestManager.run({
+        key: 'fetchTrades',
+        fingerprint,
+        cacheKey,
+        cacheTtlMs: 800,
+        execute: async ({ signal }) => {
+          const { data } = await api.get<Paginated<Trade>>('/trades', {
+            params,
+            signal,
+          })
+          return data
         },
       })
+      if (response.stale || requestVersion !== fetchTradesRequestVersion) return
+      const data = response.value
       syncStatusStore.markServerHealthy()
 
       trades.value = filterTradesByQuality(data.data ?? [])
@@ -261,10 +285,17 @@ export const useTradeStore = defineStore('trades', () => {
       pagination.value.per_page = data.per_page
       pagination.value.total = data.total
     } catch (err) {
+      if (isAbortError(err)) {
+        return
+      }
+
       if (!shouldUseLocalFallback(err)) {
-        error.value = 'Failed to load trades.'
+        if (requestVersion === fetchTradesRequestVersion) {
+          error.value = 'Failed to load trades.'
+        }
         throw err
       }
+      if (requestVersion !== fetchTradesRequestVersion) return
       syncStatusStore.markLocalFallback('trades')
 
       const local = queryLocalTrades({
@@ -283,7 +314,9 @@ export const useTradeStore = defineStore('trades', () => {
       pagination.value.per_page = local.per_page
       pagination.value.total = local.total
     } finally {
-      loading.value = false
+      if (requestVersion === fetchTradesRequestVersion) {
+        loading.value = false
+      }
     }
   }
 
@@ -304,6 +337,7 @@ export const useTradeStore = defineStore('trades', () => {
     try {
       const { data } = await api.post<Trade>('/trades', payload)
       syncStatusStore.markServerHealthy()
+      invalidateTradeLoadCaches()
 
       if (shouldOptimisticallyInsert) {
         const index = trades.value.findIndex((trade) => trade.id === tempId)
@@ -327,6 +361,7 @@ export const useTradeStore = defineStore('trades', () => {
     } catch (err) {
       if (shouldUseLocalFallback(err)) {
         syncStatusStore.markLocalFallback('trades')
+        invalidateTradeLoadCaches()
         const local = createLocalTrade(payload)
         enqueueSyncCreate({
           entity: 'trades',
@@ -427,6 +462,7 @@ export const useTradeStore = defineStore('trades', () => {
     try {
       const { data } = await api.put<Trade>(`/trades/${id}`, payload)
       syncStatusStore.markServerHealthy()
+      invalidateTradeLoadCaches()
       if (index >= 0) {
         trades.value[index] = data
         trades.value = filterTradesByQuality(trades.value)
@@ -445,6 +481,7 @@ export const useTradeStore = defineStore('trades', () => {
     } catch (err) {
       if (shouldUseLocalFallback(err)) {
         syncStatusStore.markLocalFallback('trades')
+        invalidateTradeLoadCaches()
         if (current) {
           upsertLocalTradeSnapshot(current)
         }
@@ -492,6 +529,7 @@ export const useTradeStore = defineStore('trades', () => {
     try {
       await api.delete(`/trades/${id}`)
       syncStatusStore.markServerHealthy()
+      invalidateTradeLoadCaches()
       deleteLocalTrade(id)
 
       if (trades.value.length === 0 && pagination.value.current_page > 1) {
@@ -503,6 +541,7 @@ export const useTradeStore = defineStore('trades', () => {
     } catch (err) {
       if (shouldUseLocalFallback(err)) {
         syncStatusStore.markLocalFallback('trades')
+        invalidateTradeLoadCaches()
         if (previous) {
           upsertLocalTradeSnapshot(previous)
         }
@@ -679,14 +718,26 @@ export const useTradeStore = defineStore('trades', () => {
         body.trade_id = tradeId
       }
 
-      const { data } = await api.post<TradePrecheckResult>('/trades/precheck', body, {
-        signal: options?.signal,
+      const fingerprint = stableSerialize(body)
+      const response = await requestManager.run({
+        key: `precheckTrade:${tradeId ?? 'new'}`,
+        fingerprint,
+        cacheKey: `precheck:${tradeId ?? 'new'}:${fingerprint}`,
+        cacheTtlMs: 1_000,
+        externalSignal: options?.signal,
+        execute: async ({ signal }) => {
+          const { data } = await api.post<TradePrecheckResult>('/trades/precheck', body, {
+            signal,
+          })
+          return data
+        },
       })
-      syncStatusStore.markServerHealthy()
-      return data
+      if (!response.stale) {
+        syncStatusStore.markServerHealthy()
+      }
+      return response.value
     } catch (error) {
-      const maybeAbortError = error as { code?: string; name?: string }
-      if (maybeAbortError?.code === 'ERR_CANCELED' || maybeAbortError?.name === 'AbortError') {
+      if (isAbortError(error)) {
         throw error
       }
 

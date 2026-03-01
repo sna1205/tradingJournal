@@ -1,5 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import {
+  __readPersistedLocalFallbackEnvelopeForTests,
+  __resetLocalFallbackPersistenceForTests,
   __resetTransientImageRegistryForTests,
   createLocalAccount,
   createLocalMissedTrade,
@@ -54,8 +56,9 @@ describe('localFallback image persistence', () => {
   const createObjectURL = vi.fn((_: Blob) => `blob:mock-${Math.random().toString(16).slice(2)}`)
   const revokeObjectURL = vi.fn()
 
-  beforeEach(() => {
+  beforeEach(async () => {
     installMemoryStorage()
+    await __resetLocalFallbackPersistenceForTests()
     setScope({ userId: 101, accountId: null })
     __resetTransientImageRegistryForTests()
 
@@ -97,22 +100,19 @@ describe('localFallback image persistence', () => {
     const uploaded = await uploadLocalTradeImage(trade.id, new File(['fake-bytes'], 'chart-a.png', { type: 'image/png' }))
     expect(uploaded.image_url.startsWith('blob:mock-')).toBe(true)
 
-    const storedRaw = localStorage.getItem(scopedKey('local-fallback', 'trades_v1')) ?? ''
-    expect(storedRaw.includes('data:image')).toBe(false)
-    expect(storedRaw.includes('base64')).toBe(false)
-    expect(storedRaw.includes('blob:')).toBe(false)
+    const details = fetchLocalTradeDetails(trade.id)
+    expect(details.images[0]?.image_url.startsWith('blob:mock-')).toBe(true)
 
-    const storedEnvelope = JSON.parse(storedRaw) as {
-      data: Array<{ images?: Array<{ filename?: string; image_url?: string; thumbnail_url?: string; local_object_url_key?: string }> }>
-    }
-    const storedImage = storedEnvelope.data[0]?.images?.[0]
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    const storedEnvelope = await __readPersistedLocalFallbackEnvelopeForTests('trades_v1')
+    const storedImage = (storedEnvelope?.data as Array<{
+      images?: Array<{ filename?: string; image_url?: string; thumbnail_url?: string; local_object_url_key?: string }>
+    }>)[0]?.images?.[0]
     expect(storedImage?.filename).toBe('chart-a.png')
     expect(storedImage?.image_url).toBe('')
     expect(storedImage?.thumbnail_url).toBe('')
     expect(typeof storedImage?.local_object_url_key).toBe('string')
 
-    const details = fetchLocalTradeDetails(trade.id)
-    expect(details.images[0]?.image_url.startsWith('blob:mock-')).toBe(true)
   })
 
   it('does not crash after reload and drops image previews when transient object URLs are gone', async () => {
@@ -162,14 +162,17 @@ describe('localFallback image persistence', () => {
     const uploaded = await uploadLocalMissedTradeImage(entry.id, new File(['fake-bytes'], 'missed.png', { type: 'image/png' }))
     expect(uploaded.image_url.startsWith('blob:mock-')).toBe(true)
 
-    const storedRaw = localStorage.getItem(scopedKey('local-fallback', 'missed_trades_v1')) ?? ''
-    expect(storedRaw.includes('data:image')).toBe(false)
-    expect(storedRaw.includes('base64')).toBe(false)
-    expect(storedRaw.includes('blob:')).toBe(false)
-
     const saved = fetchLocalMissedTrade(entry.id)
     expect(saved.images?.[0]?.filename).toBe('missed.png')
     expect(saved.images?.[0]?.local_object_url_key).toBeTruthy()
+
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    const storedEnvelope = await __readPersistedLocalFallbackEnvelopeForTests('missed_trades_v1')
+    const storedImage = (storedEnvelope?.data as Array<{
+      images?: Array<{ image_url?: string; thumbnail_url?: string }>
+    }>)[0]?.images?.[0]
+    expect(storedImage?.image_url ?? '').toBe('')
+    expect(storedImage?.thumbnail_url ?? '').toBe('')
   })
 
   it('scrubs legacy persisted data/blob URLs from stored trade image payloads', () => {
@@ -211,8 +214,6 @@ describe('localFallback image persistence', () => {
     expect(details.images[0]?.image_url).toBe('')
     expect(details.images[0]?.thumbnail_url).toBe('')
 
-    const resavedRaw = localStorage.getItem(scopedTradesKey) ?? ''
-    expect(resavedRaw.includes('data:image')).toBe(false)
-    expect(resavedRaw.includes('blob:legacy-thumb')).toBe(false)
+    expect(localStorage.getItem(scopedTradesKey)).toBeNull()
   })
 })

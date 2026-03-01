@@ -1,7 +1,13 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
 import { useAuthStore } from '@/stores/authStore'
-import { scopedKey, setScope } from '@/services/storageScope'
+import {
+  __readPersistedLocalFallbackEnvelopeForTests,
+  __resetLocalFallbackPersistenceForTests,
+  createLocalAccount,
+  createLocalTrade,
+} from '@/services/localFallback'
+import { setScope } from '@/services/storageScope'
 
 class MemoryStorage implements Storage {
   private readonly map = new Map<string, string>()
@@ -43,21 +49,63 @@ function installMemoryStorage() {
 }
 
 describe('authStore scoped logout purge', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     installMemoryStorage()
+    await __resetLocalFallbackPersistenceForTests()
     setActivePinia(createPinia())
     setScope({ userId: null, accountId: null })
   })
 
-  it('purges scoped storage for current user on clearSession/logout', () => {
+  it('purges scoped IDB records for current user on clearSession/logout', async () => {
     setScope({ userId: 7, accountId: null })
-    const user7TradesKey = scopedKey('local-fallback', 'trades_v1')
-    localStorage.setItem(user7TradesKey, JSON.stringify({ data: [{ id: 1 }] }))
-    sessionStorage.setItem('tj:v3:u:7:a:all:local-fallback:accounts_v1', JSON.stringify({ data: [{ id: 1 }] }))
+    const user7Account = createLocalAccount({
+      name: 'Trader A Account',
+      broker: 'Broker A',
+      account_type: 'personal',
+      starting_balance: 10000,
+      currency: 'USD',
+      is_active: true,
+    })
+    createLocalTrade({
+      account_id: user7Account.id,
+      symbol: 'EURUSD',
+      direction: 'buy',
+      entry_price: 1.1,
+      stop_loss: 1.09,
+      take_profit: 1.12,
+      actual_exit_price: 1.11,
+      position_size: 0.1,
+      followed_rules: true,
+      emotion: 'calm',
+      close_date: new Date().toISOString(),
+      notes: null,
+    })
+    await new Promise((resolve) => setTimeout(resolve, 0))
 
     setScope({ userId: 99, accountId: null })
-    const user99TradesKey = scopedKey('local-fallback', 'trades_v1')
-    localStorage.setItem(user99TradesKey, JSON.stringify({ data: [{ id: 2 }] }))
+    const user99Account = createLocalAccount({
+      name: 'Trader B Account',
+      broker: 'Broker B',
+      account_type: 'personal',
+      starting_balance: 15000,
+      currency: 'USD',
+      is_active: true,
+    })
+    createLocalTrade({
+      account_id: user99Account.id,
+      symbol: 'GBPUSD',
+      direction: 'sell',
+      entry_price: 1.2,
+      stop_loss: 1.21,
+      take_profit: 1.19,
+      actual_exit_price: 1.195,
+      position_size: 0.2,
+      followed_rules: true,
+      emotion: 'neutral',
+      close_date: new Date().toISOString(),
+      notes: null,
+    })
+    await new Promise((resolve) => setTimeout(resolve, 0))
 
     const authStore = useAuthStore()
     authStore.user = {
@@ -66,11 +114,16 @@ describe('authStore scoped logout purge', () => {
       email: 'a@example.com',
     }
 
-    authStore.clearSession()
+    await authStore.clearSession()
 
     expect(authStore.user).toBeNull()
-    expect(localStorage.getItem(user7TradesKey)).toBeNull()
-    expect(sessionStorage.getItem('tj:v3:u:7:a:all:local-fallback:accounts_v1')).toBeNull()
-    expect(localStorage.getItem(user99TradesKey)).not.toBeNull()
+
+    setScope({ userId: 7, accountId: null })
+    expect(await __readPersistedLocalFallbackEnvelopeForTests('accounts_v1')).toBeNull()
+    expect(await __readPersistedLocalFallbackEnvelopeForTests('trades_v1')).toBeNull()
+
+    setScope({ userId: 99, accountId: null })
+    expect(await __readPersistedLocalFallbackEnvelopeForTests('accounts_v1')).not.toBeNull()
+    expect(await __readPersistedLocalFallbackEnvelopeForTests('trades_v1')).not.toBeNull()
   })
 })

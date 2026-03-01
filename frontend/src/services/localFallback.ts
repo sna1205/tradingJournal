@@ -1,6 +1,20 @@
 import type { Account, AccountAnalyticsPayload, AccountEquityPayload, AccountType } from '@/types/account'
 import { isConnectivityFailure, type SyncQueueStatus } from '@/services/offlineSyncQueue'
-import { getScope, migrateLegacyUnscopedKeys, scopedKey } from '@/services/storageScope'
+import {
+  type StorageScope,
+  getScope,
+  migrateLegacyUnscopedKeys,
+  scopedKeyForScope,
+} from '@/services/storageScope'
+import {
+  __resetScopedIndexedDbForTests,
+  deleteScopedRecord,
+  getScopedRecord,
+  purgeScopedRecordsForUser,
+  putScopedRecord,
+  scopedRecordId,
+  type ScopedIndexedDbRecord,
+} from '@/services/scopedIndexedDb'
 import type {
   MissedTrade,
   MissedTradeImage,
@@ -17,8 +31,20 @@ const MISSED_TRADES_KEY = 'missed_trades_v1'
 const LEGACY_ACCOUNTS_KEY = 'tj_local_accounts_v1'
 const LEGACY_TRADES_KEY = 'tj_local_trades_v1'
 const LEGACY_MISSED_TRADES_KEY = 'tj_local_missed_trades_v1'
+const OFFLINE_MODE_KEY = 'tj_offline_mode_enabled'
+const OFFLINE_MODE_ON = '1'
+const OFFLINE_MODE_OFF = '0'
+const DEFAULT_TTL_MS = 7 * 24 * 60 * 60 * 1000
+const MAX_TRADES = 200
+const MAX_ACCOUNTS = 20
+const SENSITIVE_KEYS = new Set<string>([ACCOUNTS_KEY, TRADES_KEY])
 let migrationScopeMarker = ''
 const transientObjectUrlByKey = new Map<string, string>()
+const scopedEnvelopeCache = new Map<string, LocalStorageEnvelope<unknown>>()
+const scopeHydrationPromises = new Map<string, Promise<void>>()
+const hydratedScopeMarkers = new Set<string>()
+const persistenceQueuesByScopedKey = new Map<string, Promise<void>>()
+let offlineModeEnabledCache: boolean | null = null
 
 export interface AccountPayloadLike {
   name: string
@@ -58,6 +84,49 @@ export function shouldUseLocalFallback(error: unknown): boolean {
   return isConnectivityFailure(error)
 }
 
+export function isOfflineModeEnabled(): boolean {
+  if (offlineModeEnabledCache !== null) {
+    return offlineModeEnabledCache
+  }
+
+  const storage = safeLocalStorage()
+  if (!storage) {
+    offlineModeEnabledCache = true
+    return offlineModeEnabledCache
+  }
+
+  const raw = safeGet(storage, OFFLINE_MODE_KEY)
+  if (raw === OFFLINE_MODE_OFF) {
+    offlineModeEnabledCache = false
+    return offlineModeEnabledCache
+  }
+  if (raw === OFFLINE_MODE_ON) {
+    offlineModeEnabledCache = true
+    return offlineModeEnabledCache
+  }
+
+  offlineModeEnabledCache = true
+  return offlineModeEnabledCache
+}
+
+export async function setOfflineModeEnabled(enabled: boolean): Promise<boolean> {
+  const next = Boolean(enabled)
+  offlineModeEnabledCache = next
+
+  const storage = safeLocalStorage()
+  if (storage) {
+    safeSet(storage, OFFLINE_MODE_KEY, next ? OFFLINE_MODE_ON : OFFLINE_MODE_OFF)
+  }
+
+  if (!next) {
+    await purgeLocalFallbackPersistenceForUser(getScope().userId)
+  } else {
+    await initializeLocalFallbackPersistence()
+  }
+
+  return next
+}
+
 export function migrateLegacyLocalFallbackKeys(): void {
   const scope = getScope()
   const scopeMarker = `${scope.userId ?? 'anon'}:${scope.accountId ?? 'all'}`
@@ -87,6 +156,25 @@ export function migrateLegacyLocalFallbackKeys(): void {
   migrationScopeMarker = scopeMarker
 }
 
+export async function initializeLocalFallbackPersistence(): Promise<void> {
+  migrateLegacyLocalFallbackKeys()
+  await hydrateScope(getScope())
+  purgeLegacySensitiveScopedKeys()
+}
+
+export async function purgeLocalFallbackPersistenceForUser(userId: number | null | undefined): Promise<void> {
+  const normalized = normalizeScopeUserId(userId)
+  if (normalized === null) {
+    clearSensitiveScopeCache(getScope())
+    purgeLegacySensitiveScopedKeys()
+    return
+  }
+
+  await purgeScopedRecordsForUser(normalized, LOCAL_FALLBACK_NAMESPACE)
+  clearSensitiveUserCache(normalized)
+  purgeLegacySensitiveScopedKeys()
+}
+
 export function __resetTransientImageRegistryForTests(): void {
   for (const url of transientObjectUrlByKey.values()) {
     try {
@@ -96,6 +184,29 @@ export function __resetTransientImageRegistryForTests(): void {
     }
   }
   transientObjectUrlByKey.clear()
+}
+
+export async function __resetLocalFallbackPersistenceForTests(): Promise<void> {
+  migrationScopeMarker = ''
+  offlineModeEnabledCache = null
+  scopedEnvelopeCache.clear()
+  scopeHydrationPromises.clear()
+  hydratedScopeMarkers.clear()
+  persistenceQueuesByScopedKey.clear()
+  await __resetScopedIndexedDbForTests()
+}
+
+export async function __readPersistedLocalFallbackEnvelopeForTests(key: string): Promise<LocalStorageEnvelope<unknown> | null> {
+  const scope = getScope()
+  const persisted = await getScopedRecord<unknown>(scope, LOCAL_FALLBACK_NAMESPACE, key)
+  if (!persisted) return null
+
+  return {
+    created_at: persisted.created_at,
+    updated_at: persisted.updated_at,
+    expire_at: persisted.expire_at,
+    data: persisted.payload,
+  }
 }
 
 export function fetchLocalAccounts(params?: { is_active?: boolean }): Account[] {
@@ -1104,58 +1215,64 @@ function toOptionalText(value: unknown): string | null {
 
 interface LocalStorageEnvelope<T> {
   created_at: string
+  updated_at: string
   expire_at: string | null
   data: T
 }
 
 function readJson<T>(key: string, fallback: T): T {
   migrateLegacyLocalFallbackKeys()
-  const targetKey = scopedLocalFallbackKey(key)
+  const scope = getScope()
+  const targetKey = scopedLocalFallbackKeyForScope(scope, key)
 
-  try {
-    const raw = localStorage.getItem(targetKey)
-    if (!raw) return fallback
-    let parsed = JSON.parse(raw) as unknown
-    const sanitized = sanitizePersistedImagePayloads(key, parsed)
-    if (sanitized.changed) {
-      parsed = sanitized.payload
-      try {
-        localStorage.setItem(targetKey, JSON.stringify(parsed))
-      } catch {
-        // Ignore storage write failures.
-      }
-    }
-
-    if (isEnvelope<T>(parsed)) {
-      return parsed.data
-    }
-
-    // Backward compatibility for scoped payloads that were not wrapped.
-    return parsed as T
-  } catch {
-    return fallback
+  if (!hydratedScopeMarkers.has(scopeMarker(scope))) {
+    void hydrateScope(scope)
   }
+
+  const cached = readEnvelopeFromCache<T>(targetKey, key)
+  if (cached) {
+    return cached.data
+  }
+
+  const migrated = readAndMigrateLegacyScopedEnvelope<T>(scope, key, targetKey)
+  if (migrated) {
+    return migrated.data
+  }
+
+  return fallback
 }
 
 function writeJson<T>(key: string, value: T): void {
   migrateLegacyLocalFallbackKeys()
-  const targetKey = scopedLocalFallbackKey(key)
-  const payload: LocalStorageEnvelope<T> = {
-    created_at: nowIso(),
-    expire_at: null,
-    data: value,
+  const scope = getScope()
+  const targetKey = scopedLocalFallbackKeyForScope(scope, key)
+  const now = nowIso()
+  const existing = readEnvelopeFromCache<T>(targetKey, key)
+  const normalized = sanitizePersistedPayloadValue(key, applyEntityCaps(key, value))
+
+  const envelope: LocalStorageEnvelope<T> = {
+    created_at: existing?.created_at ?? now,
+    updated_at: now,
+    expire_at: ttlExpiryIso(),
+    data: normalized,
   }
 
-  try {
-    // Phase 0.2 TTL stub: we persist expire_at but do not enforce expiration yet.
-    localStorage.setItem(targetKey, JSON.stringify(payload))
-  } catch {
-    // Ignore local storage write failures.
+  scopedEnvelopeCache.set(targetKey, envelope)
+  if (shouldPersistKey(key)) {
+    enqueuePersistence(targetKey, async () => {
+      await persistEnvelope(scope, key, envelope)
+    })
+  } else {
+    enqueuePersistence(targetKey, async () => {
+      await deleteScopedRecord(scope, LOCAL_FALLBACK_NAMESPACE, key)
+    })
   }
+
+  purgeScopedLocalStorageKey(targetKey)
 }
 
-function scopedLocalFallbackKey(key: string): string {
-  return scopedKey(LOCAL_FALLBACK_NAMESPACE, key)
+function scopedLocalFallbackKeyForScope(scope: StorageScope, key: string): string {
+  return scopedKeyForScope(scope, LOCAL_FALLBACK_NAMESPACE, key)
 }
 
 function isEnvelope<T>(value: unknown): value is LocalStorageEnvelope<T> {
@@ -1218,6 +1335,322 @@ function sanitizePersistedImagePayloads(key: string, payload: unknown): { payloa
   return { payload: nextRoot, changed: true }
 }
 
+function sanitizePersistedPayloadValue<T>(key: string, payload: T): T {
+  const sanitized = sanitizePersistedImagePayloads(key, payload)
+  return sanitized.payload as T
+}
+
+function applyEntityCaps<T>(key: string, value: T): T {
+  if (key !== ACCOUNTS_KEY && key !== TRADES_KEY) {
+    return value
+  }
+  if (!Array.isArray(value)) {
+    return value
+  }
+
+  const cap = key === TRADES_KEY ? MAX_TRADES : MAX_ACCOUNTS
+  if (value.length <= cap) {
+    return value
+  }
+
+  const rows = value.slice()
+  rows.sort((left, right) => {
+    const recencyDelta = recordRecency(right) - recordRecency(left)
+    if (recencyDelta !== 0) return recencyDelta
+    return recordId(right) - recordId(left)
+  })
+  return rows.slice(0, cap) as T
+}
+
+function recordRecency(value: unknown): number {
+  if (!isRecord(value)) return 0
+  const updatedAt = typeof value.updated_at === 'string' ? Date.parse(value.updated_at) : Number.NaN
+  if (Number.isFinite(updatedAt)) return updatedAt
+  const createdAt = typeof value.created_at === 'string' ? Date.parse(value.created_at) : Number.NaN
+  return Number.isFinite(createdAt) ? createdAt : 0
+}
+
+function recordId(value: unknown): number {
+  if (!isRecord(value)) return 0
+  const id = Number(value.id)
+  if (!Number.isFinite(id)) return 0
+  return Math.trunc(id)
+}
+
+function readEnvelopeFromCache<T>(targetKey: string, key: string): LocalStorageEnvelope<T> | null {
+  const cached = scopedEnvelopeCache.get(targetKey)
+  if (!cached) return null
+
+  if (isExpiredEnvelope(cached)) {
+    scopedEnvelopeCache.delete(targetKey)
+    const scope = getScope()
+    enqueuePersistence(targetKey, async () => {
+      await deleteScopedRecord(scope, LOCAL_FALLBACK_NAMESPACE, key)
+    })
+    return null
+  }
+
+  return cached as LocalStorageEnvelope<T>
+}
+
+function readAndMigrateLegacyScopedEnvelope<T>(
+  scope: StorageScope,
+  key: string,
+  targetKey: string
+): LocalStorageEnvelope<T> | null {
+  const storage = safeLocalStorage()
+  if (!storage) return null
+
+  const raw = safeGet(storage, targetKey)
+  if (!raw) return null
+
+  let parsed: unknown = null
+  try {
+    parsed = JSON.parse(raw) as unknown
+  } catch {
+    safeRemove(storage, targetKey)
+    return null
+  }
+
+  const envelope = normalizeEnvelope<T>(key, parsed)
+  safeRemove(storage, targetKey)
+  if (!envelope || isExpiredEnvelope(envelope)) {
+    return null
+  }
+
+  scopedEnvelopeCache.set(targetKey, envelope)
+  if (shouldPersistKey(key)) {
+    enqueuePersistence(targetKey, async () => {
+      await persistEnvelope(scope, key, envelope)
+    })
+  }
+  return envelope
+}
+
+async function hydrateScope(scope: StorageScope): Promise<void> {
+  const marker = scopeMarker(scope)
+  if (hydratedScopeMarkers.has(marker)) {
+    return
+  }
+
+  const existing = scopeHydrationPromises.get(marker)
+  if (existing) {
+    await existing
+    return
+  }
+
+  const job = (async () => {
+    await hydrateKey(scope, ACCOUNTS_KEY)
+    await hydrateKey(scope, TRADES_KEY)
+    await hydrateKey(scope, MISSED_TRADES_KEY)
+    hydratedScopeMarkers.add(marker)
+  })().finally(() => {
+    scopeHydrationPromises.delete(marker)
+  })
+
+  scopeHydrationPromises.set(marker, job)
+  await job
+}
+
+async function hydrateKey(scope: StorageScope, key: string): Promise<void> {
+  const targetKey = scopedLocalFallbackKeyForScope(scope, key)
+  let envelopeFromIdb: LocalStorageEnvelope<unknown> | null = null
+  const persisted = await getScopedRecord<unknown>(scope, LOCAL_FALLBACK_NAMESPACE, key)
+  if (persisted) {
+    envelopeFromIdb = normalizeEnvelope(key, persistedToEnvelope(persisted))
+    if (envelopeFromIdb && isExpiredEnvelope(envelopeFromIdb)) {
+      envelopeFromIdb = null
+      await deleteScopedRecord(scope, LOCAL_FALLBACK_NAMESPACE, key)
+    }
+  }
+
+  const envelopeFromLocal = readAndMigrateLegacyScopedEnvelope(scope, key, targetKey)
+  const selected = newestEnvelope(envelopeFromIdb, envelopeFromLocal)
+
+  if (!selected) {
+    scopedEnvelopeCache.delete(targetKey)
+    return
+  }
+
+  scopedEnvelopeCache.set(targetKey, selected)
+  if (shouldPersistKey(key)) {
+    await persistEnvelope(scope, key, selected)
+  } else if (isSensitiveKey(key)) {
+    await deleteScopedRecord(scope, LOCAL_FALLBACK_NAMESPACE, key)
+  }
+}
+
+function newestEnvelope<T>(
+  left: LocalStorageEnvelope<T> | null,
+  right: LocalStorageEnvelope<T> | null
+): LocalStorageEnvelope<T> | null {
+  if (!left) return right
+  if (!right) return left
+  return envelopeUpdatedAtMs(right) > envelopeUpdatedAtMs(left) ? right : left
+}
+
+function envelopeUpdatedAtMs(value: LocalStorageEnvelope<unknown>): number {
+  const parsed = Date.parse(value.updated_at)
+  if (Number.isFinite(parsed)) return parsed
+  const createdParsed = Date.parse(value.created_at)
+  return Number.isFinite(createdParsed) ? createdParsed : 0
+}
+
+async function persistEnvelope(
+  scope: StorageScope,
+  key: string,
+  envelope: LocalStorageEnvelope<unknown>
+): Promise<void> {
+  const record: ScopedIndexedDbRecord<unknown> = {
+    id: scopedRecordId(scope, LOCAL_FALLBACK_NAMESPACE, key),
+    namespace: LOCAL_FALLBACK_NAMESPACE,
+    key,
+    user_id: scope.userId,
+    account_id: scope.accountId,
+    created_at: envelope.created_at,
+    updated_at: envelope.updated_at,
+    expire_at: envelope.expire_at,
+    lru_at: envelope.updated_at,
+    payload: envelope.data,
+  }
+  await putScopedRecord(record)
+}
+
+function enqueuePersistence(scopedKeyValue: string, writer: () => Promise<void>): void {
+  const previous = persistenceQueuesByScopedKey.get(scopedKeyValue) ?? Promise.resolve()
+  const next = previous
+    .then(async () => {
+      await writer()
+    })
+    .catch(() => {
+      // Ignore queue write errors to avoid breaking local fallback runtime.
+    })
+
+  persistenceQueuesByScopedKey.set(scopedKeyValue, next)
+  void next.finally(() => {
+    if (persistenceQueuesByScopedKey.get(scopedKeyValue) === next) {
+      persistenceQueuesByScopedKey.delete(scopedKeyValue)
+    }
+  })
+}
+
+function normalizeEnvelope<T>(key: string, raw: unknown): LocalStorageEnvelope<T> | null {
+  const now = nowIso()
+  let parsed: unknown = raw
+  const sanitized = sanitizePersistedImagePayloads(key, parsed)
+  if (sanitized.changed) {
+    parsed = sanitized.payload
+  }
+
+  if (isEnvelope<T>(parsed)) {
+    const normalized: LocalStorageEnvelope<T> = {
+      created_at: typeof parsed.created_at === 'string' ? parsed.created_at : now,
+      updated_at: typeof parsed.updated_at === 'string' ? parsed.updated_at : (typeof parsed.created_at === 'string' ? parsed.created_at : now),
+      expire_at: normalizeExpireAt(parsed.expire_at),
+      data: applyEntityCaps(key, parsed.data),
+    }
+    normalized.data = sanitizePersistedPayloadValue(key, normalized.data)
+    return normalized
+  }
+
+  return {
+    created_at: now,
+    updated_at: now,
+    expire_at: ttlExpiryIso(),
+    data: sanitizePersistedPayloadValue(key, applyEntityCaps(key, parsed as T)),
+  }
+}
+
+function persistedToEnvelope(record: ScopedIndexedDbRecord<unknown>): LocalStorageEnvelope<unknown> {
+  return {
+    created_at: record.created_at,
+    updated_at: record.updated_at,
+    expire_at: record.expire_at,
+    data: record.payload,
+  }
+}
+
+function normalizeExpireAt(value: unknown): string | null {
+  if (typeof value !== 'string') return ttlExpiryIso()
+  const trimmed = value.trim()
+  if (!trimmed) return ttlExpiryIso()
+  return trimmed
+}
+
+function ttlExpiryIso(ttlMs = DEFAULT_TTL_MS): string {
+  return new Date(Date.now() + ttlMs).toISOString()
+}
+
+function isExpiredEnvelope(value: LocalStorageEnvelope<unknown>): boolean {
+  if (!value.expire_at) return false
+  const expiresAt = Date.parse(value.expire_at)
+  if (!Number.isFinite(expiresAt)) return false
+  return expiresAt <= Date.now()
+}
+
+function shouldPersistKey(key: string): boolean {
+  if (!isSensitiveKey(key)) {
+    return true
+  }
+  return isOfflineModeEnabled()
+}
+
+function isSensitiveKey(key: string): boolean {
+  return SENSITIVE_KEYS.has(key)
+}
+
+function scopeMarker(scope: StorageScope): string {
+  return `${scope.userId ?? 'anon'}:${scope.accountId ?? 'all'}`
+}
+
+function purgeScopedLocalStorageKey(targetKey: string): void {
+  const storage = safeLocalStorage()
+  if (!storage) return
+  safeRemove(storage, targetKey)
+}
+
+function purgeLegacySensitiveScopedKeys(): void {
+  const storage = safeLocalStorage()
+  if (!storage) return
+
+  const keys = readStorageKeys(storage)
+  for (const key of keys) {
+    if (key === LEGACY_ACCOUNTS_KEY || key === LEGACY_TRADES_KEY) {
+      safeRemove(storage, key)
+      continue
+    }
+
+    if (
+      key.includes(`:${LOCAL_FALLBACK_NAMESPACE}:${ACCOUNTS_KEY}`)
+      || key.includes(`:${LOCAL_FALLBACK_NAMESPACE}:${TRADES_KEY}`)
+    ) {
+      safeRemove(storage, key)
+    }
+  }
+}
+
+function clearSensitiveUserCache(userId: number): void {
+  for (const [key] of scopedEnvelopeCache) {
+    const userScopeTag = `:u:${userId}:`
+    if (!key.includes(userScopeTag)) continue
+    if (!key.endsWith(`:${ACCOUNTS_KEY}`) && !key.endsWith(`:${TRADES_KEY}`)) continue
+    scopedEnvelopeCache.delete(key)
+  }
+}
+
+function clearSensitiveScopeCache(scope: StorageScope): void {
+  const accountScoped = scopedLocalFallbackKeyForScope(scope, ACCOUNTS_KEY)
+  const tradeScoped = scopedLocalFallbackKeyForScope(scope, TRADES_KEY)
+  scopedEnvelopeCache.delete(accountScoped)
+  scopedEnvelopeCache.delete(tradeScoped)
+}
+
+function normalizeScopeUserId(userId: number | null | undefined): number | null {
+  if (typeof userId !== 'number') return null
+  if (!Number.isInteger(userId) || userId <= 0) return null
+  return userId
+}
+
 function nowIso(): string {
   return new Date().toISOString()
 }
@@ -1267,4 +1700,47 @@ function round(value: number, digits: number): number {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null
+}
+
+function safeLocalStorage(): Storage | null {
+  try {
+    if (typeof localStorage === 'undefined') return null
+    return localStorage
+  } catch {
+    return null
+  }
+}
+
+function readStorageKeys(storage: Storage): string[] {
+  const keys: string[] = []
+  for (let index = 0; index < storage.length; index += 1) {
+    const key = storage.key(index)
+    if (!key) continue
+    keys.push(key)
+  }
+  return keys
+}
+
+function safeGet(storage: Storage, key: string): string | null {
+  try {
+    return storage.getItem(key)
+  } catch {
+    return null
+  }
+}
+
+function safeSet(storage: Storage, key: string, value: string): void {
+  try {
+    storage.setItem(key, value)
+  } catch {
+    // Ignore storage write failures.
+  }
+}
+
+function safeRemove(storage: Storage, key: string): void {
+  try {
+    storage.removeItem(key)
+  } catch {
+    // Ignore storage remove failures.
+  }
 }

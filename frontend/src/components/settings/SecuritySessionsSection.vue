@@ -16,15 +16,15 @@ const emit = defineEmits<{
   <GlassPanel>
     <header class="section-head">
       <div>
-        <h2 class="section-title">Security & Sessions</h2>
-        <p class="section-note">Control active sessions and lock down account access quickly.</p>
+        <h2 class="section-title">Security (Sessions)</h2>
+        <p class="section-note">Session-level controls to lock down account access quickly.</p>
       </div>
     </header>
 
     <article class="panel p-3">
       <p class="kicker-label">Session Governance</p>
       <p class="mt-1 text-sm text-[var(--muted)]">
-        Use “Logout other sessions” to revoke every active session except this device.
+        Use "Logout other sessions" to revoke every active session except this device.
       </p>
       <p v-if="typeof revokedSessions === 'number'" class="mt-2 text-sm">
         Last action revoked <strong>{{ revokedSessions }}</strong> session(s).
