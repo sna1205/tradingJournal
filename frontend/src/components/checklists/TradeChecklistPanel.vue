@@ -120,8 +120,11 @@ const isMobileOnly = computed(() => props.mode === 'mobile')
 .trade-checklist-mobile-trigger {
   width: 100%;
   border-radius: 14px;
-  border: 1px solid color-mix(in srgb, var(--border) 30%, transparent 70%);
-  background: color-mix(in srgb, #01050a 88%, var(--panel) 12%);
+  border: 1px solid color-mix(in srgb, var(--border) 70%, transparent 30%);
+  background:
+    linear-gradient(145deg, color-mix(in srgb, var(--panel-soft) 64%, var(--panel) 36%), var(--panel)),
+    var(--panel);
+  color: var(--text);
   padding: 0.58rem 0.66rem;
   display: flex;
   align-items: center;
@@ -143,7 +146,7 @@ const isMobileOnly = computed(() => props.mode === 'mobile')
 .trade-checklist-mobile-trigger-right strong {
   font-size: 0.74rem;
   font-weight: 800;
-  color: color-mix(in srgb, #35d89e 84%, var(--text) 16%);
+  color: color-mix(in srgb, var(--primary) 80%, var(--text) 20%);
 }
 
 .trade-checklist-mobile-trigger-right em {
@@ -152,6 +155,7 @@ const isMobileOnly = computed(() => props.mode === 'mobile')
   font-weight: 800;
   text-transform: uppercase;
   letter-spacing: 0.02em;
+  color: var(--muted);
 }
 
 .trade-checklist-mobile-content {

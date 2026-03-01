@@ -11,11 +11,10 @@ import {
   checklistCategoryLabel,
   normalizeChecklistCategory,
 } from '@/utils/checklistSchema'
-
-type RuleLaneKey = 'before' | 'during' | 'after'
+import { resolveChecklistLane, type ChecklistLaneKey } from '@/utils/checklistLanes'
 
 interface RuleLane {
-  key: RuleLaneKey
+  key: ChecklistLaneKey
   label: string
   icon: Component
   defaultCategory: ChecklistCategoryKey
@@ -107,19 +106,12 @@ const totalRules = computed(() => sortedItems.value.filter((item) => item.is_act
 const requiredRules = computed(() => sortedItems.value.filter((item) => item.is_active && item.required).length)
 const modeLabel = computed(() => (checklistForm.enforcement_mode === 'strict' ? 'Strict mode' : 'Soft mode'))
 
-function laneForItem(item: ChecklistItem): RuleLaneKey {
-  const category = normalizeChecklistCategory(item.category)
-  const text = `${item.title} ${item.category ?? ''}`.toLowerCase()
-
-  if (/journal|review|post|after|debrief/.test(text)) return 'after'
-  if (item.type === 'text' && !item.required) return 'after'
-
-  if (category === 'market_context' || category === 'setup_validation') return 'before'
-  return 'during'
+function laneForItem(item: ChecklistItem): ChecklistLaneKey {
+  return resolveChecklistLane(item)
 }
 
-const laneItems = computed<Record<RuleLaneKey, ChecklistItem[]>>(() => {
-  const result: Record<RuleLaneKey, ChecklistItem[]> = {
+const laneItems = computed<Record<ChecklistLaneKey, ChecklistItem[]>>(() => {
+  const result: Record<ChecklistLaneKey, ChecklistItem[]> = {
     before: [],
     during: [],
     after: [],
@@ -355,6 +347,7 @@ function toggleRuleExpand(ruleId: number) {
       <AddChecklistItemModal
         :open="addItemOpen"
         :categories="CHECKLIST_CATEGORIES.map((entry) => entry.label)"
+        :saving="saving"
         @close="addItemOpen = false"
         @create="onCreateItem"
       />
@@ -375,8 +368,8 @@ function toggleRuleExpand(ruleId: number) {
   border: 1px solid color-mix(in srgb, var(--border) 20%, transparent 80%) !important;
   background:
     linear-gradient(180deg, color-mix(in srgb, var(--primary-soft) 30%, transparent 70%) 0%, transparent 24%),
-    color-mix(in srgb, #02070d 76%, var(--panel) 24%) !important;
-  box-shadow: 0 14px 30px color-mix(in srgb, #000 26%, transparent 74%) !important;
+    linear-gradient(180deg, color-mix(in srgb, var(--panel-soft) 54%, var(--panel) 46%), var(--panel)) !important;
+  box-shadow: var(--shadow-soft) !important;
 }
 
 .rules-builder-content {
@@ -401,7 +394,7 @@ function toggleRuleExpand(ruleId: number) {
   padding: 0.48rem 0.64rem;
   border-radius: 12px;
   border: 1px solid color-mix(in srgb, var(--border) 16%, transparent 84%);
-  background: color-mix(in srgb, #01050a 78%, var(--panel) 22%);
+  background: color-mix(in srgb, var(--panel-soft) 62%, var(--panel) 38%);
 }
 
 .rules-board-summary {
@@ -439,7 +432,7 @@ function toggleRuleExpand(ruleId: number) {
   display: inline-flex;
   border-radius: 999px;
   padding: 0.18rem 0.2rem;
-  background: color-mix(in srgb, #01050a 72%, var(--panel-soft) 28%);
+  background: color-mix(in srgb, var(--panel-soft) 72%, var(--panel) 28%);
   border: 1px solid color-mix(in srgb, var(--border) 14%, transparent 86%);
 }
 
@@ -468,7 +461,11 @@ function toggleRuleExpand(ruleId: number) {
 .rules-lane {
   border-radius: 14px;
   border: 1px solid color-mix(in srgb, var(--border) 14%, transparent 86%);
-  background: color-mix(in srgb, #01040a 80%, var(--panel) 20%);
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--panel-soft) 58%, var(--panel) 42%),
+    var(--panel)
+  );
   padding: 0.72rem;
   display: grid;
   gap: 0.6rem;

@@ -9,12 +9,10 @@ import type {
   TradeChecklistResponseRecord,
 } from '@/types/checklist'
 import type { TradePrecheckResult } from '@/stores/tradeStore'
-import { normalizeChecklistCategory } from '@/utils/checklistSchema'
-
-type RuleLaneKey = 'before' | 'during' | 'after'
+import { resolveChecklistLane, type ChecklistLaneKey } from '@/utils/checklistLanes'
 
 interface RuleLane {
-  key: RuleLaneKey
+  key: ChecklistLaneKey
   label: string
 }
 
@@ -75,19 +73,12 @@ const snapshotFailedRows = computed(() => {
   }))
 })
 
-function laneForItem(item: TradeChecklistItemWithResponse): RuleLaneKey {
-  const category = normalizeChecklistCategory(item.category)
-  const text = `${item.title} ${item.category ?? ''}`.toLowerCase()
-
-  if (/journal|review|post|after|debrief/.test(text)) return 'after'
-  if (item.type === 'text' && !item.required) return 'after'
-
-  if (category === 'market_context' || category === 'setup_validation') return 'before'
-  return 'during'
+function laneForItem(item: TradeChecklistItemWithResponse): ChecklistLaneKey {
+  return resolveChecklistLane(item)
 }
 
-const laneItems = computed<Record<RuleLaneKey, TradeChecklistItemWithResponse[]>>(() => {
-  const result: Record<RuleLaneKey, TradeChecklistItemWithResponse[]> = {
+const laneItems = computed<Record<ChecklistLaneKey, TradeChecklistItemWithResponse[]>>(() => {
+  const result: Record<ChecklistLaneKey, TradeChecklistItemWithResponse[]> = {
     before: [],
     during: [],
     after: [],
@@ -166,9 +157,11 @@ function toggleItem(item: TradeChecklistItemWithResponse) {
           v-for="lane in RULE_LANES"
           :key="lane.key"
           class="rules-lane"
-          v-show="laneItems[lane.key].length > 0"
         >
           <h4 class="rules-lane-label">{{ lane.label }}</h4>
+          <p v-if="laneItems[lane.key].length === 0" class="rules-lane-empty">
+            No rules in this phase yet.
+          </p>
 
           <button
             v-for="item in laneItems[lane.key]"
@@ -229,15 +222,18 @@ function toggleItem(item: TradeChecklistItemWithResponse) {
 
 .rules-card {
   border-radius: 12px;
-  border: 1px solid color-mix(in srgb, var(--border) 24%, transparent 76%);
-  background: color-mix(in srgb, #01050a 84%, var(--panel) 16%);
+  border: 1px solid color-mix(in srgb, var(--border) 70%, transparent 30%);
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--panel-soft) 58%, var(--panel) 42%), var(--panel)),
+    var(--panel);
+  box-shadow: var(--shadow-soft);
   overflow: hidden;
 }
 
 .rules-card-head {
   width: 100%;
   border: none;
-  border-bottom: 1px solid color-mix(in srgb, var(--border) 18%, transparent 82%);
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 68%, transparent 32%);
   background: transparent;
   color: var(--text);
   padding: 0.72rem 0.8rem;
@@ -263,7 +259,7 @@ function toggleItem(item: TradeChecklistItemWithResponse) {
   font-size: 0.9rem;
   font-style: normal;
   font-weight: 700;
-  color: color-mix(in srgb, #35d89e 84%, var(--text) 16%);
+  color: color-mix(in srgb, var(--primary) 80%, var(--text) 20%);
 }
 
 .rules-card-body {
@@ -294,6 +290,15 @@ function toggleItem(item: TradeChecklistItemWithResponse) {
   color: var(--muted);
 }
 
+.rules-lane-empty {
+  margin: 0;
+  padding: 0.38rem 0.4rem;
+  border-radius: 8px;
+  border: 1px dashed color-mix(in srgb, var(--border) 58%, transparent 42%);
+  color: var(--muted);
+  font-size: 0.72rem;
+}
+
 .rules-item {
   width: 100%;
   border: none;
@@ -310,8 +315,8 @@ function toggleItem(item: TradeChecklistItemWithResponse) {
   width: 1.08rem;
   height: 1.08rem;
   border-radius: 4px;
-  border: 1px solid color-mix(in srgb, #d7a84f 74%, var(--border) 26%);
-  background: transparent;
+  border: 1px solid color-mix(in srgb, var(--border) 70%, var(--primary) 30%);
+  background: color-mix(in srgb, var(--panel-soft) 70%, transparent 30%);
   color: transparent;
   display: inline-grid;
   place-items: center;
@@ -319,8 +324,9 @@ function toggleItem(item: TradeChecklistItemWithResponse) {
 }
 
 .rules-item-box.checked {
-  background: color-mix(in srgb, #d7a84f 92%, #111 8%);
-  color: #111;
+  background: color-mix(in srgb, var(--primary) 80%, var(--panel) 20%);
+  border-color: color-mix(in srgb, var(--primary) 64%, var(--border) 36%);
+  color: var(--panel);
 }
 
 .rules-item-text {
@@ -329,7 +335,7 @@ function toggleItem(item: TradeChecklistItemWithResponse) {
 }
 
 .rules-item.checked .rules-item-text {
-  color: color-mix(in srgb, var(--text) 90%, #35d89e 10%);
+  color: color-mix(in srgb, var(--primary) 64%, var(--text) 36%);
 }
 
 .rules-saving,

@@ -13,9 +13,11 @@ const props = withDefaults(
   defineProps<{
     open: boolean
     categories: string[]
+    saving?: boolean
   }>(),
   {
     open: false,
+    saving: false,
   }
 )
 
@@ -152,6 +154,7 @@ function configPayload(): Record<string, unknown> {
 }
 
 function submit() {
+  if (props.saving) return
   if (!form.title.trim()) return
   emit('create', {
     title: form.title.trim(),
@@ -307,7 +310,13 @@ function submit() {
 
           <div class="rule-modal-actions">
             <button type="button" class="btn btn-ghost px-4 py-2 text-sm" @click="emit('close')">Cancel</button>
-            <button type="submit" class="btn btn-primary px-4 py-2 text-sm">Save Rule</button>
+            <button
+              type="submit"
+              class="btn btn-primary px-4 py-2 text-sm"
+              :disabled="props.saving || !form.title.trim()"
+            >
+              {{ props.saving ? 'Saving...' : 'Save Rule' }}
+            </button>
           </div>
         </form>
       </section>

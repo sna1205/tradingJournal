@@ -107,8 +107,8 @@ const missingCount = computed(() =>
 }
 
 .checklist-status-pill.is-almost {
-  color: color-mix(in srgb, #d8ac4f 75%, var(--text) 25%);
-  border-color: color-mix(in srgb, #d8ac4f 42%, var(--border) 58%);
+  color: color-mix(in srgb, var(--warning) 80%, var(--text) 20%);
+  border-color: color-mix(in srgb, var(--warning) 44%, var(--border) 56%);
 }
 
 .checklist-status-pill.is-not-ready {

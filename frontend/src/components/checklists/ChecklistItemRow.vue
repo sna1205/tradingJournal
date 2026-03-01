@@ -191,16 +191,21 @@ function closeModal() {
 </script>
 
 <template>
-  <article class="checklist-item-row" draggable="true" @dragstart="onDragStart" @dragover="onDragOver" @drop="onDrop">
+  <article class="checklist-builder-item-row" draggable="true" @dragstart="onDragStart" @dragover="onDragOver" @drop="onDrop">
     <div>
-      <p class="checklist-rule-title">{{ form.title || 'Untitled rule' }}</p>
-      <p v-if="form.help_text" class="checklist-rule-note">{{ form.help_text }}</p>
+      <p class="checklist-builder-rule-title">{{ form.title || 'Untitled rule' }}</p>
+      <p v-if="form.help_text" class="checklist-builder-rule-note">{{ form.help_text }}</p>
     </div>
 
-    <div class="checklist-rule-meta">
+    <div class="checklist-builder-rule-meta">
       <component :is="typeIcon" class="checklist-type-icon" :title="typeLabel" />
       <span class="required-dot" :class="{ on: form.required }" title="Required rule" />
-      <button type="button" class="checklist-rule-menu" aria-label="Rule settings" @click.stop="toggleExpand">
+      <button
+        type="button"
+        class="checklist-builder-rule-menu"
+        aria-label="Rule settings"
+        @click.stop="toggleExpand"
+      >
         <MoreHorizontal class="h-4 w-4" />
       </button>
     </div>
@@ -311,7 +316,7 @@ function closeModal() {
 </template>
 
 <style scoped>
-.checklist-item-row {
+.checklist-builder-item-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: flex-start;
@@ -324,11 +329,11 @@ function closeModal() {
   cursor: grab;
 }
 
-.checklist-item-row:active {
+.checklist-builder-item-row:active {
   cursor: grabbing;
 }
 
-.checklist-rule-title {
+.checklist-builder-rule-title {
   margin: 0;
   min-width: 0;
   font-size: 0.9rem;
@@ -336,7 +341,7 @@ function closeModal() {
   line-height: 1.25;
 }
 
-.checklist-rule-note {
+.checklist-builder-rule-note {
   margin: 0.26rem 0 0;
   color: var(--muted);
   font-size: 0.72rem;
@@ -348,7 +353,7 @@ function closeModal() {
   text-overflow: ellipsis;
 }
 
-.checklist-rule-meta {
+.checklist-builder-rule-meta {
   display: inline-flex;
   align-items: center;
   gap: 0.42rem;
@@ -371,7 +376,7 @@ function closeModal() {
   background: color-mix(in srgb, var(--danger) 66%, transparent 34%);
 }
 
-.checklist-rule-menu {
+.checklist-builder-rule-menu {
   width: 1.65rem;
   height: 1.65rem;
   border: none;
@@ -382,7 +387,7 @@ function closeModal() {
   place-items: center;
 }
 
-.checklist-rule-menu:hover {
+.checklist-builder-rule-menu:hover {
   background: color-mix(in srgb, var(--panel-soft) 30%, transparent 70%);
 }
 
