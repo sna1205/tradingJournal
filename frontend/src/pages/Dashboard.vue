@@ -19,12 +19,15 @@ import AnimatedNumber from '@/components/layout/AnimatedNumber.vue'
 import DatePopoverField from '@/components/form/DatePopoverField.vue'
 import BaseSelect from '@/components/form/BaseSelect.vue'
 import api from '@/services/api'
+import { dashboardLeaderElection } from '@/services/leaderElection'
 import { queryLocalMissedTrades, queryLocalTrades, shouldUseLocalFallback } from '@/services/localFallback'
 import { asCurrency, asSignedCurrency } from '@/utils/format'
 import { useAccountStore } from '@/stores/accountStore'
 import { useAnalyticsStore } from '@/stores/analyticsStore'
 import { useReportStore } from '@/stores/reportStore'
 import { useSyncStatusStore } from '@/stores/syncStatusStore'
+import { useTradeStore } from '@/stores/tradeStore'
+import { useUiStore } from '@/stores/uiStore'
 import {
   isLiveAccountType,
   isPropAccountType,
@@ -50,6 +53,8 @@ const analyticsStore = useAnalyticsStore()
 const accountStore = useAccountStore()
 const reportStore = useReportStore()
 const syncStatusStore = useSyncStatusStore()
+const tradeStore = useTradeStore()
+const uiStore = useUiStore()
 const {
   summary,
   overview,
@@ -65,6 +70,7 @@ const {
 } = storeToRefs(analyticsStore)
 const { accounts, selectedAccountId } = storeToRefs(accountStore)
 const { reports } = storeToRefs(reportStore)
+const { includeDraftsUnverified } = storeToRefs(tradeStore)
 
 const activeTab = ref<DashboardTab>('overview')
 const dashboardMode = ref<DashboardMode>('live')
@@ -88,12 +94,14 @@ const selectedDashboardReportId = ref('')
 let recentTradesRefreshHandle: number | null = null
 let dashboardRefreshDebounceHandle: number | null = null
 let dashboardRefreshGeneration = 0
+let unbindLeaderSubscription: (() => void) | null = null
 let inFlightDashboardRefresh: {
   key: string
   generation: number
   controller: AbortController
   promise: Promise<void>
 } | null = null
+const isLeader = ref(false)
 
 const propAccounts = computed(() => accounts.value.filter((account) => isPropAccountType(account.account_type)))
 const liveAccounts = computed(() => accounts.value.filter((account) => isLiveAccountType(account.account_type)))
@@ -319,10 +327,23 @@ const dashboardSavedViewOptions = computed(() => [
 ])
 
 onMounted(async () => {
+  tradeStore.refreshTradeQualityPreference()
+  dashboardLeaderElection.start()
+  isLeader.value = dashboardLeaderElection.isLeader()
+  unbindLeaderSubscription = dashboardLeaderElection.subscribe((nextIsLeader) => {
+    const changed = isLeader.value !== nextIsLeader
+    isLeader.value = nextIsLeader
+    ensureDashboardPollingState()
+    if (changed && nextIsLeader && canRunDashboardPolling()) {
+      scheduleDashboardRefresh('focus')
+    }
+  })
+  window.addEventListener('online', handleOnlineStatusChange)
+  window.addEventListener('offline', handleOnlineStatusChange)
   await accountStore.fetchAccounts()
   await loadDashboardSavedViews()
   await runDashboardRefresh('mount')
-  startRecentTradesAutoRefresh()
+  ensureDashboardPollingState()
   window.addEventListener('focus', handleVisibilityOrFocus)
   document.addEventListener('visibilitychange', handleVisibilityOrFocus)
 })
@@ -330,8 +351,13 @@ onMounted(async () => {
 onBeforeUnmount(() => {
   stopRecentTradesAutoRefresh()
   cancelDashboardRefreshScheduler()
+  window.removeEventListener('online', handleOnlineStatusChange)
+  window.removeEventListener('offline', handleOnlineStatusChange)
   window.removeEventListener('focus', handleVisibilityOrFocus)
   document.removeEventListener('visibilitychange', handleVisibilityOrFocus)
+  unbindLeaderSubscription?.()
+  unbindLeaderSubscription = null
+  dashboardLeaderElection.stop()
 })
 
 watch(
@@ -341,6 +367,7 @@ watch(
     () => rangePreset.value,
     () => customDateFrom.value,
     () => customDateTo.value,
+    () => includeDraftsUnverified.value,
   ],
   () => {
     scheduleDashboardRefresh('filters')
@@ -365,7 +392,10 @@ watch(
 )
 
 async function refreshDashboardData(signal?: AbortSignal) {
-  const filters = activeRangeFilters.value
+  const filters = {
+    ...activeRangeFilters.value,
+    include_drafts_unverified: includeDraftsUnverified.value,
+  }
   await Promise.allSettled([
     analyticsStore.fetchAnalytics(filters, scopedSelectedAccountId.value, signal),
     fetchChallengeStatus(signal),
@@ -381,6 +411,7 @@ function buildDashboardRefreshKey() {
     account_id: scopedSelectedAccountId.value,
     date_from: filters.date_from ?? '',
     date_to: filters.date_to ?? '',
+    include_drafts_unverified: includeDraftsUnverified.value ? 1 : 0,
   })
 }
 
@@ -391,6 +422,9 @@ function clearDashboardRefreshDebounce() {
 }
 
 function scheduleDashboardRefresh(trigger: RefreshTrigger) {
+  if ((trigger === 'interval' || trigger === 'focus') && !canRunDashboardPolling()) {
+    return
+  }
   void trigger
   clearDashboardRefreshDebounce()
   dashboardRefreshDebounceHandle = window.setTimeout(() => {
@@ -400,6 +434,9 @@ function scheduleDashboardRefresh(trigger: RefreshTrigger) {
 }
 
 async function runDashboardRefresh(trigger: RefreshTrigger) {
+  if ((trigger === 'interval' || trigger === 'focus') && !canRunDashboardPolling()) {
+    return
+  }
   void trigger
   clearDashboardRefreshDebounce()
   const key = buildDashboardRefreshKey()
@@ -471,6 +508,7 @@ function serializedDashboardFilters() {
     date_to: customDateTo.value,
     account_id: scopedSelectedAccountId.value,
     tab: activeTab.value,
+    include_drafts_unverified: includeDraftsUnverified.value,
   }
 }
 
@@ -507,6 +545,7 @@ async function applyDashboardSavedView(reportId: string) {
   const savedDateTo = String(saved.date_to ?? '')
   const accountId = Number(saved.account_id ?? 0)
   const tab = String(saved.tab ?? '')
+  const includeDrafts = String(saved.include_drafts_unverified ?? '')
 
   if (mode === 'live' || mode === 'prop') {
     dashboardMode.value = mode
@@ -526,11 +565,21 @@ async function applyDashboardSavedView(reportId: string) {
   if (tab === 'overview' || tab === 'chart' || tab === 'calendar') {
     activeTab.value = tab
   }
+  if (includeDrafts !== '') {
+    tradeStore.setIncludeDraftsUnverified(includeDrafts === 'true' || includeDrafts === '1')
+  }
 
   scheduleDashboardRefresh('saved-view')
 }
 
 function exportDashboardCsv() {
+  if (includeDraftsUnverified.value) {
+    uiStore.toast({
+      type: 'info',
+      title: 'Export includes drafts/unverified',
+      message: 'This CSV includes local drafts and risk-unverified trades.',
+    })
+  }
   void reportStore.exportAdHocCsv({
     scope: 'dashboard',
     name: 'dashboard-view',
@@ -538,7 +587,14 @@ function exportDashboardCsv() {
     mode: effectiveDashboardMode.value,
     date_from: activeRangeFilters.value.date_from,
     date_to: activeRangeFilters.value.date_to,
+    include_drafts_unverified: includeDraftsUnverified.value ? 1 : 0,
+    local_sync_status: includeDraftsUnverified.value ? undefined : 'synced',
+    risk_validation_status: includeDraftsUnverified.value ? undefined : 'verified',
   })
+}
+
+function toggleIncludeDraftsUnverified() {
+  tradeStore.setIncludeDraftsUnverified(!includeDraftsUnverified.value)
 }
 
 async function fetchChallengeStatus(signal?: AbortSignal) {
@@ -568,12 +624,20 @@ async function fetchChallengeStatus(signal?: AbortSignal) {
   }
 }
 
-async function fetchRecentTrades(filters: { date_from?: string; date_to?: string } = {}, signal?: AbortSignal) {
+async function fetchRecentTrades(
+  filters: { date_from?: string; date_to?: string; include_drafts_unverified?: boolean } = {},
+  signal?: AbortSignal
+) {
   recentTradesLoading.value = true
   try {
     const params: Record<string, number | string> = {
       page: 1,
       per_page: 40,
+      include_drafts_unverified: filters.include_drafts_unverified ? 1 : 0,
+    }
+    if (!filters.include_drafts_unverified) {
+      params.local_sync_status = 'synced'
+      params.risk_validation_status = 'verified'
     }
     const accountId = scopedSelectedAccountId.value
 
@@ -603,7 +667,7 @@ async function fetchRecentTrades(filters: { date_from?: string; date_to?: string
       return rightTime - leftTime
     })
 
-    recentTrades.value = rows
+    recentTrades.value = rows.filter((trade) => tradeStore.isTradeQualityIncluded(trade))
   } catch (error) {
     if (!shouldUseLocalFallback(error)) {
       throw error
@@ -616,8 +680,9 @@ async function fetchRecentTrades(filters: { date_from?: string; date_to?: string
       account_id: scopedSelectedAccountId.value ?? undefined,
       date_from: filters.date_from,
       date_to: filters.date_to,
+      include_drafts_unverified: filters.include_drafts_unverified,
     })
-    recentTrades.value = local.data
+    recentTrades.value = local.data.filter((trade) => tradeStore.isTradeQualityIncluded(trade))
   } finally {
     recentTradesLoading.value = false
   }
@@ -669,8 +734,12 @@ async function fetchRecentMissedTrades(filters: { date_from?: string; date_to?: 
 }
 
 function startRecentTradesAutoRefresh() {
-  stopRecentTradesAutoRefresh()
+  if (recentTradesRefreshHandle !== null) return
   recentTradesRefreshHandle = window.setInterval(() => {
+    if (!canRunDashboardPolling()) {
+      ensureDashboardPollingState()
+      return
+    }
     scheduleDashboardRefresh('interval')
   }, DASHBOARD_REFRESH_INTERVAL_MS)
 }
@@ -682,8 +751,30 @@ function stopRecentTradesAutoRefresh() {
 }
 
 function handleVisibilityOrFocus() {
-  if (document.visibilityState && document.visibilityState !== 'visible') return
+  dashboardLeaderElection.refreshVisibility()
+  ensureDashboardPollingState()
+  if (!canRunDashboardPolling()) return
   scheduleDashboardRefresh('focus')
+}
+
+function handleOnlineStatusChange() {
+  ensureDashboardPollingState()
+  if (!canRunDashboardPolling()) return
+  scheduleDashboardRefresh('focus')
+}
+
+function canRunDashboardPolling(): boolean {
+  if (typeof document !== 'undefined' && document.hidden) return false
+  if (typeof navigator !== 'undefined' && navigator.onLine === false) return false
+  return isLeader.value
+}
+
+function ensureDashboardPollingState() {
+  if (canRunDashboardPolling()) {
+    startRecentTradesAutoRefresh()
+    return
+  }
+  stopRecentTradesAutoRefresh()
 }
 
 function isAbortError(error: unknown): boolean {
@@ -943,6 +1034,15 @@ function setDashboardMode(mode: DashboardMode) {
             </div>
             <button class="btn overview-range-btn" @click="saveDashboardView">
               Save View
+            </button>
+            <button
+              type="button"
+              class="btn overview-range-btn"
+              data-testid="dashboard-quality-toggle"
+              :class="{ active: includeDraftsUnverified }"
+              @click="toggleIncludeDraftsUnverified"
+            >
+              Include drafts/unverified
             </button>
             <button class="btn overview-range-btn" @click="exportDashboardCsv">
               Export CSV

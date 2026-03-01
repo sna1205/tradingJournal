@@ -128,6 +128,9 @@ export interface TradeImage {
   file_size: number
   file_type: string
   sort_order: number
+  filename?: string | null
+  created_at?: string | null
+  local_object_url_key?: string | null
   context_tag?: ImageContextTag | null
   timeframe?: string | null
   annotation_notes?: string | null
@@ -208,6 +211,9 @@ export interface MissedTradeImage {
   file_size: number
   file_type: string
   sort_order: number
+  filename?: string | null
+  created_at?: string | null
+  local_object_url_key?: string | null
 }
 
 export interface Paginated<T> {

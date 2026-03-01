@@ -39,7 +39,20 @@ const route = useRoute()
 const tradeStore = useTradeStore()
 const reportStore = useReportStore()
 const uiStore = useUiStore()
-const { trades, pagination, filters, loading, hasFilters, instruments, strategyModels, setups, killzones, tradeTags, sessionOptions } = storeToRefs(tradeStore)
+const {
+  visibleTrades: storeVisibleTrades,
+  pagination,
+  filters,
+  includeDraftsUnverified,
+  loading,
+  hasFilters,
+  instruments,
+  strategyModels,
+  setups,
+  killzones,
+  tradeTags,
+  sessionOptions,
+} = storeToRefs(tradeStore)
 const { reports } = storeToRefs(reportStore)
 
 const detailsOpen = ref(false)
@@ -50,6 +63,7 @@ const detailsPsychology = ref<TradePsychology | null>(null)
 const detailImageIndex = ref(0)
 const lightboxOpen = ref(false)
 const activeDetailImage = computed(() => detailsImages.value[detailImageIndex.value] ?? null)
+const activeDetailImageSrc = computed(() => resolveImageSrc(activeDetailImage.value))
 const filtersExpanded = ref(false)
 const selectedSavedReportId = ref('')
 type TradeQuickFocus = 'all' | 'needs_review' | 'rule_breaks' | 'losers' | 'no_screenshot'
@@ -109,34 +123,36 @@ const activeFilterPills = computed(() => {
   if (from && to) pills.push(`${from} to ${to}`)
   else if (from) pills.push(`From: ${from}`)
   else if (to) pills.push(`To: ${to}`)
+  if (!includeDraftsUnverified.value) pills.push('Quality: verified + synced')
+  else pills.push('Quality: includes drafts/unverified')
 
   return pills
 })
 
-const needsReviewCount = computed(() => trades.value.filter((trade) => needsReview(trade)).length)
-const ruleBreakCount = computed(() => trades.value.filter((trade) => !trade.followed_rules).length)
-const losersCount = computed(() => trades.value.filter((trade) => Number(trade.profit_loss) < 0).length)
-const noScreenshotCount = computed(() => trades.value.filter((trade) => imageCount(trade) === 0).length)
+const needsReviewCount = computed(() => storeVisibleTrades.value.filter((trade) => needsReview(trade)).length)
+const ruleBreakCount = computed(() => storeVisibleTrades.value.filter((trade) => !trade.followed_rules).length)
+const losersCount = computed(() => storeVisibleTrades.value.filter((trade) => Number(trade.profit_loss) < 0).length)
+const noScreenshotCount = computed(() => storeVisibleTrades.value.filter((trade) => imageCount(trade) === 0).length)
 const averageReviewScore = computed(() => {
-  if (trades.value.length === 0) return 0
-  const total = trades.value.reduce((sum, trade) => sum + reviewQualityScore(trade), 0)
-  return total / trades.value.length
+  if (storeVisibleTrades.value.length === 0) return 0
+  const total = storeVisibleTrades.value.reduce((sum, trade) => sum + reviewQualityScore(trade), 0)
+  return total / storeVisibleTrades.value.length
 })
 
 const visibleTrades = computed(() => {
   if (quickFocus.value === 'needs_review') {
-    return trades.value.filter((trade) => needsReview(trade))
+    return storeVisibleTrades.value.filter((trade) => needsReview(trade))
   }
   if (quickFocus.value === 'rule_breaks') {
-    return trades.value.filter((trade) => !trade.followed_rules)
+    return storeVisibleTrades.value.filter((trade) => !trade.followed_rules)
   }
   if (quickFocus.value === 'losers') {
-    return trades.value.filter((trade) => Number(trade.profit_loss) < 0)
+    return storeVisibleTrades.value.filter((trade) => Number(trade.profit_loss) < 0)
   }
   if (quickFocus.value === 'no_screenshot') {
-    return trades.value.filter((trade) => imageCount(trade) === 0)
+    return storeVisibleTrades.value.filter((trade) => imageCount(trade) === 0)
   }
-  return trades.value
+  return storeVisibleTrades.value
 })
 
 const detailReviewScore = computed(() => {
@@ -272,6 +288,11 @@ function openEditPage(trade: Trade) {
   void router.push(`/trades/${trade.id}/edit`)
 }
 
+async function toggleIncludeDraftsUnverified() {
+  tradeStore.setIncludeDraftsUnverified(!includeDraftsUnverified.value)
+  await tradeStore.fetchTrades(1)
+}
+
 async function openDetails(trade: Trade) {
   detailsOpen.value = true
   detailsLoading.value = true
@@ -287,6 +308,7 @@ async function openDetails(trade: Trade) {
     detailsImages.value = (details.images ?? [])
       .slice()
       .sort((a, b) => a.sort_order - b.sort_order || a.id - b.id)
+      .filter((image) => hasRenderableImage(image))
   } catch {
     detailsOpen.value = false
     uiStore.toast({
@@ -305,7 +327,7 @@ function closeDetails() {
 }
 
 function openImageLightbox() {
-  if (!activeDetailImage.value) return
+  if (!activeDetailImage.value || !activeDetailImageSrc.value) return
   lightboxOpen.value = true
 }
 
@@ -325,7 +347,18 @@ function previousDetailImage() {
 
 function primaryTradeImage(trade: Trade): TradeImage | null {
   const images = trade.images ?? []
-  return images.length > 0 ? images[0]! : null
+  return images.find((image) => hasRenderableImage(image)) ?? null
+}
+
+function resolveImageSrc(image: Pick<TradeImage, 'thumbnail_url' | 'image_url'> | null | undefined): string {
+  if (!image) return ''
+  const thumbnailUrl = image.thumbnail_url.trim()
+  if (thumbnailUrl) return thumbnailUrl
+  return image.image_url.trim()
+}
+
+function hasRenderableImage(image: Pick<TradeImage, 'thumbnail_url' | 'image_url'> | null | undefined): boolean {
+  return resolveImageSrc(image).length > 0
 }
 
 function directionLabel(trade: Trade) {
@@ -551,7 +584,10 @@ async function saveCurrentView() {
     const report = await reportStore.createReport({
       name: name.trim(),
       scope: 'trades',
-      filters_json: { ...filters.value },
+      filters_json: {
+        ...filters.value,
+        include_drafts_unverified: includeDraftsUnverified.value,
+      },
       columns_json: null,
       is_default: false,
     })
@@ -580,13 +616,27 @@ async function applySavedView(reportId: string) {
   filters.value.tag_ids = String(savedFilters.tag_ids ?? '')
   filters.value.date_from = String(savedFilters.date_from ?? '')
   filters.value.date_to = String(savedFilters.date_to ?? '')
+  if (savedFilters.include_drafts_unverified !== undefined) {
+    const next = String(savedFilters.include_drafts_unverified) === 'true' || String(savedFilters.include_drafts_unverified) === '1'
+    tradeStore.setIncludeDraftsUnverified(next)
+  }
   await applyFilters()
 }
 
 function exportCurrentCsv() {
+  if (includeDraftsUnverified.value) {
+    uiStore.toast({
+      type: 'info',
+      title: 'Export includes drafts/unverified',
+      message: 'This CSV includes local drafts and risk-unverified trades.',
+    })
+  }
   void reportStore.exportAdHocCsv({
     scope: 'trades',
     name: 'trade-log-view',
+    include_drafts_unverified: includeDraftsUnverified.value ? 1 : 0,
+    local_sync_status: includeDraftsUnverified.value ? undefined : 'synced',
+    risk_validation_status: includeDraftsUnverified.value ? undefined : 'verified',
     ...filters.value,
   })
 }
@@ -594,6 +644,7 @@ function exportCurrentCsv() {
 onMounted(async () => {
   window.addEventListener('keydown', handleLightboxKeydown)
   try {
+    tradeStore.refreshTradeQualityPreference()
     await Promise.all([
       tradeStore.fetchInstruments(),
       tradeStore.fetchDictionaries(),
@@ -638,7 +689,7 @@ watch(quickFocus, (value) => {
 </script>
 
 <template>
-  <div class="space-y-5 trade-log-minimal">
+  <div class="space-y-5 trade-log-minimal" data-testid="trade-log-page">
     <GlassPanel class="command-filter-shell">
       <div class="command-filter-bar">
         <div class="command-filter-left">
@@ -659,6 +710,15 @@ watch(quickFocus, (value) => {
             />
           </div>
           <button class="btn btn-ghost px-3 py-2 text-sm" @click="saveCurrentView">Save View</button>
+          <button
+            type="button"
+            class="btn btn-ghost px-3 py-2 text-sm"
+            data-testid="trade-quality-toggle"
+            :class="{ active: includeDraftsUnverified }"
+            @click="void toggleIncludeDraftsUnverified()"
+          >
+            Include drafts/unverified
+          </button>
           <button class="btn btn-ghost px-3 py-2 text-sm" @click="exportCurrentCsv">Export CSV</button>
           <button class="btn btn-secondary inline-flex items-center gap-2 px-3 py-2 text-sm" @click="openQuickAddPage">
             <Plus class="h-4 w-4" />
@@ -843,7 +903,7 @@ watch(quickFocus, (value) => {
           <button type="button" class="trade-db-media trade-card-reference-media" @click="openDetails(trade)">
             <img
               v-if="primaryTradeImage(trade)"
-              :src="primaryTradeImage(trade)?.thumbnail_url || primaryTradeImage(trade)?.image_url"
+              :src="resolveImageSrc(primaryTradeImage(trade))"
               :alt="`${trade.pair} execution chart`"
               loading="lazy"
               class="trade-db-image"
@@ -966,7 +1026,7 @@ watch(quickFocus, (value) => {
               <div class="trade-simple-image-shell">
                 <img
                   v-if="activeDetailImage"
-                  :src="activeDetailImage.image_url"
+                  :src="activeDetailImageSrc"
                   alt="Execution screenshot"
                   class="trade-simple-image is-zoomable"
                   @click="openImageLightbox"
@@ -1114,7 +1174,7 @@ watch(quickFocus, (value) => {
         </button>
         <div class="trade-lightbox-content">
           <img
-            :src="activeDetailImage.image_url"
+            :src="activeDetailImageSrc"
             alt="Execution screenshot fullscreen"
             class="trade-lightbox-image"
             @error="setImageFallback($event, activeDetailImage.image_url)"

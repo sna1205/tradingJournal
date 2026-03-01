@@ -201,6 +201,7 @@ interface DashboardSummaryPayload {
 export interface AnalyticsRangeFilters {
   date_from?: string
   date_to?: string
+  include_drafts_unverified?: boolean
 }
 
 interface BreakdownPoint {
@@ -534,6 +535,7 @@ export const useAnalyticsStore = defineStore('analytics', () => {
         account_id: activeAccountId ?? undefined,
         date_from: filters?.date_from,
         date_to: filters?.date_to,
+        include_drafts_unverified: filters?.include_drafts_unverified,
       }).data
       const localAccounts = fetchLocalAccounts()
       applyLocalAnalyticsFallback({
@@ -604,6 +606,13 @@ function analyticsQueryParams(
 
   if (filters?.date_to) {
     params.date_to = filters.date_to
+  }
+
+  const includeDrafts = filters?.include_drafts_unverified === true
+  params.include_drafts_unverified = includeDrafts ? 1 : 0
+  if (!includeDrafts) {
+    params.local_sync_status = 'synced'
+    params.risk_validation_status = 'verified'
   }
 
   return Object.keys(params).length > 0 ? params : undefined

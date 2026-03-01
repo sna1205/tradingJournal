@@ -10,6 +10,7 @@ import BaseDateTime from '@/components/form/BaseDateTime.vue'
 import InstrumentPairSelect from '@/components/form/InstrumentPairSelect.vue'
 import TradeImageUploader from '@/components/trades/TradeImageUploader.vue'
 import { useMissedTradeStore, type MissedTradePayload } from '@/stores/missedTradeStore'
+import { useSyncStatusStore } from '@/stores/syncStatusStore'
 import { useTradeStore } from '@/stores/tradeStore'
 import { useUiStore } from '@/stores/uiStore'
 import type { MissedTrade, MissedTradeImage } from '@/types/trade'
@@ -17,9 +18,11 @@ import type { MissedTrade, MissedTradeImage } from '@/types/trade'
 const route = useRoute()
 const router = useRouter()
 const missedTradeStore = useMissedTradeStore()
+const syncStatusStore = useSyncStatusStore()
 const tradeStore = useTradeStore()
 const uiStore = useUiStore()
 const { instruments } = storeToRefs(tradeStore)
+const { isFallbackMode } = storeToRefs(syncStatusStore)
 
 const loadingEntry = ref(false)
 const submitAttempted = ref(false)
@@ -678,6 +681,7 @@ async function loadImage(file: File): Promise<HTMLImageElement> {
                 upload-hint="Max 5 images - jpg, jpeg, png, webp, bmp - 5MB each - paste with Ctrl+V"
                 :existing-images="existingImages"
                 :pending-images="pendingImages"
+                :offline-warning="isFallbackMode"
                 :max-files="MAX_IMAGE_COUNT"
                 :uploading="uploadingImages"
                 :upload-progress="uploadProgressByPendingId"

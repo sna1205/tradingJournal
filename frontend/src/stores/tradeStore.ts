@@ -18,6 +18,7 @@ import {
   updateLocalTrade,
   uploadLocalTradeImage,
 } from '@/services/localFallback'
+import { scopedKey } from '@/services/storageScope'
 import { useAnalyticsStore } from '@/stores/analyticsStore'
 import { useAccountStore } from '@/stores/accountStore'
 import { useSyncStatusStore } from '@/stores/syncStatusStore'
@@ -153,6 +154,13 @@ export interface TradePrecheckResult {
   }
 }
 
+interface TradePrecheckOptions {
+  signal?: AbortSignal
+}
+
+const TRADE_PREFS_NAMESPACE = 'trade-preferences'
+const TRADE_PREFS_INCLUDE_DRAFTS_KEY = 'include_drafts_unverified'
+
 const defaultFilters: TradeFilters = {
   pair: '',
   direction: '',
@@ -188,11 +196,43 @@ export const useTradeStore = defineStore('trades', () => {
   const killzones = ref<KillzoneItem[]>([])
   const tradeTags = ref<TradeTag[]>([])
   const sessionOptions = ref<SessionOption[]>([])
+  const includeDraftsUnverified = ref(readTradeQualityPreference())
 
   const hasFilters = computed(() => Object.values(filters.value).some((value) => value !== ''))
   const hasActiveFilters = computed(() => hasFilters.value)
+  const visibleTrades = computed(() => filterTradesByQuality(trades.value))
+
+  function isSynced(trade: Pick<Trade, 'local_sync_status'>): boolean {
+    return (trade.local_sync_status ?? 'synced') === 'synced'
+  }
+
+  function isVerified(trade: Pick<Trade, 'risk_validation_status'>): boolean {
+    return (trade.risk_validation_status ?? 'verified') === 'verified'
+  }
+
+  function isTradeQualityIncluded(trade: Pick<Trade, 'local_sync_status' | 'risk_validation_status'>): boolean {
+    if (includeDraftsUnverified.value) return true
+    return isSynced(trade) && isVerified(trade)
+  }
+
+  function filterTradesByQuality(rows: Trade[]): Trade[] {
+    if (includeDraftsUnverified.value) {
+      return rows
+    }
+    return rows.filter((trade) => isTradeQualityIncluded(trade))
+  }
+
+  function setIncludeDraftsUnverified(value: boolean): void {
+    includeDraftsUnverified.value = Boolean(value)
+    writeTradeQualityPreference(includeDraftsUnverified.value)
+  }
+
+  function refreshTradeQualityPreference(): void {
+    includeDraftsUnverified.value = readTradeQualityPreference()
+  }
 
   async function fetchTrades(page = 1) {
+    refreshTradeQualityPreference()
     loading.value = true
     error.value = null
     try {
@@ -200,12 +240,15 @@ export const useTradeStore = defineStore('trades', () => {
         params: {
           page,
           per_page: pagination.value.per_page,
+          include_drafts_unverified: includeDraftsUnverified.value ? 1 : 0,
+          local_sync_status: includeDraftsUnverified.value ? undefined : 'synced',
+          risk_validation_status: includeDraftsUnverified.value ? undefined : 'verified',
           ...filters.value,
         },
       })
       syncStatusStore.markServerHealthy()
 
-      trades.value = data.data
+      trades.value = filterTradesByQuality(data.data ?? [])
       for (const trade of data.data) {
         upsertLocalTradeSnapshot({
           ...trade,
@@ -232,8 +275,9 @@ export const useTradeStore = defineStore('trades', () => {
         model: filters.value.model,
         date_from: filters.value.date_from,
         date_to: filters.value.date_to,
+        include_drafts_unverified: includeDraftsUnverified.value,
       })
-      trades.value = local.data
+      trades.value = filterTradesByQuality(local.data)
       pagination.value.current_page = local.current_page
       pagination.value.last_page = local.last_page
       pagination.value.per_page = local.per_page
@@ -253,7 +297,7 @@ export const useTradeStore = defineStore('trades', () => {
 
     if (shouldOptimisticallyInsert) {
       const optimistic = toOptimisticTrade(payload, tempId)
-      trades.value = [optimistic, ...trades.value].slice(0, pagination.value.per_page)
+      trades.value = filterTradesByQuality([optimistic, ...trades.value]).slice(0, pagination.value.per_page)
       pagination.value.total += 1
     }
 
@@ -266,7 +310,7 @@ export const useTradeStore = defineStore('trades', () => {
         if (index >= 0) {
           trades.value[index] = data
         } else {
-          trades.value = [data, ...trades.value].slice(0, pagination.value.per_page)
+          trades.value = filterTradesByQuality([data, ...trades.value]).slice(0, pagination.value.per_page)
         }
       } else {
         await fetchTrades(pagination.value.current_page)
@@ -298,7 +342,7 @@ export const useTradeStore = defineStore('trades', () => {
           if (index >= 0) {
             trades.value[index] = local
           } else {
-            trades.value = [local, ...trades.value].slice(0, pagination.value.per_page)
+            trades.value = filterTradesByQuality([local, ...trades.value]).slice(0, pagination.value.per_page)
           }
         } else {
           await fetchTrades(1)
@@ -385,6 +429,7 @@ export const useTradeStore = defineStore('trades', () => {
       syncStatusStore.markServerHealthy()
       if (index >= 0) {
         trades.value[index] = data
+        trades.value = filterTradesByQuality(trades.value)
       } else {
         await fetchTrades(pagination.value.current_page)
       }
@@ -417,6 +462,7 @@ export const useTradeStore = defineStore('trades', () => {
         void syncStatusStore.refreshQueueState()
         if (index >= 0) {
           trades.value[index] = data
+          trades.value = filterTradesByQuality(trades.value)
         } else {
           await fetchTrades(pagination.value.current_page)
         }
@@ -624,7 +670,7 @@ export const useTradeStore = defineStore('trades', () => {
     return data
   }
 
-  async function precheckTrade(payload: TradePayload, tradeId?: number): Promise<TradePrecheckResult> {
+  async function precheckTrade(payload: TradePayload, tradeId?: number, options?: TradePrecheckOptions): Promise<TradePrecheckResult> {
     try {
       const body: Record<string, unknown> = {
         ...payload,
@@ -633,10 +679,17 @@ export const useTradeStore = defineStore('trades', () => {
         body.trade_id = tradeId
       }
 
-      const { data } = await api.post<TradePrecheckResult>('/trades/precheck', body)
+      const { data } = await api.post<TradePrecheckResult>('/trades/precheck', body, {
+        signal: options?.signal,
+      })
       syncStatusStore.markServerHealthy()
       return data
     } catch (error) {
+      const maybeAbortError = error as { code?: string; name?: string }
+      if (maybeAbortError?.code === 'ERR_CANCELED' || maybeAbortError?.name === 'AbortError') {
+        throw error
+      }
+
       if (!shouldUseLocalFallback(error)) {
         throw error
       }
@@ -775,6 +828,7 @@ export const useTradeStore = defineStore('trades', () => {
 
   return {
     trades,
+    visibleTrades,
     instruments,
     fxRates,
     strategyModels,
@@ -784,10 +838,16 @@ export const useTradeStore = defineStore('trades', () => {
     sessionOptions,
     pagination,
     filters,
+    includeDraftsUnverified,
     loading,
     saving,
     error,
     hasFilters,
+    isSynced,
+    isVerified,
+    isTradeQualityIncluded,
+    setIncludeDraftsUnverified,
+    refreshTradeQualityPreference,
     fetchTrades,
     fetchInstruments,
     fetchFxRates,
@@ -810,6 +870,26 @@ export const useTradeStore = defineStore('trades', () => {
     resetFilters,
   }
 })
+
+function readTradeQualityPreference(): boolean {
+  try {
+    const key = scopedKey(TRADE_PREFS_NAMESPACE, TRADE_PREFS_INCLUDE_DRAFTS_KEY)
+    const raw = localStorage.getItem(key)
+    if (!raw) return false
+    return raw === '1' || raw.toLowerCase() === 'true'
+  } catch {
+    return false
+  }
+}
+
+function writeTradeQualityPreference(value: boolean): void {
+  try {
+    const key = scopedKey(TRADE_PREFS_NAMESPACE, TRADE_PREFS_INCLUDE_DRAFTS_KEY)
+    localStorage.setItem(key, value ? '1' : '0')
+  } catch {
+    // Ignore storage write failures.
+  }
+}
 
 function toOptimisticTrade(payload: TradePayload, tempId: number): Trade {
   return {

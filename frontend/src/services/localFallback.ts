@@ -1,5 +1,6 @@
 import type { Account, AccountAnalyticsPayload, AccountEquityPayload, AccountType } from '@/types/account'
 import { isConnectivityFailure, type SyncQueueStatus } from '@/services/offlineSyncQueue'
+import { getScope, migrateLegacyUnscopedKeys, scopedKey } from '@/services/storageScope'
 import type {
   MissedTrade,
   MissedTradeImage,
@@ -9,9 +10,15 @@ import type {
   TradeImage,
 } from '@/types/trade'
 
-const ACCOUNTS_KEY = 'tj_local_accounts_v1'
-const TRADES_KEY = 'tj_local_trades_v1'
-const MISSED_TRADES_KEY = 'tj_local_missed_trades_v1'
+const LOCAL_FALLBACK_NAMESPACE = 'local-fallback'
+const ACCOUNTS_KEY = 'accounts_v1'
+const TRADES_KEY = 'trades_v1'
+const MISSED_TRADES_KEY = 'missed_trades_v1'
+const LEGACY_ACCOUNTS_KEY = 'tj_local_accounts_v1'
+const LEGACY_TRADES_KEY = 'tj_local_trades_v1'
+const LEGACY_MISSED_TRADES_KEY = 'tj_local_missed_trades_v1'
+let migrationScopeMarker = ''
+const transientObjectUrlByKey = new Map<string, string>()
 
 export interface AccountPayloadLike {
   name: string
@@ -49,6 +56,46 @@ export interface MissedTradePayloadLike {
 
 export function shouldUseLocalFallback(error: unknown): boolean {
   return isConnectivityFailure(error)
+}
+
+export function migrateLegacyLocalFallbackKeys(): void {
+  const scope = getScope()
+  const scopeMarker = `${scope.userId ?? 'anon'}:${scope.accountId ?? 'all'}`
+  if (scopeMarker === migrationScopeMarker) return
+
+  migrateLegacyUnscopedKeys([
+    {
+      legacyKey: LEGACY_ACCOUNTS_KEY,
+      namespace: LOCAL_FALLBACK_NAMESPACE,
+      key: ACCOUNTS_KEY,
+      allowAnonymous: false,
+    },
+    {
+      legacyKey: LEGACY_TRADES_KEY,
+      namespace: LOCAL_FALLBACK_NAMESPACE,
+      key: TRADES_KEY,
+      allowAnonymous: false,
+    },
+    {
+      legacyKey: LEGACY_MISSED_TRADES_KEY,
+      namespace: LOCAL_FALLBACK_NAMESPACE,
+      key: MISSED_TRADES_KEY,
+      allowAnonymous: false,
+    },
+  ])
+
+  migrationScopeMarker = scopeMarker
+}
+
+export function __resetTransientImageRegistryForTests(): void {
+  for (const url of transientObjectUrlByKey.values()) {
+    try {
+      globalThis.URL?.revokeObjectURL?.(url)
+    } catch {
+      // Ignore object URL cleanup failures in tests.
+    }
+  }
+  transientObjectUrlByKey.clear()
 }
 
 export function fetchLocalAccounts(params?: { is_active?: boolean }): Account[] {
@@ -235,6 +282,7 @@ export function queryLocalTrades(params: {
   date_from?: string
   date_to?: string
   account_id?: number
+  include_drafts_unverified?: boolean
 }): Paginated<Trade> {
   const page = Math.max(1, params.page || 1)
   const perPage = Math.max(1, Math.min(100, params.per_page || 15))
@@ -248,6 +296,10 @@ export function queryLocalTrades(params: {
       const day = isoDate(trade.date)
       if (params.date_from && day < params.date_from) return false
       if (params.date_to && day > params.date_to) return false
+      if (!params.include_drafts_unverified) {
+        if ((trade.local_sync_status ?? 'synced') !== 'synced') return false
+        if ((trade.risk_validation_status ?? 'verified') !== 'verified') return false
+      }
       return true
     })
     .sort((left, right) => right.date.localeCompare(left.date) || right.id - left.id)
@@ -428,14 +480,18 @@ export async function uploadLocalTradeImage(tradeId: number, file: File, sortOrd
   const trade = trades[index]!
   const images = (trade.images ?? []).slice()
   const id = Math.max(0, ...trades.flatMap((item) => (item.images ?? []).map((image) => image.id))) + 1
-  const src = await fileToDataUrl(file)
+  const localObjectUrlKey = makeLocalObjectUrlKey('trade-image')
+  const transientUrl = registerTransientObjectUrl(localObjectUrlKey, file)
   const image: TradeImage = {
     id,
-    image_url: src,
-    thumbnail_url: src,
+    image_url: '',
+    thumbnail_url: '',
     file_size: file.size,
     file_type: file.type || 'image/jpeg',
     sort_order: typeof sortOrder === 'number' ? sortOrder : images.length,
+    filename: file.name || `trade-image-${id}`,
+    created_at: nowIso(),
+    local_object_url_key: localObjectUrlKey,
   }
 
   images.push(image)
@@ -448,7 +504,11 @@ export async function uploadLocalTradeImage(tradeId: number, file: File, sortOrd
     updated_at: nowIso(),
   }
   writeJson(TRADES_KEY, trades)
-  return image
+  return {
+    ...image,
+    image_url: transientUrl,
+    thumbnail_url: transientUrl,
+  }
 }
 
 export function deleteLocalTradeImage(imageId: number): void {
@@ -458,6 +518,10 @@ export function deleteLocalTradeImage(imageId: number): void {
   for (let index = 0; index < trades.length; index += 1) {
     const trade = trades[index]!
     const images = trade.images ?? []
+    const target = images.find((image) => image.id === imageId)
+    if (target?.local_object_url_key) {
+      revokeTransientObjectUrl(target.local_object_url_key)
+    }
     const filtered = images.filter((image) => image.id !== imageId)
     if (filtered.length === images.length) continue
 
@@ -571,14 +635,18 @@ export async function uploadLocalMissedTradeImage(missedTradeId: number, file: F
   const trade = trades[index]!
   const images = (trade.images ?? []).slice()
   const id = Math.max(0, ...trades.flatMap((item) => (item.images ?? []).map((image) => image.id))) + 1
-  const src = await fileToDataUrl(file)
+  const localObjectUrlKey = makeLocalObjectUrlKey('missed-image')
+  const transientUrl = registerTransientObjectUrl(localObjectUrlKey, file)
   const image: MissedTradeImage = {
     id,
-    image_url: src,
-    thumbnail_url: src,
+    image_url: '',
+    thumbnail_url: '',
     file_size: file.size,
     file_type: file.type || 'image/jpeg',
     sort_order: typeof sortOrder === 'number' ? sortOrder : images.length,
+    filename: file.name || `missed-image-${id}`,
+    created_at: nowIso(),
+    local_object_url_key: localObjectUrlKey,
   }
 
   images.push(image)
@@ -592,7 +660,11 @@ export async function uploadLocalMissedTradeImage(missedTradeId: number, file: F
   }
 
   writeJson(MISSED_TRADES_KEY, trades)
-  return image
+  return {
+    ...image,
+    image_url: transientUrl,
+    thumbnail_url: transientUrl,
+  }
 }
 
 export function deleteLocalMissedTradeImage(imageId: number): void {
@@ -602,6 +674,10 @@ export function deleteLocalMissedTradeImage(imageId: number): void {
   for (let index = 0; index < trades.length; index += 1) {
     const trade = trades[index]!
     const images = trade.images ?? []
+    const target = images.find((image) => image.id === imageId)
+    if (target?.local_object_url_key) {
+      revokeTransientObjectUrl(target.local_object_url_key)
+    }
     const filtered = images.filter((image) => image.id !== imageId)
     if (filtered.length === images.length) continue
 
@@ -805,15 +881,6 @@ function computeDrawdown(points: number[], starting: number) {
   }
 }
 
-async function fileToDataUrl(file: File): Promise<string> {
-  return await new Promise((resolve, reject) => {
-    const reader = new FileReader()
-    reader.onload = () => resolve(typeof reader.result === 'string' ? reader.result : '')
-    reader.onerror = () => reject(new Error('Could not read image'))
-    reader.readAsDataURL(file)
-  })
-}
-
 function normalizeAccount(input: unknown): Account | null {
   if (!isRecord(input)) return null
   const id = toInt(input.id)
@@ -883,13 +950,23 @@ function normalizeTradeImage(input: unknown): TradeImage | null {
   if (!isRecord(input)) return null
   const id = toInt(input.id)
   if (id <= 0) return null
+  const localObjectUrlKey = toOptionalText(input.local_object_url_key)
+  const transientUrl = localObjectUrlKey ? resolveTransientObjectUrl(localObjectUrlKey) : ''
+  const persistedImageUrl = sanitizePersistedImageUrl(input.image_url)
+  const persistedThumbUrl = sanitizePersistedImageUrl(input.thumbnail_url)
+  const imageUrl = persistedImageUrl || transientUrl
+  const thumbnailUrl = persistedThumbUrl || imageUrl
+
   return {
     id,
-    image_url: String(input.image_url ?? ''),
-    thumbnail_url: String(input.thumbnail_url ?? input.image_url ?? ''),
+    image_url: imageUrl,
+    thumbnail_url: thumbnailUrl,
     file_size: toInt(input.file_size),
     file_type: String(input.file_type ?? 'image/jpeg'),
     sort_order: toInt(input.sort_order),
+    filename: toOptionalText(input.filename),
+    created_at: toOptionalText(input.created_at),
+    local_object_url_key: localObjectUrlKey,
   }
 }
 
@@ -919,13 +996,23 @@ function normalizeMissedTradeImage(input: unknown): MissedTradeImage | null {
   if (!isRecord(input)) return null
   const id = toInt(input.id)
   if (id <= 0) return null
+  const localObjectUrlKey = toOptionalText(input.local_object_url_key)
+  const transientUrl = localObjectUrlKey ? resolveTransientObjectUrl(localObjectUrlKey) : ''
+  const persistedImageUrl = sanitizePersistedImageUrl(input.image_url)
+  const persistedThumbUrl = sanitizePersistedImageUrl(input.thumbnail_url)
+  const imageUrl = persistedImageUrl || transientUrl
+  const thumbnailUrl = persistedThumbUrl || imageUrl
+
   return {
     id,
-    image_url: String(input.image_url ?? ''),
-    thumbnail_url: String(input.thumbnail_url ?? input.image_url ?? ''),
+    image_url: imageUrl,
+    thumbnail_url: thumbnailUrl,
     file_size: toInt(input.file_size),
     file_type: String(input.file_type ?? 'image/jpeg'),
     sort_order: toInt(input.sort_order),
+    filename: toOptionalText(input.filename),
+    created_at: toOptionalText(input.created_at),
+    local_object_url_key: localObjectUrlKey,
   }
 }
 
@@ -964,22 +1051,171 @@ function normalizeRiskValidationStatus(value: unknown): 'verified' | 'unverified
   return undefined
 }
 
-function readJson<T>(key: string, fallback: T): T {
+function makeLocalObjectUrlKey(prefix: string): string {
+  const random = Math.random().toString(16).slice(2, 10)
+  return `${prefix}-${Date.now()}-${random}`
+}
+
+function registerTransientObjectUrl(key: string, file: File): string {
+  const creator = globalThis.URL?.createObjectURL
+  if (typeof creator !== 'function') {
+    return ''
+  }
+
   try {
-    const raw = localStorage.getItem(key)
+    const url = creator(file)
+    transientObjectUrlByKey.set(key, url)
+    return url
+  } catch {
+    return ''
+  }
+}
+
+function resolveTransientObjectUrl(key: string): string {
+  return transientObjectUrlByKey.get(key) ?? ''
+}
+
+function revokeTransientObjectUrl(key: string): void {
+  const url = transientObjectUrlByKey.get(key)
+  if (!url) return
+  try {
+    globalThis.URL?.revokeObjectURL?.(url)
+  } catch {
+    // Ignore object URL revoke failures.
+  } finally {
+    transientObjectUrlByKey.delete(key)
+  }
+}
+
+function sanitizePersistedImageUrl(value: unknown): string {
+  if (typeof value !== 'string') return ''
+  const trimmed = value.trim()
+  if (trimmed === '') return ''
+  if (trimmed.startsWith('data:')) return ''
+  if (trimmed.startsWith('blob:')) return ''
+  return trimmed
+}
+
+function toOptionalText(value: unknown): string | null {
+  if (typeof value !== 'string') return null
+  const trimmed = value.trim()
+  return trimmed === '' ? null : trimmed
+}
+
+interface LocalStorageEnvelope<T> {
+  created_at: string
+  expire_at: string | null
+  data: T
+}
+
+function readJson<T>(key: string, fallback: T): T {
+  migrateLegacyLocalFallbackKeys()
+  const targetKey = scopedLocalFallbackKey(key)
+
+  try {
+    const raw = localStorage.getItem(targetKey)
     if (!raw) return fallback
-    return JSON.parse(raw) as T
+    let parsed = JSON.parse(raw) as unknown
+    const sanitized = sanitizePersistedImagePayloads(key, parsed)
+    if (sanitized.changed) {
+      parsed = sanitized.payload
+      try {
+        localStorage.setItem(targetKey, JSON.stringify(parsed))
+      } catch {
+        // Ignore storage write failures.
+      }
+    }
+
+    if (isEnvelope<T>(parsed)) {
+      return parsed.data
+    }
+
+    // Backward compatibility for scoped payloads that were not wrapped.
+    return parsed as T
   } catch {
     return fallback
   }
 }
 
 function writeJson<T>(key: string, value: T): void {
+  migrateLegacyLocalFallbackKeys()
+  const targetKey = scopedLocalFallbackKey(key)
+  const payload: LocalStorageEnvelope<T> = {
+    created_at: nowIso(),
+    expire_at: null,
+    data: value,
+  }
+
   try {
-    localStorage.setItem(key, JSON.stringify(value))
+    // Phase 0.2 TTL stub: we persist expire_at but do not enforce expiration yet.
+    localStorage.setItem(targetKey, JSON.stringify(payload))
   } catch {
     // Ignore local storage write failures.
   }
+}
+
+function scopedLocalFallbackKey(key: string): string {
+  return scopedKey(LOCAL_FALLBACK_NAMESPACE, key)
+}
+
+function isEnvelope<T>(value: unknown): value is LocalStorageEnvelope<T> {
+  if (!isRecord(value)) return false
+  return 'created_at' in value && 'expire_at' in value && 'data' in value
+}
+
+function sanitizePersistedImagePayloads(key: string, payload: unknown): { payload: unknown; changed: boolean } {
+  if (key !== TRADES_KEY && key !== MISSED_TRADES_KEY) {
+    return { payload, changed: false }
+  }
+
+  const root = isEnvelope<unknown>(payload) ? payload.data : payload
+  if (!Array.isArray(root)) {
+    return { payload, changed: false }
+  }
+
+  let changed = false
+  const nextRoot = root.map((row) => {
+    if (!isRecord(row)) return row
+    const images = Array.isArray(row.images) ? row.images : null
+    if (!images) return row
+
+    const nextImages = images.map((image) => {
+      if (!isRecord(image)) return image
+      const next = { ...image }
+
+      if (typeof next.image_url === 'string' && (next.image_url.startsWith('data:') || next.image_url.startsWith('blob:'))) {
+        next.image_url = ''
+        changed = true
+      }
+      if (typeof next.thumbnail_url === 'string' && (next.thumbnail_url.startsWith('data:') || next.thumbnail_url.startsWith('blob:'))) {
+        next.thumbnail_url = ''
+        changed = true
+      }
+
+      return next
+    })
+
+    return {
+      ...row,
+      images: nextImages,
+    }
+  })
+
+  if (!changed) {
+    return { payload, changed: false }
+  }
+
+  if (isEnvelope<unknown>(payload)) {
+    return {
+      payload: {
+        ...payload,
+        data: nextRoot,
+      },
+      changed: true,
+    }
+  }
+
+  return { payload: nextRoot, changed: true }
 }
 
 function nowIso(): string {

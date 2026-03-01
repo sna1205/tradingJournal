@@ -2,6 +2,8 @@ import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
 import api, { ensureCsrfCookie } from '@/services/api'
 import { setSyncQueueUserScope } from '@/services/offlineSyncQueue'
+import { migrateLegacyLocalFallbackKeys } from '@/services/localFallback'
+import { getScope, purgeScopedStorageForUser, setScopeAccountId, setScopeUserId } from '@/services/storageScope'
 
 interface AuthUser {
   id: number
@@ -29,12 +31,21 @@ export const useAuthStore = defineStore('auth', () => {
   const isAuthenticated = computed(() => Boolean(user.value))
 
   function clearSession() {
+    const previousUserId = user.value?.id ?? getScope().userId
+    purgeScopedStorageForUser(previousUserId)
+    setScopeUserId(null)
+    setScopeAccountId(null)
     user.value = null
     setSyncQueueUserScope(null)
+    migrateLegacyLocalFallbackKeys()
   }
 
   function setUserScope(nextUser: AuthUser | null) {
-    setSyncQueueUserScope(nextUser?.id ?? null)
+    const userId = nextUser?.id ?? null
+    setSyncQueueUserScope(userId)
+    setScopeUserId(userId)
+    setScopeAccountId(null)
+    migrateLegacyLocalFallbackKeys()
   }
 
   async function initialize() {

@@ -18,6 +18,7 @@ import {
   resolveQuoteToUsdFromTable,
   type FxQuoteToUsdResolution,
 } from '@/services/fxToUsdService'
+import { createDebouncedLatestRunner, stableStringify } from '@/services/precheckScheduler'
 import { livePriceFeedService } from '@/services/priceFeedService'
 import { useAccountStore } from '@/stores/accountStore'
 import {
@@ -26,6 +27,7 @@ import {
   type TradePrecheckResult,
 } from '@/stores/tradeStore'
 import { useTradeChecklistStore } from '@/stores/tradeChecklistStore'
+import { useSyncStatusStore } from '@/stores/syncStatusStore'
 import { useUiStore } from '@/stores/uiStore'
 import type { ImageContextTag, Instrument, Paginated, SessionEnum, Trade, TradeEmotion, TradeImage, TradeLeg, TradePsychology } from '@/types/trade'
 import { asCurrency, asSignedCurrency } from '@/utils/format'
@@ -35,9 +37,11 @@ const route = useRoute()
 const tradeStore = useTradeStore()
 const tradeChecklistStore = useTradeChecklistStore()
 const accountStore = useAccountStore()
+const syncStatusStore = useSyncStatusStore()
 const uiStore = useUiStore()
 const { accounts } = storeToRefs(accountStore)
 const { instruments, strategyModels, setups, killzones, tradeTags, sessionOptions, fxRates } = storeToRefs(tradeStore)
+const { isFallbackMode } = storeToRefs(syncStatusStore)
 const {
   checklist: activeChecklist,
   items: checklistItems,
@@ -276,9 +280,10 @@ const instrumentSymbol = computed(() => selectedInstrument.value?.symbol ?? form
 const precheckLoading = ref(false)
 const precheckError = ref('')
 const precheckResult = ref<TradePrecheckResult | null>(null)
+const precheckActiveRequestId = ref<number | null>(null)
 const failedRequiredRuleIds = ref<number[]>([])
 const localRiskOverrideAccepted = ref(false)
-let precheckTimer: ReturnType<typeof setTimeout> | null = null
+const precheckUpdating = computed(() => precheckLoading.value && precheckResult.value !== null)
 const isRiskEngineUnavailable = computed(() => Boolean(precheckResult.value?.risk_engine_unavailable))
 const canUseLocalRiskOverride = computed(() =>
   isRiskEngineUnavailable.value
@@ -337,7 +342,7 @@ const isSubmittingDisabled = computed(() =>
   || isChecklistStrictBlocked.value
 )
 const riskStatusLabel = computed(() => {
-  if (precheckLoading.value) return 'Checking'
+  if (precheckLoading.value && precheckActiveRequestId.value !== null) return 'Checking...'
   if (isFxPending.value) return 'Fetching FX'
   if (precheckError.value) return 'Blocked'
   if (liveFxConversionError.value) return 'Blocked'
@@ -367,6 +372,7 @@ const blockedSummary = computed(() => {
 })
 
 async function refreshLiveFxConversion() {
+  const previousFxMaterialSignature = getFxMaterialSignature(liveFxConversion.value)
   const instrument = selectedInstrument.value
   if (!instrument) {
     liveFxConversion.value = null
@@ -401,6 +407,9 @@ async function refreshLiveFxConversion() {
     const rate = await fxResolver.getRate(quoteCurrency, 'mid')
     if (requestId !== liveFxResolveRequestId) return
     liveFxConversion.value = rate
+    if (getFxMaterialSignature(rate) !== previousFxMaterialSignature) {
+      schedulePrecheck()
+    }
     liveFxConversionErrorMessage.value = ''
     liveFxAttemptedSymbols.value = []
   } catch (error) {
@@ -408,6 +417,9 @@ async function refreshLiveFxConversion() {
     const fallback = resolveQuoteToUsdFromTable(quoteCurrency, fxRates.value)
     if (fallback) {
       liveFxConversion.value = fallback
+      if (getFxMaterialSignature(fallback) !== previousFxMaterialSignature) {
+        schedulePrecheck()
+      }
       liveFxConversionErrorMessage.value = ''
       liveFxAttemptedSymbols.value = []
       return
@@ -1074,36 +1086,111 @@ function buildPayload(): TradePayload {
   }
 }
 
-async function runPrecheck() {
-  precheckError.value = ''
-  precheckResult.value = null
-  localRiskOverrideAccepted.value = false
+function getFxMaterialSignature(value: FxQuoteToUsdResolution | null): string {
+  if (!value) return 'none'
+  // Only fields that influence risk math should trigger precheck refresh on quote updates.
+  return `${value.method}|${value.mode}|${value.symbolUsed ?? 'identity'}|${value.rate.toFixed(8)}`
+}
 
+function getMaterialPrecheckPayload(payload: TradePayload) {
+  return {
+    account_id: payload.account_id,
+    instrument_id: payload.instrument_id,
+    strategy_model_id: payload.strategy_model_id ?? null,
+    setup_id: payload.setup_id ?? null,
+    killzone_id: payload.killzone_id ?? null,
+    session_enum: payload.session_enum ?? null,
+    symbol: payload.symbol,
+    direction: payload.direction,
+    close_date: payload.close_date,
+    entry_price: payload.entry_price,
+    stop_loss: payload.stop_loss,
+    take_profit: payload.take_profit,
+    actual_exit_price: payload.actual_exit_price,
+    position_size: payload.position_size,
+    commission: payload.commission ?? 0,
+    swap: payload.swap ?? 0,
+    spread_cost: payload.spread_cost ?? 0,
+    slippage_cost: payload.slippage_cost ?? 0,
+    fx_rate_quote_to_usd: payload.fx_rate_quote_to_usd ?? null,
+    fx_symbol_used: payload.fx_symbol_used ?? null,
+    risk_override_reason: payload.risk_override_reason ?? null,
+    followed_rules: payload.followed_rules,
+    checklist_incomplete: payload.checklist_incomplete ?? false,
+    checklist_evaluation: payload.checklist_evaluation ?? null,
+    checklist_responses: (payload.checklist_responses ?? []).map((item) => ({
+      checklist_item_id: item.checklist_item_id,
+      value: item.value,
+    })),
+    legs: (payload.legs ?? []).map((leg) => ({
+      leg_type: leg.leg_type,
+      price: leg.price,
+      quantity_lots: leg.quantity_lots,
+      executed_at: leg.executed_at,
+      fees: leg.fees ?? 0,
+      notes: leg.notes ?? null,
+    })),
+  }
+}
+
+function payloadHash(payload: ReturnType<typeof getMaterialPrecheckPayload>): string {
+  return stableStringify(payload)
+}
+
+const precheckRunner = createDebouncedLatestRunner<
+  { payload: TradePayload; hash: string },
+  TradePrecheckResult
+>({
+  debounceMs: 800,
+  getHash: (input) => input.hash,
+  execute: async ({ payload }, context) => {
+    return await tradeStore.precheckTrade(payload, tradeId.value ?? undefined, {
+      signal: context.signal,
+    })
+  },
+  onRequestStart: (context) => {
+    precheckActiveRequestId.value = context.requestId
+    precheckLoading.value = true
+    precheckError.value = ''
+    localRiskOverrideAccepted.value = false
+  },
+  onRequestSuccess: (result, context) => {
+    if (precheckActiveRequestId.value !== context.requestId) return
+    precheckResult.value = result
+    precheckError.value = ''
+  },
+  onRequestError: (error, context) => {
+    if (precheckActiveRequestId.value !== context.requestId) return
+    precheckError.value = extractErrorMessage(error)
+  },
+  onRequestSettled: (context) => {
+    if (precheckActiveRequestId.value !== context.requestId) return
+    precheckLoading.value = false
+  },
+})
+
+async function runPrecheck(options?: { force?: boolean }) {
   const firstError = Object.values(formErrors.value)[0]
   if (firstError) return
   if (isFxPending.value) return
 
   try {
     const payload = buildPayload()
-    precheckLoading.value = true
-    precheckResult.value = await tradeStore.precheckTrade(
-      payload,
-      tradeId.value ?? undefined
+    const materialPayload = getMaterialPrecheckPayload(payload)
+    precheckRunner.schedule(
+      {
+        payload,
+        hash: payloadHash(materialPayload),
+      },
+      { force: options?.force === true }
     )
   } catch (error) {
     precheckError.value = extractErrorMessage(error)
-  } finally {
-    precheckLoading.value = false
   }
 }
 
 function schedulePrecheck() {
-  if (precheckTimer) {
-    clearTimeout(precheckTimer)
-  }
-  precheckTimer = setTimeout(() => {
-    void runPrecheck()
-  }, 250)
+  void runPrecheck()
 }
 
 function clearPendingImages() {
@@ -1478,7 +1565,8 @@ watch(
     unsubscribeFxListeners = symbols.map((symbol) =>
       livePriceFeedService.subscribe(symbol, () => {
         quoteTickVersion.value += 1
-        schedulePrecheck()
+        // Do not trigger precheck on every quote tick.
+        // We only re-run precheck when `refreshLiveFxConversion` detects a material FX change.
       })
     )
     quoteTickVersion.value += 1
@@ -1580,9 +1668,7 @@ onBeforeUnmount(() => {
   window.removeEventListener('keydown', handleGlobalHotkeys)
   clearPendingImages()
   tradeChecklistStore.resetState()
-  if (precheckTimer) {
-    clearTimeout(precheckTimer)
-  }
+  precheckRunner.cancel()
   for (const unsubscribe of unsubscribeFxListeners) {
     unsubscribe()
   }
@@ -1867,7 +1953,7 @@ async function loadImage(file: File): Promise<HTMLImageElement> {
             <article class="panel execution-partial-card">
               <div class="execution-partial-head">
                 <p class="text-sm font-semibold">Main Exit</p>
-                <button type="button" class="chip-btn" @click="void runPrecheck()">Recalculate</button>
+                <button type="button" class="chip-btn" @click="void runPrecheck({ force: true })">Recalculate</button>
               </div>
               <div class="grid grid-premium md:grid-cols-2 xl:grid-cols-4">
                 <BaseInput
@@ -1996,6 +2082,7 @@ async function loadImage(file: File): Promise<HTMLImageElement> {
           <p v-if="isRiskEngineUnavailable" class="field-error-text">
             Risk precheck unavailable. Confirm local-only override to save as draft.
           </p>
+          <p v-if="precheckUpdating" class="text-xs muted">Updating risk check...</p>
           <p v-if="isFxPending" class="text-xs muted">Fetching FX quote...</p>
           <p v-if="liveFxConversionError" class="field-error-text">{{ liveFxConversionError }}</p>
           <details v-if="liveFxConversionError && liveFxAttemptedSymbols.length > 0" class="mt-1 text-xs muted">
@@ -2056,6 +2143,7 @@ async function loadImage(file: File): Promise<HTMLImageElement> {
           title="Screenshots (Optional)"
           :existing-images="existingImages"
           :pending-images="pendingImages"
+          :offline-warning="isFallbackMode"
           :max-files="MAX_IMAGE_COUNT"
           :uploading="uploadingImages"
           :upload-progress="uploadProgressByPendingId"
