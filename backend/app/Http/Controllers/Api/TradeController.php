@@ -2,6 +2,9 @@
 
 namespace App\Http\Controllers\Api;
 
+use App\Domain\Instruments\InstrumentMath;
+use App\Domain\Instruments\InstrumentSpec;
+use App\Exceptions\TradeConcurrencyException;
 use App\Http\Controllers\Controller;
 use App\Models\Checklist;
 use App\Models\Trade;
@@ -11,7 +14,9 @@ use App\Services\ChecklistService;
 use App\Services\CurrencyConversionService;
 use App\Services\TradeCalculationEngine;
 use App\Services\TradeChecklistService;
+use App\Services\TradeExecutionOrchestrator;
 use App\Services\TradeRiskPolicyService;
+use App\Support\ApiErrorResponder;
 use Carbon\CarbonImmutable;
 use Illuminate\Http\Exceptions\HttpResponseException;
 use Illuminate\Http\Request;
@@ -66,7 +71,9 @@ class TradeController extends Controller
         private readonly TradeRiskPolicyService $tradeRiskPolicyService,
         private readonly ChecklistService $checklistService,
         private readonly TradeChecklistService $tradeChecklistService,
-        private readonly CurrencyConversionService $currencyConversionService
+        private readonly CurrencyConversionService $currencyConversionService,
+        private readonly InstrumentMath $instrumentMath,
+        private readonly TradeExecutionOrchestrator $tradeExecutionOrchestrator
     ) {}
 
     public function index(Request $request)
@@ -138,7 +145,17 @@ class TradeController extends Controller
         $riskEvaluation = $this->evaluateRiskPolicy(
             $payloadWithMetrics,
             $account,
-            $isUpdate ? (int) $existingTrade->id : null
+            $isUpdate ? (int) $existingTrade->id : null,
+            method_exists($request->user(), 'roleName')
+                ? $request->user()->roleName()
+                : (string) ($request->user()->role ?? 'trader')
+        );
+        $checklistGate = $this->evaluateChecklistGateForPayload(
+            $userId,
+            $payloadWithMetrics,
+            $existingTrade,
+            $payloadWithMetrics,
+            false
         );
 
         return response()->json([
@@ -154,57 +171,33 @@ class TradeController extends Controller
                 'costs_total' => $payloadWithMetrics['costs_total'],
                 'profit_loss' => $payloadWithMetrics['profit_loss'],
                 'risk_percent' => $payloadWithMetrics['risk_percent'],
+                'risk_amount_account_currency' => $payloadWithMetrics['risk_amount_account_currency'],
+                'risk_currency' => $payloadWithMetrics['risk_currency'],
                 'r_multiple' => $payloadWithMetrics['r_multiple'],
                 'realized_r_multiple' => $payloadWithMetrics['realized_r_multiple'],
                 'avg_entry_price' => $payloadWithMetrics['avg_entry_price'],
                 'avg_exit_price' => $payloadWithMetrics['avg_exit_price'],
                 'rr' => $payloadWithMetrics['rr'],
+                'fx_rate_used' => $payloadWithMetrics['fx_rate_used'],
+                'fx_pair_used' => $payloadWithMetrics['fx_pair_used'],
+                'fx_rate_provenance_at' => $payloadWithMetrics['fx_rate_provenance_at'],
+            ],
+            'checklist_gate' => [
+                'readiness' => $checklistGate['readiness'],
+                'failing_rules' => $checklistGate['failing_rules'] ?? [],
+                'failed_required_rule_ids' => $checklistGate['failed_required_rule_ids'] ?? [],
+                'failed_rule_reasons' => $checklistGate['failed_rule_reasons'] ?? [],
+                'checklist_incomplete' => (bool) ($checklistGate['checklist_incomplete'] ?? false),
             ],
         ]);
     }
 
     public function store(Request $request)
     {
-        $userId = (int) $request->user()->id;
         $payload = $this->validatePayload($request);
         $payload = $this->applyDefaults($payload);
         $payload['pair'] = strtoupper((string) $payload['pair']);
-
-        $result = DB::transaction(function () use ($payload, $userId): array {
-            $account = $this->resolveAccountForWrite((int) $payload['account_id'], $userId);
-            $instrument = $this->resolveInstrumentForRead((int) $payload['instrument_id']);
-            $payloadWithMetrics = $this->buildPayloadWithCalculatedFields($payload, $account, $instrument);
-            $riskEvaluation = $this->evaluateRiskPolicy($payloadWithMetrics, $account, null);
-            $this->throwIfRiskPolicyBlocked($riskEvaluation);
-            $checklistGate = $this->evaluateChecklistGateForPayload($userId, $payloadWithMetrics, null, $payload);
-            $payloadWithMetrics['checklist_incomplete'] = $checklistGate['checklist_incomplete'];
-            $payloadWithMetrics = [
-                ...$payloadWithMetrics,
-                ...$checklistGate['snapshot_attributes'],
-            ];
-
-            $legs = $this->normalizeLegsForWrite($payloadWithMetrics['legs'] ?? [], (string) $payloadWithMetrics['date']);
-            $createdTrade = Trade::create($this->extractTradeAttributes($payloadWithMetrics));
-            if (count($legs) > 0) {
-                $createdTrade->legs()->createMany($legs);
-            }
-            $this->syncTradeTags($createdTrade, $this->extractTagIds($payloadWithMetrics));
-            $this->persistChecklistState(
-                $createdTrade,
-                $checklistGate['checklist'],
-                $checklistGate['responses'],
-                $checklistGate['checklist_incomplete'],
-                $checklistGate['responses_from_request'],
-                $checklistGate['snapshot_frozen'],
-                $checklistGate['precheck_metrics']
-            );
-            $this->accountBalanceService->rebuildAccountState((int) $account->id);
-
-            return [
-                'trade' => $createdTrade->fresh(['account', 'instrument', 'strategyModel', 'setup', 'killzone', 'tags', 'legs']),
-                'checklist_gate' => $checklistGate,
-            ];
-        });
+        $result = $this->tradeExecutionOrchestrator->createTrade($payload, $request->user());
 
         $this->touchAnalyticsCacheVersion();
 
@@ -212,7 +205,9 @@ class TradeController extends Controller
         $trade = $result['trade'];
         $this->attachChecklistEvaluationPayload($trade, $result['checklist_gate']);
 
-        return response()->json($trade, 201);
+        return response()
+            ->json($trade, 201)
+            ->header('ETag', $this->tradeExecutionOrchestrator->buildTradeEtag($trade));
     }
 
     public function show(Trade $trade)
@@ -247,7 +242,6 @@ class TradeController extends Controller
     public function update(Request $request, Trade $trade)
     {
         $this->authorize('update', $trade);
-        $userId = (int) $request->user()->id;
         $payload = $this->validatePayload($request, true, $trade);
         $payload = $this->applyDefaults($payload, true);
 
@@ -255,49 +249,41 @@ class TradeController extends Controller
             $payload['pair'] = strtoupper((string) $payload['pair']);
         }
 
-        $previousAccountId = (int) $trade->account_id;
-
-        $result = DB::transaction(function () use ($trade, $payload, $previousAccountId, $userId): array {
-            $effectivePayload = $this->normalizePrecheckPayload($payload, $trade);
-            $account = $this->resolveAccountForWrite((int) $effectivePayload['account_id'], $userId);
-            $instrument = $this->resolveInstrumentForRead((int) $effectivePayload['instrument_id']);
-            $payloadWithMetrics = $this->buildPayloadWithCalculatedFields($effectivePayload, $account, $instrument);
-            $riskEvaluation = $this->evaluateRiskPolicy($payloadWithMetrics, $account, (int) $trade->id);
-            $this->throwIfRiskPolicyBlocked($riskEvaluation);
-            $checklistGate = $this->evaluateChecklistGateForPayload($userId, $payloadWithMetrics, $trade, $payload);
-            $payloadWithMetrics['checklist_incomplete'] = $checklistGate['checklist_incomplete'];
-            $payloadWithMetrics = [
-                ...$payloadWithMetrics,
-                ...$checklistGate['snapshot_attributes'],
+        try {
+            $result = $this->tradeExecutionOrchestrator->updateTrade(
+                (int) $trade->id,
+                $payload,
+                $request->user(),
+                $request->header('If-Match')
+            );
+        } catch (TradeConcurrencyException $exception) {
+            $current = [
+                'revision' => $exception->currentRevision(),
+                'updated_at' => $exception->currentUpdatedAt(),
+                'etag' => $exception->currentEtag(),
             ];
 
-            $trade->update($this->extractTradeAttributes($payloadWithMetrics));
-
-            if (array_key_exists('legs', $payload)) {
-                $legs = $this->normalizeLegsForWrite($payloadWithMetrics['legs'] ?? [], (string) $payloadWithMetrics['date']);
-                $trade->legs()->delete();
-                if (count($legs) > 0) {
-                    $trade->legs()->createMany($legs);
-                }
-            }
-            $this->syncTradeTags($trade, $this->extractTagIds($payloadWithMetrics));
-            $this->persistChecklistState(
-                $trade,
-                $checklistGate['checklist'],
-                $checklistGate['responses'],
-                $checklistGate['checklist_incomplete'],
-                $checklistGate['responses_from_request'],
-                $checklistGate['snapshot_frozen'],
-                $checklistGate['precheck_metrics']
+            $response = ApiErrorResponder::errorV2(
+                request: $request,
+                status: 409,
+                code: 'trade_revision_conflict',
+                message: $exception->getMessage(),
+                details: [[
+                    'field' => 'revision',
+                    'message' => 'Trade revision no longer matches latest server state.',
+                ]],
+                meta: [
+                    'current' => $current,
+                ]
             );
 
-            $this->accountBalanceService->rebuildMany([$previousAccountId, (int) $trade->account_id]);
+            $payload = $response->getData(true);
+            $payload['current'] = $current;
 
-            return [
-                'trade' => $trade->fresh(['account', 'instrument', 'strategyModel', 'setup', 'killzone', 'tags', 'legs']),
-                'checklist_gate' => $checklistGate,
-            ];
-        });
+            return $response
+                ->setData($payload)
+                ->header('ETag', $exception->currentEtag());
+        }
 
         $this->touchAnalyticsCacheVersion();
 
@@ -305,7 +291,9 @@ class TradeController extends Controller
         $updatedTrade = $result['trade'];
         $this->attachChecklistEvaluationPayload($updatedTrade, $result['checklist_gate']);
 
-        return response()->json($updatedTrade);
+        return response()
+            ->json($updatedTrade)
+            ->header('ETag', $this->tradeExecutionOrchestrator->buildTradeEtag($updatedTrade));
     }
 
     public function destroy(Trade $trade)
@@ -394,6 +382,17 @@ class TradeController extends Controller
             'fx_rate_quote_to_usd' => ['prohibited'],
             'fx_symbol_used' => ['prohibited'],
             'fx_rate_timestamp' => ['prohibited'],
+            'risk_amount_account_currency' => ['prohibited'],
+            'risk_currency' => ['prohibited'],
+            'fx_rate_used' => ['prohibited'],
+            'fx_pair_used' => ['prohibited'],
+            'fx_rate_provenance_at' => ['prohibited'],
+            'instrument_contract_size' => ['prohibited'],
+            'instrument_quote_to_account_rate' => ['prohibited'],
+            'instrument_quote_currency' => ['prohibited'],
+            'instrument_base_currency' => ['prohibited'],
+            'instrument_rounding_policy' => ['prohibited'],
+            'account_currency' => ['prohibited'],
             'account_balance_before_trade' => ['prohibited'],
             'account_balance_after_trade' => ['prohibited'],
             'executed_checklist_id' => ['prohibited'],
@@ -764,13 +763,14 @@ class TradeController extends Controller
     /**
      * @param  array<string, mixed>  $payload
      * @param  object{id:int,starting_balance:numeric-string|int|float,current_balance:numeric-string|int|float,currency:string}  $account
-     * @param  object{id:int,tick_size:numeric-string|int|float,tick_value:numeric-string|int|float,symbol:string,quote_currency:string}  $instrument
+     * @param  object{id:int,tick_size:numeric-string|int|float,tick_value:numeric-string|int|float,contract_size:numeric-string|int|float,symbol:string,quote_currency:string,base_currency:string}  $instrument
      * @return array<string, mixed>
      */
     private function buildPayloadWithCalculatedFields(array $payload, object $account, object $instrument): array
     {
         $tradeDate = $this->parsePayloadDate((string) ($payload['date'] ?? CarbonImmutable::now()->toIso8601String()));
         $valuationContext = $this->resolveInstrumentValuationContext($instrument, $account, $tradeDate);
+        $accountCurrency = strtoupper(trim((string) ($account->currency ?? 'USD')));
 
         $normalizedLegs = $this->normalizeLegsForCalculation(
             $payload['legs'] ?? null,
@@ -785,15 +785,24 @@ class TradeController extends Controller
             'actual_exit_price' => (float) ($payload['actual_exit_price'] ?? ($payload['entry_price'] ?? 0)),
             'lot_size' => (float) ($payload['lot_size'] ?? 0),
             'account_balance_before_trade' => (float) $account->current_balance,
+            'account_currency' => $accountCurrency,
             'instrument_tick_size' => (float) $instrument->tick_size,
             'instrument_tick_value' => $valuationContext['tick_value_in_account_currency'],
+            'instrument_contract_size' => (float) $instrument->contract_size,
+            'instrument_quote_to_account_rate' => $valuationContext['quote_to_account_rate'],
+            'instrument_quote_currency' => strtoupper(trim((string) $instrument->quote_currency)),
+            'instrument_base_currency' => strtoupper(trim((string) ($instrument->base_currency ?? ''))),
+            'instrument_rounding_policy' => 'half_up_6',
             'commission' => (float) ($payload['commission'] ?? 0),
             'swap' => (float) ($payload['swap'] ?? 0),
             'spread_cost' => (float) ($payload['spread_cost'] ?? 0),
             'slippage_cost' => (float) ($payload['slippage_cost'] ?? 0),
             'fx_rate_quote_to_usd' => $valuationContext['fx_rate_quote_to_usd'],
             'fx_symbol_used' => $valuationContext['fx_symbol_used'],
-            'fx_rate_timestamp' => $tradeDate->toIso8601String(),
+            'fx_rate_timestamp' => $valuationContext['fx_rate_provenance_at'] ?? $tradeDate->toIso8601String(),
+            'fx_rate_used' => $valuationContext['fx_rate_used'],
+            'fx_pair_used' => $valuationContext['fx_pair_used'],
+            'fx_rate_provenance_at' => $valuationContext['fx_rate_provenance_at'],
             'legs' => $normalizedLegs,
             'tag_ids' => $this->extractTagIds($payload),
         ];
@@ -815,6 +824,8 @@ class TradeController extends Controller
             'avg_exit_price' => (float) $calculated['avg_exit_price'],
             'r_multiple' => (float) $calculated['realized_r_multiple'],
             'realized_r_multiple' => (float) $calculated['realized_r_multiple'],
+            'risk_amount_account_currency' => (float) $calculated['monetary_risk'],
+            'risk_currency' => $accountCurrency,
         ];
     }
 
@@ -828,12 +839,16 @@ class TradeController extends Controller
     }
 
     /**
-     * @param  object{tick_value:numeric-string|int|float,quote_currency:string,symbol:string}  $instrument
+     * @param  object{tick_size:numeric-string|int|float,tick_value:numeric-string|int|float,contract_size:numeric-string|int|float,quote_currency:string,base_currency:string,symbol:string}  $instrument
      * @param  object{currency:string}  $account
      * @return array{
      *   tick_value_in_account_currency:float,
+     *   quote_to_account_rate:float,
      *   fx_rate_quote_to_usd:float|null,
-     *   fx_symbol_used:string|null
+     *   fx_symbol_used:string|null,
+     *   fx_rate_used:float,
+     *   fx_pair_used:string,
+     *   fx_rate_provenance_at:string|null
      * }
      *
      * @throws ValidationException
@@ -843,46 +858,118 @@ class TradeController extends Controller
         object $account,
         CarbonImmutable $tradeDate
     ): array {
-        $quoteCurrency = strtoupper(trim((string) ($instrument->quote_currency ?? '')));
-        $accountCurrency = strtoupper(trim((string) ($account->currency ?? 'USD')));
-        $baseTickValue = (float) ($instrument->tick_value ?? 0);
-
-        if ($baseTickValue <= 0) {
+        $spec = InstrumentSpec::fromArray([
+            'contract_size' => (float) ($instrument->contract_size ?? 0),
+            'tick_size' => (float) ($instrument->tick_size ?? 0),
+            'tick_value' => (float) ($instrument->tick_value ?? 0),
+            'quote_currency' => (string) ($instrument->quote_currency ?? ''),
+            'base_currency' => (string) ($instrument->base_currency ?? ''),
+            'rounding_policy' => 'half_up_6',
+        ]);
+        if (! $spec->isValid()) {
             throw ValidationException::withMessages([
-                'instrument_id' => ['Instrument tick value must be greater than zero.'],
+                'instrument_id' => ['Instrument contract and tick specification is invalid.'],
             ]);
         }
 
+        $quoteCurrency = $spec->quoteCurrency();
+        $accountCurrency = strtoupper(trim((string) ($account->currency ?? 'USD')));
+
         $quoteToAccountRate = 1.0;
+        $fxRateUsed = 1.0;
+        $fxPairUsed = $quoteCurrency.$accountCurrency;
+        $fxProvenanceAt = $tradeDate->toIso8601String();
+
         if ($quoteCurrency !== '' && $accountCurrency !== '' && $quoteCurrency !== $accountCurrency) {
-            $resolved = $this->currencyConversionService->resolveRateOrNull($quoteCurrency, $accountCurrency, $tradeDate);
-            if ($resolved === null || $resolved <= 0) {
+            if ($quoteCurrency !== 'USD' && $accountCurrency !== 'USD') {
+                $quoteToUsd = $this->currencyConversionService->resolveRateWithProvenance($quoteCurrency, 'USD', $tradeDate);
+                $usdToAccount = $this->currencyConversionService->resolveRateWithProvenance('USD', $accountCurrency, $tradeDate);
+                if (! is_array($quoteToUsd) || ! is_array($usdToAccount)) {
+                    throw ValidationException::withMessages([
+                        'instrument_id' => [sprintf(
+                            'Missing FX conversion path for %s to %s via USD.',
+                            $quoteCurrency,
+                            $accountCurrency
+                        )],
+                    ]);
+                }
+
+                $quoteToAccountRate = (float) $quoteToUsd['rate'] * (float) $usdToAccount['rate'];
+                $fxRateUsed = $quoteToAccountRate;
+                $fxPairUsed = (string) $quoteToUsd['pair'].'>'.(string) $usdToAccount['pair'];
+                $fxProvenanceAt = $this->oldestIsoTimestamp(
+                    $quoteToUsd['rate_updated_at'] ?? null,
+                    $usdToAccount['rate_updated_at'] ?? null
+                ) ?? $tradeDate->toIso8601String();
+            } else {
+                $resolved = $this->currencyConversionService->resolveRateWithProvenance($quoteCurrency, $accountCurrency, $tradeDate);
+                if (! is_array($resolved) || (float) ($resolved['rate'] ?? 0) <= 0) {
+                    throw ValidationException::withMessages([
+                        'instrument_id' => [sprintf(
+                            'Missing FX conversion rate for %s to %s.',
+                            $quoteCurrency,
+                            $accountCurrency
+                        )],
+                    ]);
+                }
+
+                $quoteToAccountRate = (float) $resolved['rate'];
+                $fxRateUsed = $quoteToAccountRate;
+                $fxPairUsed = (string) $resolved['pair'];
+                $fxProvenanceAt = (string) ($resolved['rate_updated_at'] ?? $tradeDate->toIso8601String());
+            }
+
+            if ($quoteToAccountRate <= 0) {
                 throw ValidationException::withMessages([
                     'instrument_id' => [sprintf(
-                        'Missing FX conversion rate for %s to %s.',
+                        'Invalid FX conversion rate for %s to %s.',
                         $quoteCurrency,
                         $accountCurrency
                     )],
                 ]);
             }
-            $quoteToAccountRate = $resolved;
         }
 
-        $quoteToUsdRate = null;
-        if ($quoteCurrency !== '') {
-            $resolvedQuoteToUsd = $this->currencyConversionService->resolveRateOrNull($quoteCurrency, 'USD', $tradeDate);
-            $quoteToUsdRate = $resolvedQuoteToUsd !== null && $resolvedQuoteToUsd > 0
-                ? $resolvedQuoteToUsd
-                : null;
-        }
+        $quoteToUsd = $this->currencyConversionService->resolveRateWithProvenance($quoteCurrency, 'USD', $tradeDate);
+        $quoteToUsdRate = is_array($quoteToUsd) && (float) ($quoteToUsd['rate'] ?? 0) > 0
+            ? (float) $quoteToUsd['rate']
+            : null;
+        $quoteToUsdPair = $quoteToUsdRate !== null
+            ? (string) ($quoteToUsd['pair'] ?? $quoteCurrency.'USD')
+            : null;
+
+        $tickValueInAccount = $this->instrumentMath->tickValueInAccountCurrency($spec, $quoteToAccountRate);
 
         return [
-            'tick_value_in_account_currency' => $baseTickValue * $quoteToAccountRate,
+            'tick_value_in_account_currency' => $tickValueInAccount,
+            'quote_to_account_rate' => $quoteToAccountRate,
             'fx_rate_quote_to_usd' => $quoteToUsdRate,
-            'fx_symbol_used' => $quoteCurrency !== '' && $quoteCurrency !== 'USD'
-                ? "{$quoteCurrency}USD"
-                : null,
+            'fx_symbol_used' => $quoteToUsdPair,
+            'fx_rate_used' => $fxRateUsed,
+            'fx_pair_used' => $fxPairUsed,
+            'fx_rate_provenance_at' => $fxProvenanceAt,
         ];
+    }
+
+    private function oldestIsoTimestamp(?string $first, ?string $second): ?string
+    {
+        if ($first === null) {
+            return $second;
+        }
+        if ($second === null) {
+            return $first;
+        }
+
+        try {
+            $a = CarbonImmutable::parse($first);
+            $b = CarbonImmutable::parse($second);
+
+            return $a->lessThanOrEqualTo($b)
+                ? $a->toIso8601String()
+                : $b->toIso8601String();
+        } catch (\Throwable) {
+            return $first;
+        }
     }
 
     /**
@@ -1043,6 +1130,12 @@ class TradeController extends Controller
                 'precheck_snapshot',
                 'instrument_tick_size',
                 'instrument_tick_value',
+                'instrument_contract_size',
+                'instrument_quote_to_account_rate',
+                'instrument_quote_currency',
+                'instrument_base_currency',
+                'instrument_rounding_policy',
+                'account_currency',
             ])
             ->all();
     }
@@ -1168,7 +1261,8 @@ class TradeController extends Controller
         int $userId,
         array $contextPayload,
         ?Trade $existingTrade = null,
-        array $responseSourcePayload = []
+        array $responseSourcePayload = [],
+        bool $enforceStrict = true
     ): array {
         $responsesFromRequest = array_key_exists('checklist_responses', $responseSourcePayload);
         $frozenExistingSnapshot = $existingTrade !== null && $this->hasFrozenChecklistSnapshot($existingTrade);
@@ -1265,7 +1359,7 @@ class TradeController extends Controller
             ]];
         }
 
-        if ($enforcementMode === 'strict' && ! $ready) {
+        if ($enforcementMode === 'strict' && ! $ready && $enforceStrict) {
             $this->throwChecklistStrictBlocked(
                 $checklist,
                 $failingRules,
@@ -1383,27 +1477,48 @@ class TradeController extends Controller
             'failed_rule_reasons' => $failedRuleReasons,
         ]);
 
-        throw new HttpResponseException(
-            response()->json([
-                'message' => 'Checklist strict validation failed.',
-                'errors' => [
-                    'checklist' => ['Complete all required checklist rules before saving this trade.'],
+        $checklistMeta = [
+            'id' => $checklist !== null ? (int) $checklist->id : null,
+            'scope' => $checklist !== null ? (string) $checklist->scope : null,
+            'revision' => $checklistVersion ?? ($checklist !== null ? (int) ($checklist->revision ?? 1) : null),
+            'enforcement_mode' => $enforcementMode ?? ($checklist !== null ? (string) $checklist->enforcement_mode : 'strict'),
+            'account_id' => $checklist !== null && $checklist->account_id !== null ? (int) $checklist->account_id : null,
+            'strategy_model_id' => $checklist !== null && $checklist->strategy_model_id !== null ? (int) $checklist->strategy_model_id : null,
+        ];
+
+        $response = ApiErrorResponder::errorV2(
+            request: request(),
+            status: 422,
+            code: 'checklist_strict_validation_failed',
+            message: 'Checklist strict validation failed.',
+            details: [[
+                'field' => 'checklist',
+                'message' => 'Complete all required checklist rules before saving this trade.',
+            ]],
+            legacyErrors: [
+                'checklist' => ['Complete all required checklist rules before saving this trade.'],
+            ],
+            meta: [
+                'violation' => [
+                    'failing_rules' => $failingRules,
+                    'failed_required_rule_ids' => $failedRequiredRuleIds,
+                    'failed_rule_reasons' => $failedRuleReasons,
+                    'failedRequiredRuleIds' => $failedRequiredRuleIds,
+                    'failedRuleReasons' => $failedRuleReasons,
+                    'checklist' => $checklistMeta,
                 ],
-                'failing_rules' => $failingRules,
-                'failed_required_rule_ids' => $failedRequiredRuleIds,
-                'failed_rule_reasons' => $failedRuleReasons,
-                'failedRequiredRuleIds' => $failedRequiredRuleIds,
-                'failedRuleReasons' => $failedRuleReasons,
-                'checklist' => [
-                    'id' => $checklist !== null ? (int) $checklist->id : null,
-                    'scope' => $checklist !== null ? (string) $checklist->scope : null,
-                    'revision' => $checklistVersion ?? ($checklist !== null ? (int) ($checklist->revision ?? 1) : null),
-                    'enforcement_mode' => $enforcementMode ?? ($checklist !== null ? (string) $checklist->enforcement_mode : 'strict'),
-                    'account_id' => $checklist !== null && $checklist->account_id !== null ? (int) $checklist->account_id : null,
-                    'strategy_model_id' => $checklist !== null && $checklist->strategy_model_id !== null ? (int) $checklist->strategy_model_id : null,
-                ],
-            ], 422)
+            ]
         );
+
+        $payload = $response->getData(true);
+        $payload['failing_rules'] = $failingRules;
+        $payload['failed_required_rule_ids'] = $failedRequiredRuleIds;
+        $payload['failed_rule_reasons'] = $failedRuleReasons;
+        $payload['failedRequiredRuleIds'] = $failedRequiredRuleIds;
+        $payload['failedRuleReasons'] = $failedRuleReasons;
+        $payload['checklist'] = $checklistMeta;
+
+        throw new HttpResponseException($response->setData($payload));
     }
 
     private function hasFrozenChecklistSnapshot(Trade $trade): bool
@@ -1594,7 +1709,12 @@ class TradeController extends Controller
      *   stats:array<string,float>
      * }
      */
-    private function evaluateRiskPolicy(array $payloadWithMetrics, object $account, ?int $excludeTradeId): array
+    private function evaluateRiskPolicy(
+        array $payloadWithMetrics,
+        object $account,
+        ?int $excludeTradeId,
+        ?string $actorRole = null
+    ): array
     {
         return $this->tradeRiskPolicyService->evaluate([
             'account_id' => (int) $account->id,
@@ -1605,6 +1725,7 @@ class TradeController extends Controller
             'risk_override_reason' => $payloadWithMetrics['risk_override_reason'] ?? null,
             'trade_date' => (string) ($payloadWithMetrics['date'] ?? CarbonImmutable::now()->toIso8601String()),
             'exclude_trade_id' => $excludeTradeId,
+            'actor_role' => $actorRole ?? 'trader',
         ]);
     }
 

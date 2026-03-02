@@ -153,4 +153,31 @@ class TradeCalculationEngineTest extends TestCase
         $this->assertEqualsWithDelta(0.76, $result['realized_r_multiple'], 0.0001);
         $this->assertEqualsWithDelta(1.10085, $result['avg_exit_price'], 0.00001);
     }
+
+    public function test_it_prefers_contract_size_math_over_tick_value_assumptions_when_spec_is_present(): void
+    {
+        $engine = new TradeCalculationEngine();
+
+        $result = $engine->calculate([
+            'direction' => 'buy',
+            'entry_price' => 1.10000,
+            'stop_loss' => 1.09900,
+            'take_profit' => 1.10200,
+            'actual_exit_price' => 1.10100,
+            'lot_size' => 1.0,
+            'instrument_contract_size' => 100000,
+            'instrument_tick_size' => 0.00001,
+            // Deliberately incorrect to prove contract-size path is used.
+            'instrument_tick_value' => 9.99,
+            'instrument_quote_to_account_rate' => 1.0,
+            'instrument_quote_currency' => 'USD',
+            'instrument_base_currency' => 'EUR',
+            'account_currency' => 'USD',
+            'account_balance_before_trade' => 10000,
+        ]);
+
+        $this->assertEqualsWithDelta(100.0, $result['monetary_risk'], 0.0001);
+        $this->assertEqualsWithDelta(200.0, $result['monetary_reward'], 0.0001);
+        $this->assertEqualsWithDelta(100.0, $result['gross_profit_loss'], 0.0001);
+    }
 }

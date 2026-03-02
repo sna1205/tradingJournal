@@ -54,6 +54,49 @@ class CurrencyConversionServiceTest extends TestCase
         $this->assertNotNull($resolved);
         $this->assertEqualsWithDelta(1.1, (float) $resolved, 0.0000001);
     }
+
+    public function test_it_returns_inverse_pair_provenance_when_only_inverse_rate_exists(): void
+    {
+        FxRateSnapshot::query()->create([
+            'from_currency' => 'EUR',
+            'to_currency' => 'USD',
+            'snapshot_date' => now()->toDateString(),
+            'rate' => 1.1000000000,
+            'rate_updated_at' => now(),
+        ]);
+
+        $service = new CurrencyConversionService();
+        $resolved = $service->resolveRateWithProvenance('USD', 'EUR', now());
+
+        $this->assertNotNull($resolved);
+        $this->assertEqualsWithDelta(0.9090909091, (float) ($resolved['rate'] ?? 0), 0.0000001);
+        $this->assertSame('EURUSD', (string) ($resolved['pair'] ?? ''));
+    }
+
+    public function test_it_returns_cross_pair_provenance_for_non_usd_crosses(): void
+    {
+        FxRateSnapshot::query()->create([
+            'from_currency' => 'GBP',
+            'to_currency' => 'USD',
+            'snapshot_date' => now()->toDateString(),
+            'rate' => 1.2500000000,
+            'rate_updated_at' => now()->subMinute(),
+        ]);
+        FxRateSnapshot::query()->create([
+            'from_currency' => 'USD',
+            'to_currency' => 'JPY',
+            'snapshot_date' => now()->toDateString(),
+            'rate' => 150.0000000000,
+            'rate_updated_at' => now(),
+        ]);
+
+        $service = new CurrencyConversionService();
+        $resolved = $service->resolveRateWithProvenance('GBP', 'JPY', now());
+
+        $this->assertNotNull($resolved);
+        $this->assertEqualsWithDelta(187.5, (float) ($resolved['rate'] ?? 0), 0.0000001);
+        $this->assertSame('GBPUSD>USDJPY', (string) ($resolved['pair'] ?? ''));
+    }
 }
 
 class InMemoryPriceFeedService implements PriceFeedService

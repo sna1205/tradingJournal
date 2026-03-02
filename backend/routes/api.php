@@ -81,27 +81,33 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('trade-checklist/resolve', [TradeChecklistResponseController::class, 'resolve']);
     Route::get('trade-rules/resolve', [TradeChecklistResponseController::class, 'resolve']);
     Route::post('trades/precheck', [TradeController::class, 'precheck'])->middleware('throttle:trades-precheck');
-    Route::apiResource('trades', TradeController::class);
+    Route::get('trades', [TradeController::class, 'index']);
+    Route::post('trades', [TradeController::class, 'store'])->middleware(['throttle:trade-writes', 'idempotency:required']);
+    Route::get('trades/{trade}', [TradeController::class, 'show']);
+    Route::put('trades/{trade}', [TradeController::class, 'update'])->middleware('throttle:trade-writes');
+    Route::patch('trades/{trade}', [TradeController::class, 'update'])->middleware('throttle:trade-writes');
+    Route::delete('trades/{trade}', [TradeController::class, 'destroy'])->middleware('throttle:trade-writes');
     Route::get('trades/{trade}/checklist-responses', [TradeChecklistResponseController::class, 'show']);
-    Route::put('trades/{trade}/checklist-responses', [TradeChecklistResponseController::class, 'upsert']);
+    Route::put('trades/{trade}/checklist-responses', [TradeChecklistResponseController::class, 'upsert'])->middleware('throttle:trade-writes');
     Route::get('trades/{trade}/rule-responses', [TradeChecklistResponseController::class, 'show']);
-    Route::put('trades/{trade}/rule-responses', [TradeChecklistResponseController::class, 'upsert']);
+    Route::put('trades/{trade}/rule-responses', [TradeChecklistResponseController::class, 'upsert'])->middleware('throttle:trade-writes');
     Route::get('trades/{trade}/legs', [TradeLegController::class, 'index']);
-    Route::post('trades/{trade}/legs', [TradeLegController::class, 'store']);
+    Route::post('trades/{trade}/legs', [TradeLegController::class, 'store'])->middleware(['throttle:trade-writes', 'idempotency']);
     Route::get('trades/{trade}/psychology', [TradePsychologyController::class, 'show']);
-    Route::put('trades/{trade}/psychology', [TradePsychologyController::class, 'upsert']);
-    Route::put('trade-legs/{tradeLeg}', [TradeLegController::class, 'update']);
-    Route::delete('trade-legs/{tradeLeg}', [TradeLegController::class, 'destroy']);
-    Route::post('trades/{trade}/images', [TradeImageController::class, 'store']);
-    Route::put('trade-images/{tradeImage}', [TradeImageController::class, 'update']);
-    Route::delete('trade-images/{tradeImage}', [TradeImageController::class, 'destroy']);
+    Route::put('trades/{trade}/psychology', [TradePsychologyController::class, 'upsert'])->middleware('throttle:trade-writes');
+    Route::put('trade-legs/{tradeLeg}', [TradeLegController::class, 'update'])->middleware(['throttle:trade-writes', 'idempotency']);
+    Route::delete('trade-legs/{tradeLeg}', [TradeLegController::class, 'destroy'])->middleware(['throttle:trade-writes', 'idempotency']);
+    Route::post('trades/{trade}/images', [TradeImageController::class, 'store'])->middleware(['throttle:upload-writes', 'idempotency']);
+    Route::put('trade-images/{tradeImage}', [TradeImageController::class, 'update'])->middleware('throttle:upload-writes');
+    Route::delete('trade-images/{tradeImage}', [TradeImageController::class, 'destroy'])->middleware('throttle:upload-writes');
     Route::get('reports/export.csv', [ReportController::class, 'exportCsvFromQuery'])->middleware('throttle:reports-export');
     Route::get('reports/{report}/run', [ReportController::class, 'run']);
     Route::get('reports/{report}/export.csv', [ReportController::class, 'exportCsv'])->middleware('throttle:reports-export');
     Route::apiResource('reports', ReportController::class);
-    Route::apiResource('missed-trades', MissedTradeController::class);
-    Route::post('missed-trades/{missedTrade}/images', [MissedTradeImageController::class, 'store']);
-    Route::delete('missed-trade-images/{missedTradeImage}', [MissedTradeImageController::class, 'destroy']);
+    Route::apiResource('missed-trades', MissedTradeController::class)
+        ->middlewareFor(['store', 'update', 'destroy'], 'throttle:trade-writes');
+    Route::post('missed-trades/{missedTrade}/images', [MissedTradeImageController::class, 'store'])->middleware(['throttle:upload-writes', 'idempotency']);
+    Route::delete('missed-trade-images/{missedTradeImage}', [MissedTradeImageController::class, 'destroy'])->middleware('throttle:upload-writes');
     Route::get('portfolio/analytics', [AnalyticsController::class, 'portfolioAnalytics'])->middleware('throttle:analytics-high');
 
     Route::prefix('analytics')->middleware('throttle:analytics-high')->group(function () {

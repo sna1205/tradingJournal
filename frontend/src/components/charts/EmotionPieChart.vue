@@ -1,7 +1,11 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { storeToRefs } from 'pinia'
+import VChart from 'vue-echarts'
+import { ensurePieChartsRegistered } from '@/components/charts/echartsSetupPie'
 import { useUiStore } from '@/stores/uiStore'
+
+ensurePieChartsRegistered()
 
 interface EmotionSlice {
   emotion: string

@@ -6,6 +6,7 @@ import {
   createLocalMissedTrade,
   createLocalTrade,
   fetchLocalAccounts,
+  isOfflineModeEnabled,
   setOfflineModeEnabled,
 } from '@/services/localFallback'
 import { setScope } from '@/services/storageScope'
@@ -58,6 +59,10 @@ describe('localFallback IndexedDB persistence controls', () => {
     installMemoryStorage()
     await __resetLocalFallbackPersistenceForTests()
     setScope({ userId: null, accountId: null })
+  })
+
+  it('is disabled by default for sensitive offline fallback persistence', () => {
+    expect(isOfflineModeEnabled()).toBe(false)
   })
 
   it('disables sensitive persistence when offline mode is OFF', async () => {

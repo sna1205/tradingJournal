@@ -1,4 +1,5 @@
-import axios, { type InternalAxiosRequestConfig } from 'axios'
+import axios, { AxiosHeaders, type InternalAxiosRequestConfig } from 'axios'
+import { createIdempotencyKey } from '@/utils/idempotency'
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '/api'
 const LEGACY_AUTH_KEYS = ['tj_auth_token', 'tj_auth_user_id']
@@ -48,6 +49,14 @@ api.interceptors.request.use(async (config: InternalAxiosRequestConfig) => {
     await ensureCsrfCookie()
   }
 
+  if (requiresIdempotencyKey(config)) {
+    const headers = AxiosHeaders.from(config.headers ?? {})
+    if (!headers.has('Idempotency-Key')) {
+      headers.set('Idempotency-Key', createIdempotencyKey())
+    }
+    config.headers = headers
+  }
+
   return config
 })
 
@@ -71,6 +80,45 @@ function requiresCsrf(method?: string): boolean {
     || normalized === 'put'
     || normalized === 'patch'
     || normalized === 'delete'
+}
+
+function requiresIdempotencyKey(config: InternalAxiosRequestConfig): boolean {
+  const method = String(config.method ?? 'get').toLowerCase()
+  if (method !== 'post') {
+    return false
+  }
+
+  const path = normalizeRequestPath(config.url)
+  return path === '/trades'
+    || /^\/trades\/\d+\/legs$/.test(path)
+    || /^\/trades\/\d+\/images$/.test(path)
+}
+
+function normalizeRequestPath(rawUrl?: string): string {
+  const raw = String(rawUrl ?? '').trim()
+  if (raw === '') {
+    return '/'
+  }
+
+  let path = raw
+  try {
+    path = new URL(raw, 'http://localhost').pathname
+  } catch {
+    path = raw.split('?')[0] ?? raw
+  }
+
+  if (!path.startsWith('/')) {
+    path = `/${path}`
+  }
+
+  if (path.startsWith('/api/')) {
+    return path.slice(4)
+  }
+  if (path === '/api') {
+    return '/'
+  }
+
+  return path
 }
 
 function resolveApiOrigin(baseUrl: string): string {

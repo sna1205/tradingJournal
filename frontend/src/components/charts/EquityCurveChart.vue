@@ -1,7 +1,11 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { storeToRefs } from 'pinia'
+import VChart from 'vue-echarts'
+import { ensureChartsRegistered } from '@/components/charts/echartsSetup'
 import { useUiStore } from '@/stores/uiStore'
+
+ensureChartsRegistered()
 
 const props = defineProps<{
   points: Array<{ date: string; equity: number }>

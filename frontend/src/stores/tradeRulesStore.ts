@@ -2,14 +2,15 @@ import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
 import api from '@/services/api'
 import { createRequestManager, isAbortError, stableSerialize } from '@/services/requestManager'
+import { normalizeApiError } from '@/utils/apiError'
 import type {
   Checklist,
   ChecklistItem,
   TradeChecklistExecutionSnapshot,
   TradeChecklistItemWithResponse,
   TradeChecklistReadiness,
-  TradeChecklistResolverContext,
   TradeChecklistResponsePayload,
+  TradeChecklistResolverContext,
   TradeChecklistResponseRecord,
 } from '@/types/rules'
 
@@ -68,6 +69,7 @@ function buildReadiness(items: TradeChecklistItemWithResponse[]): TradeChecklist
         checklist_item_id: item.id,
         title: item.title,
         category: item.category,
+        reason: typeof item.response.reason === 'string' ? item.response.reason : undefined,
       })),
     ready: totalRequired === 0 || completedRequired >= totalRequired,
   }
@@ -94,6 +96,8 @@ function buildFallbackResolverContext(
   }
 }
 
+type ServerReadinessReason = NonNullable<TradeChecklistResponsePayload['failing_rules']>[number]
+
 export const useTradeRulesStore = defineStore('tradeRules', () => {
   const requestManager = createRequestManager()
   const loading = ref(false)
@@ -103,6 +107,8 @@ export const useTradeRulesStore = defineStore('tradeRules', () => {
   const items = ref<TradeChecklistItemWithResponse[]>([])
   const archivedResponses = ref<TradeChecklistResponseRecord[]>([])
   const readiness = ref<TradeChecklistReadiness>(emptyReadiness())
+  const serverReadiness = ref<TradeChecklistReadiness>(emptyReadiness())
+  const serverFailingRules = ref<ServerReadinessReason[]>([])
   const resolverContext = ref<TradeChecklistResolverContext | null>(null)
   const executionSnapshot = ref<TradeChecklistExecutionSnapshot | null>(null)
   const submitAttempted = ref(false)
@@ -122,6 +128,44 @@ export const useTradeRulesStore = defineStore('tradeRules', () => {
   const enforcementMode = computed(() => checklist.value?.enforcement_mode ?? 'soft')
   const isStrict = computed(() => enforcementMode.value === 'strict')
   const checklistIncomplete = computed(() => !readiness.value.ready)
+  const strictSubmitBlocked = computed(() =>
+    isStrict.value
+      && hasChecklist.value
+      && !serverReadiness.value.ready
+  )
+  const serverReadinessMismatch = computed(() =>
+    readiness.value.ready !== serverReadiness.value.ready
+      || readiness.value.completed_required !== serverReadiness.value.completed_required
+      || readiness.value.total_required !== serverReadiness.value.total_required
+  )
+  const serverReadinessReasons = computed(() => {
+    if (serverFailingRules.value.length > 0) {
+      return serverFailingRules.value.map((entry) => ({
+        checklist_item_id: entry.checklist_item_id,
+        title: entry.title,
+        category: entry.category,
+        reason: entry.reason ?? 'Rule requirement not met by server evaluation.',
+      }))
+    }
+
+    const fromReadiness = serverReadiness.value.missing_required.map((entry) => ({
+      checklist_item_id: entry.checklist_item_id,
+      title: entry.title,
+      category: entry.category,
+      reason: entry.reason ?? 'Rule requirement not met by server evaluation.',
+    }))
+    if (fromReadiness.length > 0) return fromReadiness
+
+    const snapshot = executionSnapshot.value
+    if (!snapshot || snapshot.failed_rule_ids.length === 0) return []
+
+    return snapshot.failed_rule_ids.map((ruleId, index) => ({
+      checklist_item_id: ruleId,
+      title: snapshot.failed_rule_titles[index] || `Rule #${ruleId}`,
+      category: 'Checklist',
+      reason: 'Failed in server execution artifact.',
+    }))
+  })
   const hasChecklist = computed(() => checklist.value !== null)
   const resolverContextCurrent = computed(() => {
     const context = resolverContext.value
@@ -143,6 +187,8 @@ export const useTradeRulesStore = defineStore('tradeRules', () => {
     items.value = []
     archivedResponses.value = []
     readiness.value = emptyReadiness()
+    serverReadiness.value = emptyReadiness()
+    serverFailingRules.value = []
     resolverContext.value = null
     executionSnapshot.value = null
     error.value = null
@@ -157,7 +203,9 @@ export const useTradeRulesStore = defineStore('tradeRules', () => {
     checklist.value = payload.responses.checklist
     items.value = payload.responses.items
     archivedResponses.value = payload.responses.archived_responses ?? []
-    readiness.value = payload.readiness
+    readiness.value = buildReadiness(payload.responses.items)
+    serverReadiness.value = payload.readiness
+    serverFailingRules.value = payload.failing_rules ?? []
     resolverContext.value = payload.context ?? buildFallbackResolverContext(
       contextAccountId.value,
       contextStrategyModelId.value,
@@ -168,6 +216,15 @@ export const useTradeRulesStore = defineStore('tradeRules', () => {
 
   function rebuildReadinessLocal() {
     readiness.value = buildReadiness(items.value)
+  }
+
+  function applyServerReadinessPreview(payload: {
+    readiness?: TradeChecklistReadiness
+    failing_rules?: TradeChecklistResponsePayload['failing_rules']
+  } | null | undefined) {
+    if (!payload?.readiness) return
+    serverReadiness.value = payload.readiness
+    serverFailingRules.value = payload.failing_rules ?? []
   }
 
   async function loadForContext(
@@ -213,18 +270,21 @@ export const useTradeRulesStore = defineStore('tradeRules', () => {
         return
       }
       if (requestVersion !== loadRequestVersion) return
+      const normalized = normalizeApiError(err)
 
       checklist.value = null
       items.value = []
       archivedResponses.value = []
       readiness.value = emptyReadiness()
+      serverReadiness.value = emptyReadiness()
+      serverFailingRules.value = []
       resolverContext.value = buildFallbackResolverContext(
         contextAccountId.value,
         contextStrategyModelId.value,
         contextTradeId.value
       )
       executionSnapshot.value = null
-      error.value = 'Failed to load trading rules.'
+      error.value = normalized.message
     } finally {
       if (requestVersion === loadRequestVersion) {
         loading.value = false
@@ -272,8 +332,8 @@ export const useTradeRulesStore = defineStore('tradeRules', () => {
         }
       )
       applyPayload(data)
-    } catch {
-      error.value = 'Failed to persist rule responses.'
+    } catch (err) {
+      error.value = normalizeApiError(err).message
     } finally {
       saving.value = false
       if (queuedPersist) {
@@ -338,6 +398,7 @@ export const useTradeRulesStore = defineStore('tradeRules', () => {
     items,
     archivedResponses,
     readiness,
+    serverReadiness,
     resolverContext,
     executionSnapshot,
     resolverContextCurrent,
@@ -350,11 +411,15 @@ export const useTradeRulesStore = defineStore('tradeRules', () => {
     enforcementMode,
     isStrict,
     checklistIncomplete,
+    strictSubmitBlocked,
+    serverReadinessMismatch,
+    serverReadinessReasons,
     hasChecklist,
     resetState,
     loadForContext,
     loadForCreate,
     loadForTrade,
+    applyServerReadinessPreview,
     updateResponse,
     markSubmitAttempted,
     clearSubmitAttempted,

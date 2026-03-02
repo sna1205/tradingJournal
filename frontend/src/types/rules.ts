@@ -3,6 +3,16 @@ export type ChecklistEnforcementMode = 'soft' | 'strict'
 export type ChecklistItemType = 'checkbox' | 'dropdown' | 'number' | 'text' | 'scale'
 export type ChecklistRuleWeight = 'hard' | 'soft'
 export type ChecklistNumberComparator = '>' | '>=' | '<' | '<=' | '=' | 'equals' | 'between'
+export type ChecklistRuleType = 'boolean' | 'numeric' | 'select' | 'auto_metric'
+export type ChecklistRuleOperator = '>' | '>=' | '<' | '<=' | '==' | '!=' | 'in' | 'not_in'
+
+export interface ChecklistRuleDefinition {
+  type: ChecklistRuleType
+  metric_key?: string | null
+  operator: ChecklistRuleOperator
+  threshold: number | string | boolean | Array<number | string | boolean>
+  required: boolean
+}
 
 export interface Checklist {
   id: number
@@ -28,6 +38,7 @@ export interface Checklist {
 }
 
 export interface ChecklistItemConfigScale {
+  rule?: ChecklistRuleDefinition
   min: number
   max: number
   labels?: Record<number, string>
@@ -40,6 +51,7 @@ export interface ChecklistItemConfigScale {
 }
 
 export interface ChecklistItemConfigNumber {
+  rule?: ChecklistRuleDefinition
   min?: number
   max?: number
   step?: number
@@ -54,6 +66,7 @@ export interface ChecklistItemConfigNumber {
 }
 
 export interface ChecklistItemConfigDropdown {
+  rule?: ChecklistRuleDefinition
   options: string[]
   auto?: string
   weight?: ChecklistRuleWeight
@@ -61,6 +74,7 @@ export interface ChecklistItemConfigDropdown {
 }
 
 export interface ChecklistItemConfigText {
+  rule?: ChecklistRuleDefinition
   maxLength?: number
   auto?: string
   weight?: ChecklistRuleWeight
@@ -68,7 +82,7 @@ export interface ChecklistItemConfigText {
 }
 
 export type ChecklistItemConfig =
-  | Record<string, never>
+  | ({ rule?: ChecklistRuleDefinition } & Record<string, unknown>)
   | ChecklistItemConfigScale
   | ChecklistItemConfigNumber
   | ChecklistItemConfigDropdown
@@ -94,6 +108,7 @@ export interface TradeChecklistResponseRecord {
   value: unknown
   is_completed: boolean
   completed_at: string | null
+  reason?: string | null
   archived?: boolean
   title?: string
 }
@@ -110,6 +125,7 @@ export interface TradeChecklistReadiness {
     checklist_item_id: number
     title: string
     category: string
+    reason?: string
   }>
   ready: boolean
 }
@@ -125,6 +141,7 @@ export interface TradeChecklistResponsePayload {
     checklist_item_id: number
     title: string
     category: string
+    reason?: string
   }>
   context?: TradeChecklistResolverContext
   execution_snapshot?: TradeChecklistExecutionSnapshot

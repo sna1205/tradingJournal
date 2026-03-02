@@ -8,6 +8,7 @@ use App\Models\Checklist;
 use App\Models\Trade;
 use App\Services\ChecklistService;
 use App\Services\TradeChecklistService;
+use App\Support\ApiErrorResponder;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Validator;
 use Illuminate\Validation\ValidationException;
@@ -84,12 +85,19 @@ class TradeChecklistResponseController extends Controller
         $userId = (int) $request->user()->id;
 
         if ($this->hasFrozenExecutionSnapshot($trade)) {
-            return response()->json([
-                'message' => 'Rule responses are frozen for this trade execution snapshot.',
-                'errors' => [
+            return ApiErrorResponder::errorV2(
+                request: $request,
+                status: 422,
+                code: 'trade_checklist_snapshot_frozen',
+                message: 'Rule responses are frozen for this trade execution snapshot.',
+                details: [[
+                    'field' => 'checklist',
+                    'message' => 'Historical rule responses are immutable for frozen trades.',
+                ]],
+                legacyErrors: [
                     'checklist' => ['Historical rule responses are immutable for frozen trades.'],
-                ],
-            ], 422);
+                ]
+            );
         }
 
         $validator = Validator::make($request->all(), [

@@ -2,7 +2,6 @@
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useRoute, useRouter } from 'vue-router'
-import type { AxiosError } from 'axios'
 import { ArrowLeft, Plus, Trash2 } from 'lucide-vue-next'
 import GlassPanel from '@/components/layout/GlassPanel.vue'
 import BaseInput from '@/components/form/BaseInput.vue'
@@ -14,6 +13,7 @@ import { useSyncStatusStore } from '@/stores/syncStatusStore'
 import { useTradeStore } from '@/stores/tradeStore'
 import { useUiStore } from '@/stores/uiStore'
 import type { MissedTrade, MissedTradeImage } from '@/types/trade'
+import { normalizeApiError, type NormalizedError } from '@/utils/apiError'
 
 const route = useRoute()
 const router = useRouter()
@@ -26,6 +26,7 @@ const { isFallbackMode } = storeToRefs(syncStatusStore)
 
 const loadingEntry = ref(false)
 const submitAttempted = ref(false)
+const serverFieldErrors = ref<Record<string, string[]>>({})
 const customTag = ref('')
 
 const reasonTagOptions = [
@@ -143,7 +144,10 @@ const selectedInstrumentId = computed({
 })
 
 function fieldError(name: string) {
-  return submitAttempted.value ? formErrors.value[name] : ''
+  if (!submitAttempted.value) return ''
+  const localMessage = formErrors.value[name]
+  if (localMessage) return localMessage
+  return serverFieldErrors.value[name]?.[0] ?? ''
 }
 
 function parseTags(reason: string): string[] {
@@ -239,14 +243,32 @@ function buildPayload(): MissedTradePayload {
 }
 
 function extractErrorMessage(error: unknown): string {
-  const axiosError = error as AxiosError<{ message?: string; errors?: Record<string, string[]> }>
-  const responseMessage = axiosError.response?.data?.message
-  const responseErrors = axiosError.response?.data?.errors
-  const firstValidationError = responseErrors
-    ? Object.values(responseErrors).flat().find((message) => Boolean(message))
-    : null
+  return normalizeApiError(error).message
+}
 
-  return firstValidationError || responseMessage || 'Please review values and try again.'
+function mapServerFieldName(field: string): string {
+  const normalized = field.trim()
+  if (normalized === 'reason') return 'tags'
+  return normalized
+}
+
+function applyServerFieldErrors(normalized: NormalizedError): void {
+  if (!normalized.isValidation) {
+    serverFieldErrors.value = {}
+    return
+  }
+
+  const next: Record<string, string[]> = {}
+  for (const [field, messages] of Object.entries(normalized.fieldErrors)) {
+    const mappedField = mapServerFieldName(field)
+    const cleanedMessages = messages
+      .map((message) => `${message ?? ''}`.trim())
+      .filter((message) => message.length > 0)
+    if (cleanedMessages.length > 0) {
+      next[mappedField] = cleanedMessages
+    }
+  }
+  serverFieldErrors.value = next
 }
 
 function clearPendingImages() {
@@ -393,6 +415,7 @@ async function uploadPendingImages(entry: MissedTrade) {
 
 async function submit() {
   submitAttempted.value = true
+  serverFieldErrors.value = {}
   const firstError = Object.values(formErrors.value)[0]
   if (firstError) {
     uiStore.toast({
@@ -434,10 +457,12 @@ async function submit() {
 
     void router.push('/missed-trades')
   } catch (error) {
+    const normalized = normalizeApiError(error)
+    applyServerFieldErrors(normalized)
     uiStore.toast({
       type: 'error',
       title: 'Failed to save missed setup',
-      message: extractErrorMessage(error),
+      message: normalized.message,
     })
   }
 }
@@ -479,6 +504,7 @@ async function loadEntryIfNeeded() {
   try {
     const entry = await missedTradeStore.fetchMissedTrade(missedTradeId.value)
     setFormFromMissedTrade(entry)
+    serverFieldErrors.value = {}
   } catch {
     uiStore.toast({
       type: 'error',

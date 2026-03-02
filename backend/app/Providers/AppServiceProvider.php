@@ -176,6 +176,34 @@ class AppServiceProvider extends ServiceProvider
             ];
         });
 
+        RateLimiter::for('trade-writes', function (Request $request): array {
+            $ip = (string) ($request->ip() ?? 'unknown');
+            $user = $request->user();
+            $userKey = $user !== null
+                ? "trade-writes:user:{$user->getAuthIdentifier()}"
+                : "trade-writes:user-fallback-ip:{$ip}";
+
+            return [
+                Limit::perMinute(90)->by($userKey),
+                Limit::perSecond(8)->by("trade-writes:burst:{$userKey}"),
+                Limit::perMinute(180)->by("trade-writes:ip:{$ip}"),
+            ];
+        });
+
+        RateLimiter::for('upload-writes', function (Request $request): array {
+            $ip = (string) ($request->ip() ?? 'unknown');
+            $user = $request->user();
+            $userKey = $user !== null
+                ? "upload-writes:user:{$user->getAuthIdentifier()}"
+                : "upload-writes:user-fallback-ip:{$ip}";
+
+            return [
+                Limit::perMinute(30)->by($userKey),
+                Limit::perSecond(3)->by("upload-writes:burst:{$userKey}"),
+                Limit::perMinute(60)->by("upload-writes:ip:{$ip}"),
+            ];
+        });
+
         Gate::policy(Account::class, AccountPolicy::class);
         Gate::policy(Trade::class, TradePolicy::class);
         Gate::policy(Checklist::class, ChecklistPolicy::class);

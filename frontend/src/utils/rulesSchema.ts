@@ -62,11 +62,26 @@ export function checklistRuleWeight(item: ChecklistItem): ChecklistRuleWeight {
 }
 
 export function isAutoValidatedRule(item: ChecklistItem): boolean {
-  const config = (item.config ?? {}) as ChecklistItemConfig & { auto?: string; auto_metric?: string }
-  return Boolean(config.auto || config.auto_metric)
+  const config = (item.config ?? {}) as ChecklistItemConfig & {
+    auto?: string
+    auto_metric?: string
+    rule?: { type?: string; metric_key?: string | null }
+  }
+  return Boolean(
+    config.auto
+    || config.auto_metric
+    || config.rule?.type === 'auto_metric'
+    || config.rule?.metric_key
+  )
 }
 
 export function checklistRuleTypeLabel(item: ChecklistItem): string {
+  const config = (item.config ?? {}) as ChecklistItemConfig & { rule?: { type?: string } }
+  const ruleType = config.rule?.type
+  if (ruleType === 'auto_metric') return 'Auto-validated'
+  if (ruleType === 'numeric') return 'Numeric'
+  if (ruleType === 'select') return 'Select'
+  if (ruleType === 'boolean') return 'Toggle'
   if (isAutoValidatedRule(item)) return 'Auto-validated'
   if (item.type === 'checkbox') return 'Toggle'
   if (item.type === 'number') return 'Numeric'

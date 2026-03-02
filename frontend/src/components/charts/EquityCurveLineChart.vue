@@ -1,7 +1,11 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { storeToRefs } from 'pinia'
+import VChart from 'vue-echarts'
+import { ensureChartsRegistered } from '@/components/charts/echartsSetup'
 import { useUiStore } from '@/stores/uiStore'
+
+ensureChartsRegistered()
 
 const props = withDefaults(
   defineProps<{
@@ -22,7 +26,7 @@ function readVar(name: string, fallback: string) {
 const uiStore = useUiStore()
 const { theme } = storeToRefs(uiStore)
 
-const option = computed(() => {
+const option = computed<Record<string, unknown>>(() => {
   void theme.value
 
   return {

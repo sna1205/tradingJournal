@@ -12,6 +12,8 @@ use Illuminate\Support\Facades\DB;
 class TradeChecklistService
 {
     private const DEFAULT_POSITIVE_MIN = 0.000000001;
+    private const EXPLICIT_RULE_TYPES = ['boolean', 'numeric', 'select', 'auto_metric'];
+    private const EXPLICIT_RULE_OPERATORS = ['>', '>=', '<', '<=', '==', '!=', 'in', 'not_in'];
 
     /**
      * @param array<int,array{checklist_item_id:int,value:mixed}> $responses
@@ -406,6 +408,11 @@ class TradeChecklistService
         $type = (string) $item->type;
         $config = is_array($item->config) ? $item->config : [];
 
+        $explicitRule = $this->resolveExplicitRuleDefinition($config, (bool) $item->required);
+        if ($explicitRule !== null) {
+            return $this->evaluateExplicitRule($explicitRule, $value, $precheckMetrics);
+        }
+
         if ($type === 'number' || $this->usesAutoMetric($config)) {
             return $this->evaluateNumericRule($item, $value, $precheckMetrics);
         }
@@ -459,6 +466,209 @@ class TradeChecklistService
         return !empty($value)
             ? ['passed' => true, 'reason' => null]
             : ['passed' => false, 'reason' => 'Rule requirement not met.'];
+    }
+
+    /**
+     * @param array<string,mixed> $config
+     * @return array{type:string,operator:string,threshold:mixed,required:bool,metric_key:?string}|null
+     */
+    private function resolveExplicitRuleDefinition(array $config, bool $defaultRequired): ?array
+    {
+        $rawRule = $config['rule'] ?? null;
+        if (!is_array($rawRule)) {
+            return null;
+        }
+
+        $type = $this->asTrimmedLowerString($rawRule['type'] ?? null);
+        $operator = $this->asTrimmedLowerString($rawRule['operator'] ?? null);
+        if (
+            $type === null
+            || $operator === null
+            || !in_array($type, self::EXPLICIT_RULE_TYPES, true)
+            || !in_array($operator, self::EXPLICIT_RULE_OPERATORS, true)
+            || !array_key_exists('threshold', $rawRule)
+        ) {
+            return null;
+        }
+
+        $metricKey = $this->asTrimmedString($rawRule['metric_key'] ?? null);
+        if ($type === 'auto_metric' && $metricKey === null) {
+            return null;
+        }
+
+        return [
+            'type' => $type,
+            'operator' => $operator,
+            'threshold' => $rawRule['threshold'],
+            'required' => array_key_exists('required', $rawRule) ? (bool) $rawRule['required'] : $defaultRequired,
+            'metric_key' => $metricKey,
+        ];
+    }
+
+    /**
+     * @param array{type:string,operator:string,threshold:mixed,required:bool,metric_key:?string} $rule
+     * @param array<string,mixed> $precheckMetrics
+     * @return array{passed:bool,reason:?string}
+     */
+    private function evaluateExplicitRule(array $rule, mixed $value, array $precheckMetrics = []): array
+    {
+        $type = $rule['type'];
+        $operator = $rule['operator'];
+        $threshold = $rule['threshold'];
+        $metricKey = $rule['metric_key'];
+
+        $evaluatedValue = $value;
+        if ($type === 'auto_metric' || ($type === 'numeric' && $metricKey !== null)) {
+            if ($metricKey === null) {
+                return ['passed' => false, 'reason' => 'Rule misconfigured: metric_key is required for auto_metric rules.'];
+            }
+
+            $metricValue = $this->readMetricValue($precheckMetrics, $metricKey);
+            if ($metricValue === null) {
+                return [
+                    'passed' => false,
+                    'reason' => sprintf('Missing auto metric "%s" for evaluation.', $metricKey),
+                ];
+            }
+            $evaluatedValue = $metricValue;
+        }
+
+        if ($type === 'numeric' || $type === 'auto_metric') {
+            $numericValue = $this->asFiniteFloat($evaluatedValue);
+            if ($numericValue === null) {
+                return ['passed' => false, 'reason' => 'Numeric value is required.'];
+            }
+
+            if (in_array($operator, ['>', '>=', '<', '<='], true)) {
+                $numericThreshold = $this->asFiniteFloat($threshold);
+                if ($numericThreshold === null) {
+                    return ['passed' => false, 'reason' => 'Rule misconfigured: threshold must be numeric.'];
+                }
+
+                $passed = match ($operator) {
+                    '>' => $numericValue > $numericThreshold,
+                    '>=' => $numericValue >= $numericThreshold,
+                    '<' => $numericValue < $numericThreshold,
+                    '<=' => $numericValue <= $numericThreshold,
+                    default => false,
+                };
+
+                return $passed
+                    ? ['passed' => true, 'reason' => null]
+                    : [
+                        'passed' => false,
+                        'reason' => sprintf(
+                            'Value must be %s %s.',
+                            $this->explicitOperatorLabel($operator),
+                            $this->formatNumber($numericThreshold)
+                        ),
+                    ];
+            }
+
+            if ($operator === '==' || $operator === '!=') {
+                $numericThreshold = $this->asFiniteFloat($threshold);
+                if ($numericThreshold === null) {
+                    return ['passed' => false, 'reason' => 'Rule misconfigured: threshold must be numeric.'];
+                }
+
+                $equal = abs($numericValue - $numericThreshold) < self::DEFAULT_POSITIVE_MIN;
+                $passed = $operator === '==' ? $equal : !$equal;
+                if ($passed) {
+                    return ['passed' => true, 'reason' => null];
+                }
+
+                return [
+                    'passed' => false,
+                    'reason' => sprintf(
+                        'Value must be %s %s.',
+                        $operator === '==' ? 'equal to' : 'not equal to',
+                        $this->formatNumber($numericThreshold)
+                    ),
+                ];
+            }
+
+            return ['passed' => false, 'reason' => 'Rule misconfigured: unsupported operator for numeric rule.'];
+        }
+
+        if ($type === 'boolean') {
+            $boolValue = $this->asBool($evaluatedValue);
+            $boolThreshold = $this->asBool($threshold);
+            if ($boolValue === null || $boolThreshold === null) {
+                return ['passed' => false, 'reason' => 'Rule misconfigured: boolean rule requires true/false values.'];
+            }
+
+            $equal = $boolValue === $boolThreshold;
+            $passed = $operator === '==' ? $equal : ($operator === '!=' ? !$equal : false);
+            if ($passed) {
+                return ['passed' => true, 'reason' => null];
+            }
+
+            return [
+                'passed' => false,
+                'reason' => sprintf(
+                    'Value must be %s %s.',
+                    $operator === '==' ? 'equal to' : 'not equal to',
+                    $boolThreshold ? 'true' : 'false'
+                ),
+            ];
+        }
+
+        if ($type === 'select') {
+            $selected = is_scalar($evaluatedValue) ? trim((string) $evaluatedValue) : '';
+            if ($selected === '') {
+                return ['passed' => false, 'reason' => 'A valid option is required.'];
+            }
+
+            if ($operator === 'in' || $operator === 'not_in') {
+                if (!is_array($threshold) || count($threshold) === 0) {
+                    return ['passed' => false, 'reason' => 'Rule misconfigured: in/not_in requires threshold array.'];
+                }
+
+                $allowed = array_values(array_unique(array_map(
+                    fn (mixed $entry): string => trim((string) $entry),
+                    array_filter($threshold, fn (mixed $entry): bool => is_scalar($entry) && trim((string) $entry) !== '')
+                )));
+                if ($allowed === []) {
+                    return ['passed' => false, 'reason' => 'Rule misconfigured: select options are missing.'];
+                }
+
+                $inSet = in_array($selected, $allowed, true);
+                $passed = $operator === 'in' ? $inSet : !$inSet;
+                if ($passed) {
+                    return ['passed' => true, 'reason' => null];
+                }
+
+                return [
+                    'passed' => false,
+                    'reason' => $operator === 'in'
+                        ? 'Selected option is not allowed by this rule.'
+                        : 'Selected option is blocked by this rule.',
+                ];
+            }
+
+            if ($operator === '==' || $operator === '!=') {
+                $target = is_scalar($threshold) ? trim((string) $threshold) : '';
+                if ($target === '') {
+                    return ['passed' => false, 'reason' => 'Rule misconfigured: threshold is required.'];
+                }
+                $equal = $selected === $target;
+                $passed = $operator === '==' ? $equal : !$equal;
+                return $passed
+                    ? ['passed' => true, 'reason' => null]
+                    : [
+                        'passed' => false,
+                        'reason' => sprintf(
+                            'Selected option must be %s %s.',
+                            $operator === '==' ? 'equal to' : 'different from',
+                            $target
+                        ),
+                    ];
+            }
+
+            return ['passed' => false, 'reason' => 'Rule misconfigured: unsupported operator for select rule.'];
+        }
+
+        return ['passed' => false, 'reason' => 'Rule misconfigured: unsupported rule type.'];
     }
 
     /**
@@ -751,6 +961,55 @@ class TradeChecklistService
             '<=' => 'less than or equal to',
             'equals' => 'equal to',
             default => $comparator,
+        };
+    }
+
+    private function explicitOperatorLabel(string $operator): string
+    {
+        return match ($operator) {
+            '>' => 'greater than',
+            '>=' => 'greater than or equal to',
+            '<' => 'less than',
+            '<=' => 'less than or equal to',
+            default => $operator,
+        };
+    }
+
+    private function asTrimmedString(mixed $value): ?string
+    {
+        if (!is_scalar($value)) {
+            return null;
+        }
+
+        $normalized = trim((string) $value);
+        return $normalized === '' ? null : $normalized;
+    }
+
+    private function asTrimmedLowerString(mixed $value): ?string
+    {
+        $normalized = $this->asTrimmedString($value);
+        return $normalized === null ? null : strtolower($normalized);
+    }
+
+    private function asBool(mixed $value): ?bool
+    {
+        if (is_bool($value)) {
+            return $value;
+        }
+
+        if (is_int($value) && ($value === 0 || $value === 1)) {
+            return (bool) $value;
+        }
+
+        if (!is_scalar($value)) {
+            return null;
+        }
+
+        $normalized = strtolower(trim((string) $value));
+        return match ($normalized) {
+            '1', 'true', 'yes', 'y' => true,
+            '0', 'false', 'no', 'n' => false,
+            default => null,
         };
     }
 }

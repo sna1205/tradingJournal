@@ -29,6 +29,14 @@ const props = withDefaults(
     optionalItems: TradeChecklistItemWithResponse[]
     archivedResponses: TradeChecklistResponseRecord[]
     readiness: TradeChecklistReadiness
+    serverReadiness?: TradeChecklistReadiness
+    serverReadinessMismatch?: boolean
+    serverReadinessReasons?: Array<{
+      checklist_item_id: number
+      title: string
+      category: string
+      reason?: string
+    }>
     executionSnapshot?: TradeChecklistExecutionSnapshot | null
     loading?: boolean
     saving?: boolean
@@ -45,6 +53,9 @@ const props = withDefaults(
     showHeader: true,
     riskPrecheck: null,
     executionSnapshot: null,
+    serverReadiness: undefined,
+    serverReadinessMismatch: false,
+    serverReadinessReasons: () => [],
   }
 )
 
@@ -63,6 +74,12 @@ const allItems = computed(() =>
 
 const checkedCount = computed(() => allItems.value.filter((item) => item.response.is_completed).length)
 const totalCount = computed(() => allItems.value.length)
+const resolvedServerReadiness = computed(() => props.serverReadiness ?? props.readiness)
+const serverStatusLabel = computed(() => resolvedServerReadiness.value.ready ? 'Ready' : 'Not Ready')
+const serverBlockingReasons = computed(() =>
+  (props.serverReadinessReasons ?? []).filter((entry) => entry.reason || entry.title)
+)
+const mismatchReasons = computed(() => serverBlockingReasons.value)
 const snapshotFailedRows = computed(() => {
   const snapshot = props.executionSnapshot
   if (!snapshot || snapshot.failed_rule_ids.length === 0) return []
@@ -153,6 +170,36 @@ function toggleItem(item: TradeChecklistItemWithResponse) {
       </div>
 
       <div v-show="cardOpen && !loading && checklist" class="rules-card-body">
+        <section class="rules-server-status">
+          <p class="rules-server-line">
+            <strong>Server says:</strong>
+            <span :class="resolvedServerReadiness.ready ? 'is-ready' : 'is-not-ready'">{{ serverStatusLabel }}</span>
+          </p>
+          <div
+            v-if="strictMode && !resolvedServerReadiness.ready && serverBlockingReasons.length > 0"
+            class="rules-server-blocked"
+          >
+            <p class="rules-server-blocked-title">Blocking reasons from server</p>
+            <p
+              v-for="row in serverBlockingReasons"
+              :key="`server-blocked-${row.checklist_item_id}`"
+              class="rules-server-blocked-row"
+            >
+              {{ row.title }}: {{ row.reason || 'Rule requirement not met.' }}
+            </p>
+          </div>
+          <div v-if="serverReadinessMismatch && mismatchReasons.length > 0" class="rules-server-mismatch">
+            <p class="rules-server-mismatch-title">Local edits differ from server evaluation</p>
+            <p
+              v-for="row in mismatchReasons"
+              :key="`server-mismatch-${row.checklist_item_id}`"
+              class="rules-server-mismatch-row"
+            >
+              {{ row.title }}: {{ row.reason || 'Rule requirement not met.' }}
+            </p>
+          </div>
+        </section>
+
         <section
           v-for="lane in RULE_LANES"
           :key="lane.key"
@@ -274,6 +321,73 @@ function toggleItem(item: TradeChecklistItemWithResponse) {
   padding: 0.72rem 0.78rem;
   display: grid;
   gap: 0.5rem;
+}
+
+.rules-server-status {
+  display: grid;
+  gap: 0.28rem;
+  padding: 0.45rem 0.5rem;
+  border-radius: 10px;
+  border: 1px solid color-mix(in srgb, var(--border) 60%, transparent 40%);
+  background: color-mix(in srgb, var(--panel-soft) 60%, var(--panel) 40%);
+}
+
+.rules-server-line {
+  margin: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.73rem;
+}
+
+.rules-server-line .is-ready {
+  color: color-mix(in srgb, var(--primary) 72%, var(--text) 28%);
+  font-weight: 700;
+}
+
+.rules-server-line .is-not-ready {
+  color: color-mix(in srgb, var(--danger) 72%, var(--text) 28%);
+  font-weight: 700;
+}
+
+.rules-server-mismatch {
+  display: grid;
+  gap: 0.2rem;
+}
+
+.rules-server-blocked {
+  display: grid;
+  gap: 0.2rem;
+}
+
+.rules-server-blocked-title {
+  margin: 0;
+  font-size: 0.68rem;
+  font-weight: 700;
+  color: color-mix(in srgb, var(--danger) 66%, var(--text) 34%);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.rules-server-blocked-row {
+  margin: 0;
+  font-size: 0.7rem;
+  color: var(--muted);
+}
+
+.rules-server-mismatch-title {
+  margin: 0;
+  font-size: 0.68rem;
+  font-weight: 700;
+  color: color-mix(in srgb, var(--danger) 66%, var(--text) 34%);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.rules-server-mismatch-row {
+  margin: 0;
+  font-size: 0.7rem;
+  color: var(--muted);
 }
 
 .rules-lane {

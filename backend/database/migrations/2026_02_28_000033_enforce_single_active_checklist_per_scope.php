@@ -14,15 +14,15 @@ return new class extends Migration
         Schema::table('checklists', function (Blueprint $table): void {
             $table->unsignedBigInteger('active_global_scope_user_id')
                 ->nullable()
-                ->storedAs("CASE WHEN is_active = 1 AND scope = 'global' THEN user_id ELSE NULL END")
+                ->virtualAs("CASE WHEN is_active = 1 AND scope = 'global' THEN user_id ELSE NULL END")
                 ->after('strategy_model_id');
             $table->unsignedBigInteger('active_account_scope_id')
                 ->nullable()
-                ->storedAs("CASE WHEN is_active = 1 AND scope = 'account' THEN account_id ELSE NULL END")
+                ->virtualAs("CASE WHEN is_active = 1 AND scope = 'account' THEN account_id ELSE NULL END")
                 ->after('active_global_scope_user_id');
             $table->unsignedBigInteger('active_strategy_scope_id')
                 ->nullable()
-                ->storedAs("CASE WHEN is_active = 1 AND scope = 'strategy' THEN strategy_model_id ELSE NULL END")
+                ->virtualAs("CASE WHEN is_active = 1 AND scope = 'strategy' THEN strategy_model_id ELSE NULL END")
                 ->after('active_account_scope_id');
 
             $table->unique(['active_global_scope_user_id'], 'checklists_unique_active_global_scope');

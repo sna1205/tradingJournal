@@ -7,10 +7,12 @@ use App\Models\Trade;
 use App\Models\TradeImage;
 use Illuminate\Http\Request;
 use Illuminate\Http\UploadedFile;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Facades\Validator;
 use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
+use Throwable;
 
 class TradeImageController extends Controller
 {
@@ -43,55 +45,94 @@ class TradeImageController extends Controller
 
         $file = $request->file('image');
         if (!$file instanceof UploadedFile) {
-            return response()->json([
-                'message' => 'Image upload is required.',
-            ], 422);
+            throw ValidationException::withMessages([
+                'image' => ['Image upload is required.'],
+            ]);
         }
-
-        $existingCount = (int) $trade->images()->count();
-        if ($existingCount >= self::MAX_IMAGES_PER_TRADE) {
-            return response()->json([
-                'message' => 'Maximum 5 images per trade allowed.',
-            ], 422);
-        }
-
-        $existingBytes = (int) $trade->images()->sum('file_size');
         $incomingBytes = max(0, (int) $file->getSize());
-        if (($existingBytes + $incomingBytes) > self::MAX_TOTAL_BYTES_PER_TRADE) {
-            return response()->json([
-                'message' => 'Total image uploads per trade cannot exceed 20MB.',
-            ], 422);
-        }
 
         $disk = (string) config('filesystems.trade_images_disk', 'public');
         $extension = $this->normalizedExtension($file);
         $fileName = (string) Str::uuid() . '.' . $extension;
         $originalPath = "trades/{$trade->id}/original/{$fileName}";
         $thumbnailPath = "trades/{$trade->id}/thumbs/{$fileName}";
+        $image = null;
+        $storedOriginal = false;
+        $storedThumbnail = false;
 
-        Storage::disk($disk)->putFileAs(
-            "trades/{$trade->id}/original",
-            $file,
-            $fileName
-        );
+        try {
+            DB::transaction(function () use (
+                $trade,
+                $file,
+                $incomingBytes,
+                $disk,
+                $fileName,
+                $originalPath,
+                $thumbnailPath,
+                $extension,
+                $validated,
+                &$image,
+                &$storedOriginal,
+                &$storedThumbnail
+            ): void {
+                /** @var Trade $lockedTrade */
+                $lockedTrade = Trade::query()
+                    ->whereKey((int) $trade->id)
+                    ->lockForUpdate()
+                    ->firstOrFail();
 
-        $this->generateThumbnail($file, $disk, $originalPath, $thumbnailPath, $extension);
+                $existingCount = (int) $lockedTrade->images()->count();
+                if ($existingCount >= self::MAX_IMAGES_PER_TRADE) {
+                    throw ValidationException::withMessages([
+                        'image' => ['Maximum 5 images per trade allowed.'],
+                    ]);
+                }
 
-        $sortOrder = array_key_exists('sort_order', $validated)
-            ? (int) $validated['sort_order']
-            : ((int) ($trade->images()->max('sort_order') ?? 0) + 1);
+                $existingBytes = (int) $lockedTrade->images()->sum('file_size');
+                if (($existingBytes + $incomingBytes) > self::MAX_TOTAL_BYTES_PER_TRADE) {
+                    throw ValidationException::withMessages([
+                        'image' => ['Total image uploads per trade cannot exceed 20MB.'],
+                    ]);
+                }
 
-        $image = $trade->images()->create([
-            'image_url' => $originalPath,
-            'thumbnail_url' => $thumbnailPath,
-            'file_size' => $incomingBytes,
-            'file_type' => (string) $file->getMimeType(),
-            'sort_order' => $sortOrder,
-            'context_tag' => $validated['context_tag'] ?? null,
-            'timeframe' => $validated['timeframe'] ?? null,
-            'annotation_notes' => $validated['annotation_notes'] ?? null,
-        ]);
+                Storage::disk($disk)->putFileAs(
+                    "trades/{$lockedTrade->id}/original",
+                    $file,
+                    $fileName
+                );
+                $storedOriginal = true;
 
+                $this->generateThumbnail($file, $disk, $originalPath, $thumbnailPath, $extension);
+                $storedThumbnail = true;
+
+                $sortOrder = array_key_exists('sort_order', $validated)
+                    ? (int) $validated['sort_order']
+                    : ((int) ($lockedTrade->images()->max('sort_order') ?? 0) + 1);
+
+                $image = $lockedTrade->images()->create([
+                    'image_url' => $originalPath,
+                    'thumbnail_url' => $thumbnailPath,
+                    'file_size' => $incomingBytes,
+                    'file_type' => (string) $file->getMimeType(),
+                    'sort_order' => $sortOrder,
+                    'context_tag' => $validated['context_tag'] ?? null,
+                    'timeframe' => $validated['timeframe'] ?? null,
+                    'annotation_notes' => $validated['annotation_notes'] ?? null,
+                ]);
+            });
+        } catch (ValidationException $exception) {
+            if ($storedOriginal || $storedThumbnail) {
+                Storage::disk($disk)->delete([$originalPath, $thumbnailPath]);
+            }
+            throw $exception;
+        } catch (Throwable $throwable) {
+            if ($storedOriginal || $storedThumbnail) {
+                Storage::disk($disk)->delete([$originalPath, $thumbnailPath]);
+            }
+            throw $throwable;
+        }
+
+        abort_if(!$image instanceof TradeImage, 500, 'Image mutation completed without persisted image row.');
         return response()->json($this->serializeTradeImage($image, $disk), 201);
     }
 

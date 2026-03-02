@@ -10,14 +10,22 @@ use App\Services\Analytics\EquityEngine;
 use App\Services\Analytics\StreakEngine;
 use App\Services\Analytics\TradeMetricsEngine;
 use App\Services\CurrencyConversionService;
+use Carbon\CarbonImmutable;
 use Carbon\CarbonInterface;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\Request;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\Validator;
+use Illuminate\Validation\ValidationException;
 
 class AnalyticsController extends Controller
 {
+    private const MAX_ANALYTICS_WINDOW_DAYS = 366;
+    private const DEFAULT_ANALYTICS_WINDOW_DAYS = 180;
+    private const MAX_CURSOR_PAGE_SIZE = 250;
+    private const DEFAULT_CURSOR_PAGE_SIZE = 120;
+
     public function __construct(
         private readonly EquityEngine $equityEngine,
         private readonly StreakEngine $streakEngine,
@@ -64,6 +72,7 @@ class AnalyticsController extends Controller
         $payload = $this->remember('daily', $request, function () use ($request): array {
             $reportingCurrency = $this->reportingCurrency($request);
             $normalizeForPortfolio = $this->shouldNormalizeForPortfolio($request);
+            $window = $this->resolveAnalyticsWindow($request);
             if ($normalizeForPortfolio) {
                 $rows = $this->chronologicalTrades($request, $reportingCurrency)
                     ->groupBy(fn (Trade $trade): string => (string) $trade->date?->toDateString())
@@ -90,10 +99,19 @@ class AnalyticsController extends Controller
                     ->values()
                     ->all();
 
-                return $rows;
+                if (!$this->shouldCursorPaginate($request)) {
+                    return $rows;
+                }
+
+                $page = $this->cursorPaginateRows($rows, $request);
+                return [
+                    'items' => $page['items'],
+                    'pageInfo' => $page['pageInfo'],
+                    'window' => $window,
+                ];
             }
 
-            return $this->baseQuery($request)
+            $rows = $this->baseQuery($request)
                 ->selectRaw('DATE(`date`) as close_date, COUNT(*) as total_trades, ROUND(SUM(profit_loss), 2) as profit_loss, ROUND(AVG(r_multiple), 4) as average_r, SUM(CASE WHEN profit_loss > 0 THEN 1 ELSE 0 END) as wins')
                 ->groupByRaw('DATE(`date`)')
                 ->orderByRaw('DATE(`date`)')
@@ -110,6 +128,17 @@ class AnalyticsController extends Controller
                 ])
                 ->values()
                 ->all();
+
+            if (!$this->shouldCursorPaginate($request)) {
+                return $rows;
+            }
+
+            $page = $this->cursorPaginateRows($rows, $request);
+            return [
+                'items' => $page['items'],
+                'pageInfo' => $page['pageInfo'],
+                'window' => $window,
+            ];
         });
 
         return response()->json($payload);
@@ -149,16 +178,41 @@ class AnalyticsController extends Controller
         $payload = $this->remember('equity', $request, function () use ($request): array {
             $reportingCurrency = $this->reportingCurrency($request);
             $normalizeForPortfolio = $this->shouldNormalizeForPortfolio($request);
+            $window = $this->resolveAnalyticsWindow($request);
             $trades = $this->chronologicalTrades($request, $normalizeForPortfolio ? $reportingCurrency : null);
             $startingBalance = $this->startingBalance($request, $normalizeForPortfolio ? $reportingCurrency : null);
             $equity = $this->equityEngine->build($trades, $startingBalance);
 
-            return [
+            $base = [
                 'equity_points' => $equity['equity_points'],
                 'cumulative_profit' => $equity['cumulative_profit'],
                 'equity_timestamps' => $equity['equity_timestamps'],
                 'reporting_currency' => $reportingCurrency,
                 'fx_normalized' => $normalizeForPortfolio,
+                'window' => $window,
+            ];
+
+            if (!$this->shouldCursorPaginate($request)) {
+                return $base;
+            }
+
+            $rows = [];
+            $equityPoints = is_array($equity['equity_points'] ?? null) ? $equity['equity_points'] : [];
+            $equityTimestamps = is_array($equity['equity_timestamps'] ?? null) ? $equity['equity_timestamps'] : [];
+            foreach ($equityPoints as $index => $point) {
+                $rows[] = [
+                    'index' => $index,
+                    'equity' => (float) $point,
+                    'timestamp' => (string) ($equityTimestamps[$index] ?? ''),
+                    'cumulative_profit' => (float) ($equity['cumulative_profit'][$index] ?? 0),
+                ];
+            }
+            $page = $this->cursorPaginateRows($rows, $request);
+
+            return [
+                ...$base,
+                'series' => $page['items'],
+                'pageInfo' => $page['pageInfo'],
             ];
         });
 
@@ -669,6 +723,7 @@ class AnalyticsController extends Controller
     private function baseQuery(Request $request): Builder
     {
         $userId = (int) $request->user()->id;
+        $window = $this->resolveAnalyticsWindow($request);
         $filters = $request->only([
             'account_id',
             'account_ids',
@@ -703,12 +758,8 @@ class AnalyticsController extends Controller
         if (!($filters['tag_ids'] ?? null) && ($filters['tags'] ?? null)) {
             $filters['tag_ids'] = $filters['tags'];
         }
-        if (!($filters['date_from'] ?? null) && ($filters['close_date_from'] ?? null)) {
-            $filters['date_from'] = $filters['close_date_from'];
-        }
-        if (!($filters['date_to'] ?? null) && ($filters['close_date_to'] ?? null)) {
-            $filters['date_to'] = $filters['close_date_to'];
-        }
+        $filters['date_from'] = $window['date_from'];
+        $filters['date_to'] = $window['date_to'];
 
         if (is_string($filters['account_ids'] ?? null)) {
             $filters['account_ids'] = array_filter(
@@ -1157,6 +1208,115 @@ class AnalyticsController extends Controller
             'max_drawdown_percent' => round($maxDrawdownPercent, 4),
             'current_drawdown' => round($currentDrawdown, 2),
             'current_drawdown_percent' => round($currentDrawdownPercent, 4),
+        ];
+    }
+
+    /**
+     * @return array{date_from:string,date_to:string}
+     */
+    private function resolveAnalyticsWindow(Request $request): array
+    {
+        $cached = $request->attributes->get('_analytics_window');
+        if (is_array($cached) && isset($cached['date_from'], $cached['date_to'])) {
+            return [
+                'date_from' => (string) $cached['date_from'],
+                'date_to' => (string) $cached['date_to'],
+            ];
+        }
+
+        $validator = Validator::make($request->query(), [
+            'date_from' => ['sometimes', 'date'],
+            'date_to' => ['sometimes', 'date'],
+            'close_date_from' => ['sometimes', 'date'],
+            'close_date_to' => ['sometimes', 'date'],
+            'limit' => ['sometimes', 'integer', 'min:1', 'max:' . self::MAX_CURSOR_PAGE_SIZE],
+            'cursor' => ['sometimes', 'string'],
+        ]);
+        $validated = $validator->validate();
+
+        $fromRaw = $validated['date_from'] ?? $validated['close_date_from'] ?? null;
+        $toRaw = $validated['date_to'] ?? $validated['close_date_to'] ?? null;
+
+        $today = CarbonImmutable::now()->endOfDay();
+        $from = $fromRaw !== null
+            ? CarbonImmutable::parse((string) $fromRaw)->startOfDay()
+            : null;
+        $to = $toRaw !== null
+            ? CarbonImmutable::parse((string) $toRaw)->endOfDay()
+            : null;
+
+        if ($from === null && $to === null) {
+            $to = $today;
+            $from = $to->subDays(self::DEFAULT_ANALYTICS_WINDOW_DAYS - 1)->startOfDay();
+        } elseif ($from !== null && $to === null) {
+            $to = $today->greaterThan($from) ? $today : $from->copy()->endOfDay();
+        } elseif ($from === null && $to !== null) {
+            $from = $to->subDays(self::DEFAULT_ANALYTICS_WINDOW_DAYS - 1)->startOfDay();
+        }
+
+        if ($from->greaterThan($to)) {
+            throw ValidationException::withMessages([
+                'date_range' => ['date_from must be earlier than or equal to date_to.'],
+            ]);
+        }
+
+        $windowDays = $from->diffInDays($to) + 1;
+        if ($windowDays > self::MAX_ANALYTICS_WINDOW_DAYS) {
+            throw ValidationException::withMessages([
+                'date_range' => [sprintf(
+                    'Date window exceeds max of %d days.',
+                    self::MAX_ANALYTICS_WINDOW_DAYS
+                )],
+            ]);
+        }
+
+        $resolved = [
+            'date_from' => $from->toDateString(),
+            'date_to' => $to->toDateString(),
+        ];
+
+        $request->attributes->set('_analytics_window', $resolved);
+        return $resolved;
+    }
+
+    private function shouldCursorPaginate(Request $request): bool
+    {
+        return $request->has('cursor') || $request->has('limit');
+    }
+
+    /**
+     * @param array<int,array<string,mixed>> $rows
+     * @return array{
+     *   items:array<int,array<string,mixed>>,
+     *   pageInfo:array{limit:int,nextCursor:?string,hasMore:bool}
+     * }
+     */
+    private function cursorPaginateRows(array $rows, Request $request): array
+    {
+        $limit = max(1, min(
+            self::MAX_CURSOR_PAGE_SIZE,
+            (int) $request->integer('limit', self::DEFAULT_CURSOR_PAGE_SIZE)
+        ));
+
+        $cursorValue = trim((string) $request->query('cursor', ''));
+        $offset = 0;
+        if ($cursorValue !== '' && ctype_digit($cursorValue)) {
+            $offset = max(0, (int) $cursorValue);
+        }
+
+        $slice = array_slice($rows, $offset, $limit + 1);
+        $hasMore = count($slice) > $limit;
+        if ($hasMore) {
+            array_pop($slice);
+        }
+
+        return [
+            'items' => array_values($slice),
+            'pageInfo' => [
+                'limit' => $limit,
+                'nextCursor' => $hasMore ? (string) ($offset + $limit) : null,
+                'hasMore' => $hasMore,
+            ],
         ];
     }
 }

@@ -1,5 +1,6 @@
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
+import { type AxiosResponseHeaders, type RawAxiosResponseHeaders } from 'axios'
 import api from '@/services/api'
 import {
   enqueueSyncCreate,
@@ -23,6 +24,9 @@ import { scopedKey } from '@/services/storageScope'
 import { useAnalyticsStore } from '@/stores/analyticsStore'
 import { useAccountStore } from '@/stores/accountStore'
 import { useSyncStatusStore } from '@/stores/syncStatusStore'
+import { normalizeApiError } from '@/utils/apiError'
+import { createIdempotencyKey } from '@/utils/idempotency'
+import type { TradeChecklistReadiness } from '@/types/rules'
 import type {
   FxRate,
   Instrument,
@@ -153,6 +157,23 @@ export interface TradePrecheckResult {
     fx_symbol_used?: string | null
     fx_rate_timestamp?: string | null
   }
+  checklist_gate?: {
+    readiness: TradeChecklistReadiness
+    failing_rules: Array<{
+      checklist_item_id: number
+      title: string
+      category: string
+      reason?: string
+    }>
+    failed_required_rule_ids: number[]
+    failed_rule_reasons: Array<{
+      checklist_item_id: number
+      title: string
+      category: string
+      reason?: string
+    }>
+    checklist_incomplete: boolean
+  }
 }
 
 interface TradePrecheckOptions {
@@ -198,8 +219,202 @@ export const useTradeStore = defineStore('trades', () => {
   const tradeTags = ref<TradeTag[]>([])
   const sessionOptions = ref<SessionOption[]>([])
   const includeDraftsUnverified = ref(readTradeQualityPreference())
+  const tradeRevisionById = ref<Record<number, number>>({})
+  const tradeIdByLegId = ref<Record<number, number>>({})
   const requestManager = createRequestManager()
   let fetchTradesRequestVersion = 0
+
+  function readPositiveInt(value: unknown): number | null {
+    const numeric = Number(value)
+    if (!Number.isInteger(numeric) || numeric <= 0) {
+      return null
+    }
+    return numeric
+  }
+
+  function setTradeRevision(tradeId: number, revision: unknown): void {
+    const normalizedTradeId = readPositiveInt(tradeId)
+    const normalizedRevision = readPositiveInt(revision)
+    if (normalizedTradeId === null || normalizedRevision === null) {
+      return
+    }
+    tradeRevisionById.value[normalizedTradeId] = normalizedRevision
+  }
+
+  function clearTradeConcurrencyState(tradeId: number): void {
+    const normalizedTradeId = readPositiveInt(tradeId)
+    if (normalizedTradeId === null) {
+      return
+    }
+
+    delete tradeRevisionById.value[normalizedTradeId]
+    for (const [legId, mappedTradeId] of Object.entries(tradeIdByLegId.value)) {
+      if (mappedTradeId !== normalizedTradeId) continue
+      delete tradeIdByLegId.value[Number(legId)]
+    }
+  }
+
+  function indexTradeLegs(tradeId: number, legs?: TradeLeg[] | null): void {
+    const normalizedTradeId = readPositiveInt(tradeId)
+    if (normalizedTradeId === null || !Array.isArray(legs)) {
+      return
+    }
+
+    for (const leg of legs) {
+      const legId = readPositiveInt(leg?.id)
+      if (legId === null) continue
+      tradeIdByLegId.value[legId] = normalizedTradeId
+    }
+  }
+
+  function captureTradeConcurrencyState(trade: Trade | null | undefined): void {
+    if (!trade) return
+    setTradeRevision(trade.id, trade.revision)
+    indexTradeLegs(trade.id, trade.legs)
+  }
+
+  function captureTradeDetailsConcurrencyState(payload: TradeDetailsResponse): void {
+    captureTradeConcurrencyState(payload.trade)
+    indexTradeLegs(payload.trade.id, payload.legs ?? payload.trade.legs ?? [])
+  }
+
+  function resolveTradeIdForLeg(legId: number): number | null {
+    const normalizedLegId = readPositiveInt(legId)
+    if (normalizedLegId === null) {
+      return null
+    }
+
+    const mapped = readPositiveInt(tradeIdByLegId.value[normalizedLegId])
+    if (mapped !== null) {
+      return mapped
+    }
+
+    for (const trade of trades.value) {
+      if (!Array.isArray(trade.legs)) continue
+      if (trade.legs.some((leg) => readPositiveInt(leg.id) === normalizedLegId)) {
+        tradeIdByLegId.value[normalizedLegId] = trade.id
+        return trade.id
+      }
+    }
+
+    return null
+  }
+
+  function currentTradeRevision(tradeId: number): number | null {
+    const normalizedTradeId = readPositiveInt(tradeId)
+    if (normalizedTradeId === null) {
+      return null
+    }
+
+    const cachedRevision = readPositiveInt(tradeRevisionById.value[normalizedTradeId])
+    if (cachedRevision !== null) {
+      return cachedRevision
+    }
+
+    const fromTradesState = trades.value.find((trade) => trade.id === normalizedTradeId)
+    const snapshotRevision = readPositiveInt(fromTradesState?.revision)
+    if (snapshotRevision !== null) {
+      tradeRevisionById.value[normalizedTradeId] = snapshotRevision
+      return snapshotRevision
+    }
+
+    return null
+  }
+
+  function parseTradeRevisionFromEtag(etagHeader: string | null | undefined): number | null {
+    if (typeof etagHeader !== 'string') {
+      return null
+    }
+
+    let candidate = etagHeader.trim()
+    if (candidate === '') return null
+    if (candidate.startsWith('W/')) {
+      candidate = candidate.slice(2).trim()
+    }
+
+    candidate = candidate.replace(/^"+|"+$/g, '')
+    const match = candidate.match(/^(\d+):/)
+    if (!match) return null
+
+    return readPositiveInt(match[1])
+  }
+
+  function readHeaderValue(
+    headers: AxiosResponseHeaders | RawAxiosResponseHeaders | undefined,
+    name: string
+  ): string | null {
+    if (!headers) {
+      return null
+    }
+
+    if (typeof (headers as AxiosResponseHeaders).get === 'function') {
+      const value = (headers as AxiosResponseHeaders).get(name)
+      return typeof value === 'string' ? value : null
+    }
+
+    const lookup = Object.entries(headers).find(([key]) => key.toLowerCase() === name.toLowerCase())
+    const raw = lookup?.[1]
+    if (Array.isArray(raw)) {
+      const first = raw[0]
+      return typeof first === 'string' ? first : null
+    }
+    return typeof raw === 'string' ? raw : null
+  }
+
+  function captureRevisionFromResponseHeaders(
+    tradeId: number,
+    headers: AxiosResponseHeaders | RawAxiosResponseHeaders | undefined
+  ): void {
+    const etag = readHeaderValue(headers, 'etag')
+    const revision = parseTradeRevisionFromEtag(etag)
+    if (revision === null) {
+      return
+    }
+    setTradeRevision(tradeId, revision)
+  }
+
+  function mergeTradeIntoList(trade: Trade): void {
+    const index = trades.value.findIndex((row) => row.id === trade.id)
+    if (index < 0) {
+      return
+    }
+
+    trades.value[index] = trade
+    trades.value = filterTradesByQuality(trades.value)
+  }
+
+  function getIfMatchHeaders(tradeId: number): { headers: { 'If-Match': string } } {
+    const revision = currentTradeRevision(tradeId)
+    if (revision === null) {
+      throw new Error('Trade revision is unavailable. Reload latest trade data and try again.')
+    }
+
+    return {
+      headers: {
+        'If-Match': String(revision),
+      },
+    }
+  }
+
+  function isTradeConflictError(error: unknown): boolean {
+    return normalizeApiError(error).isConflict
+  }
+
+  async function refreshTradeAfterConflict(tradeId: number): Promise<void> {
+    try {
+      const { data } = await api.get<TradeDetailsResponse>(`/trades/${tradeId}`)
+      syncStatusStore.markServerHealthy()
+      captureTradeDetailsConcurrencyState(data)
+      mergeTradeIntoList(data.trade)
+      upsertLocalTradeSnapshot({
+        ...data.trade,
+        local_sync_status: 'synced',
+        risk_validation_status: 'verified',
+      })
+    } catch {
+      // Ignore refresh failures and surface original conflict to caller.
+    }
+  }
 
   const hasFilters = computed(() => Object.values(filters.value).some((value) => value !== ''))
   const hasActiveFilters = computed(() => hasFilters.value)
@@ -274,6 +489,7 @@ export const useTradeStore = defineStore('trades', () => {
 
       trades.value = filterTradesByQuality(data.data ?? [])
       for (const trade of data.data) {
+        captureTradeConcurrencyState(trade)
         upsertLocalTradeSnapshot({
           ...trade,
           local_sync_status: 'synced',
@@ -291,9 +507,9 @@ export const useTradeStore = defineStore('trades', () => {
 
       if (!shouldUseLocalFallback(err)) {
         if (requestVersion === fetchTradesRequestVersion) {
-          error.value = 'Failed to load trades.'
+          error.value = normalizeApiError(err).message
         }
-        throw err
+        throw normalizeApiError(err)
       }
       if (requestVersion !== fetchTradesRequestVersion) return
       syncStatusStore.markLocalFallback('trades')
@@ -308,6 +524,9 @@ export const useTradeStore = defineStore('trades', () => {
         date_to: filters.value.date_to,
         include_drafts_unverified: includeDraftsUnverified.value,
       })
+      for (const trade of local.data) {
+        captureTradeConcurrencyState(trade)
+      }
       trades.value = filterTradesByQuality(local.data)
       pagination.value.current_page = local.current_page
       pagination.value.last_page = local.last_page
@@ -327,6 +546,12 @@ export const useTradeStore = defineStore('trades', () => {
     const previousTrades = trades.value.slice()
     const previousPagination = { ...pagination.value }
     const tempId = -Date.now()
+    const idempotencyKey = createIdempotencyKey()
+    const createTradeRequestConfig = {
+      headers: {
+        'Idempotency-Key': idempotencyKey,
+      },
+    }
 
     if (shouldOptimisticallyInsert) {
       const optimistic = toOptimisticTrade(payload, tempId)
@@ -335,8 +560,9 @@ export const useTradeStore = defineStore('trades', () => {
     }
 
     try {
-      const { data } = await api.post<Trade>('/trades', payload)
+      const { data } = await api.post<Trade>('/trades', payload, createTradeRequestConfig)
       syncStatusStore.markServerHealthy()
+      captureTradeConcurrencyState(data)
       invalidateTradeLoadCaches()
 
       if (shouldOptimisticallyInsert) {
@@ -363,6 +589,7 @@ export const useTradeStore = defineStore('trades', () => {
         syncStatusStore.markLocalFallback('trades')
         invalidateTradeLoadCaches()
         const local = createLocalTrade(payload)
+        captureTradeConcurrencyState(local)
         enqueueSyncCreate({
           entity: 'trades',
           local_id: local.id,
@@ -392,7 +619,7 @@ export const useTradeStore = defineStore('trades', () => {
         trades.value = previousTrades
         pagination.value = previousPagination
       }
-      throw err
+      throw normalizeApiError(err)
     } finally {
       saving.value = false
     }
@@ -460,8 +687,10 @@ export const useTradeStore = defineStore('trades', () => {
     }
 
     try {
-      const { data } = await api.put<Trade>(`/trades/${id}`, payload)
+      const requestConfig = getIfMatchHeaders(id)
+      const { data } = await api.put<Trade>(`/trades/${id}`, payload, requestConfig)
       syncStatusStore.markServerHealthy()
+      captureTradeConcurrencyState(data)
       invalidateTradeLoadCaches()
       if (index >= 0) {
         trades.value[index] = data
@@ -486,6 +715,7 @@ export const useTradeStore = defineStore('trades', () => {
           upsertLocalTradeSnapshot(current)
         }
         const data = updateLocalTrade(id, payload)
+        captureTradeConcurrencyState(data)
         enqueueSyncUpdate({
           entity: 'trades',
           local_id: data.id,
@@ -511,7 +741,10 @@ export const useTradeStore = defineStore('trades', () => {
       if (index >= 0 && previous) {
         trades.value[index] = previous
       }
-      throw err
+      if (isTradeConflictError(err)) {
+        await refreshTradeAfterConflict(id)
+      }
+      throw normalizeApiError(err)
     } finally {
       saving.value = false
     }
@@ -531,6 +764,7 @@ export const useTradeStore = defineStore('trades', () => {
       syncStatusStore.markServerHealthy()
       invalidateTradeLoadCaches()
       deleteLocalTrade(id)
+      clearTradeConcurrencyState(id)
 
       if (trades.value.length === 0 && pagination.value.current_page > 1) {
         await fetchTrades(pagination.value.current_page - 1)
@@ -546,6 +780,7 @@ export const useTradeStore = defineStore('trades', () => {
           upsertLocalTradeSnapshot(previous)
         }
         deleteLocalTrade(id)
+        clearTradeConcurrencyState(id)
         enqueueSyncDelete({
           entity: 'trades',
           local_id: id,
@@ -564,7 +799,7 @@ export const useTradeStore = defineStore('trades', () => {
         trades.value.splice(index, 0, previous)
         pagination.value.total += 1
       }
-      throw err
+      throw normalizeApiError(err)
     }
   }
 
@@ -572,13 +807,22 @@ export const useTradeStore = defineStore('trades', () => {
     try {
       const { data } = await api.get<TradeDetailsResponse>(`/trades/${id}`)
       syncStatusStore.markServerHealthy()
+      captureTradeDetailsConcurrencyState(data)
+      mergeTradeIntoList(data.trade)
+      upsertLocalTradeSnapshot({
+        ...data.trade,
+        local_sync_status: 'synced',
+        risk_validation_status: 'verified',
+      })
       return data
     } catch (error) {
       if (!shouldUseLocalFallback(error)) {
-        throw error
+        throw normalizeApiError(error)
       }
       syncStatusStore.markLocalFallback('trade-details')
-      return fetchLocalTradeDetails(id)
+      const fallback = fetchLocalTradeDetails(id)
+      captureTradeConcurrencyState(fallback.trade)
+      return fallback
     }
   }
 
@@ -586,10 +830,12 @@ export const useTradeStore = defineStore('trades', () => {
     try {
       const { data } = await api.get<TradeLeg[]>(`/trades/${tradeId}/legs`)
       syncStatusStore.markServerHealthy()
-      return Array.isArray(data) ? data : []
+      const rows = Array.isArray(data) ? data : []
+      indexTradeLegs(tradeId, rows)
+      return rows
     } catch (error) {
       if (!shouldUseLocalFallback(error)) {
-        throw error
+        throw normalizeApiError(error)
       }
       syncStatusStore.markLocalFallback('trade-legs')
       return []
@@ -597,26 +843,67 @@ export const useTradeStore = defineStore('trades', () => {
   }
 
   async function addTradeLeg(tradeId: number, payload: TradeLegPayload): Promise<TradeLeg> {
-    const { data } = await api.post<TradeLeg>(`/trades/${tradeId}/legs`, payload)
-    syncStatusStore.markServerHealthy()
-    void analyticsStore.fetchAnalytics().catch(() => undefined)
-    void accountStore.fetchAccounts().catch(() => undefined)
-    return data
+    try {
+      const { data, headers } = await api.post<TradeLeg>(`/trades/${tradeId}/legs`, payload, getIfMatchHeaders(tradeId))
+      syncStatusStore.markServerHealthy()
+      indexTradeLegs(tradeId, [data])
+      captureRevisionFromResponseHeaders(tradeId, headers)
+      void analyticsStore.fetchAnalytics().catch(() => undefined)
+      void accountStore.fetchAccounts().catch(() => undefined)
+      return data
+    } catch (error) {
+      if (isTradeConflictError(error)) {
+        await refreshTradeAfterConflict(tradeId)
+      }
+      throw normalizeApiError(error)
+    }
   }
 
-  async function updateTradeLeg(legId: number, payload: TradeLegPayload): Promise<TradeLeg> {
-    const { data } = await api.put<TradeLeg>(`/trade-legs/${legId}`, payload)
-    syncStatusStore.markServerHealthy()
-    void analyticsStore.fetchAnalytics().catch(() => undefined)
-    void accountStore.fetchAccounts().catch(() => undefined)
-    return data
+  async function updateTradeLeg(
+    legId: number,
+    payload: TradeLegPayload,
+    options?: { tradeId?: number }
+  ): Promise<TradeLeg> {
+    const tradeId = readPositiveInt(options?.tradeId) ?? resolveTradeIdForLeg(legId)
+    if (tradeId === null) {
+      throw new Error('Trade context unavailable for this leg. Reload latest trade data and try again.')
+    }
+
+    try {
+      const { data, headers } = await api.put<TradeLeg>(`/trade-legs/${legId}`, payload, getIfMatchHeaders(tradeId))
+      syncStatusStore.markServerHealthy()
+      indexTradeLegs(tradeId, [{ ...data, id: data.id ?? legId }])
+      captureRevisionFromResponseHeaders(tradeId, headers)
+      void analyticsStore.fetchAnalytics().catch(() => undefined)
+      void accountStore.fetchAccounts().catch(() => undefined)
+      return data
+    } catch (error) {
+      if (isTradeConflictError(error)) {
+        await refreshTradeAfterConflict(tradeId)
+      }
+      throw normalizeApiError(error)
+    }
   }
 
-  async function deleteTradeLeg(legId: number): Promise<void> {
-    await api.delete(`/trade-legs/${legId}`)
-    syncStatusStore.markServerHealthy()
-    void analyticsStore.fetchAnalytics().catch(() => undefined)
-    void accountStore.fetchAccounts().catch(() => undefined)
+  async function deleteTradeLeg(legId: number, options?: { tradeId?: number }): Promise<void> {
+    const tradeId = readPositiveInt(options?.tradeId) ?? resolveTradeIdForLeg(legId)
+    if (tradeId === null) {
+      throw new Error('Trade context unavailable for this leg. Reload latest trade data and try again.')
+    }
+
+    try {
+      const { headers } = await api.delete(`/trade-legs/${legId}`, getIfMatchHeaders(tradeId))
+      syncStatusStore.markServerHealthy()
+      delete tradeIdByLegId.value[legId]
+      captureRevisionFromResponseHeaders(tradeId, headers)
+      void analyticsStore.fetchAnalytics().catch(() => undefined)
+      void accountStore.fetchAccounts().catch(() => undefined)
+    } catch (error) {
+      if (isTradeConflictError(error)) {
+        await refreshTradeAfterConflict(tradeId)
+      }
+      throw normalizeApiError(error)
+    }
   }
 
   async function fetchInstruments() {
@@ -639,7 +926,7 @@ export const useTradeStore = defineStore('trades', () => {
       instruments.value = secondary.length > 0 ? secondary : defaultInstrumentsFallback()
     } catch (error) {
       if (!shouldUseLocalFallback(error)) {
-        throw error
+        throw normalizeApiError(error)
       }
       syncStatusStore.markLocalFallback('instruments')
       instruments.value = defaultInstrumentsFallback()
@@ -654,7 +941,7 @@ export const useTradeStore = defineStore('trades', () => {
       fxRates.value = rows.length > 0 ? rows : defaultFxRatesFallback()
     } catch (error) {
       if (!shouldUseLocalFallback(error)) {
-        throw error
+        throw normalizeApiError(error)
       }
       syncStatusStore.markLocalFallback('fx-rates')
       fxRates.value = defaultFxRatesFallback()
@@ -679,7 +966,7 @@ export const useTradeStore = defineStore('trades', () => {
       sessionOptions.value = Array.isArray(sessionRes.data) ? sessionRes.data : []
     } catch (error) {
       if (!shouldUseLocalFallback(error)) {
-        throw error
+        throw normalizeApiError(error)
       }
       syncStatusStore.markLocalFallback('dictionaries')
       strategyModels.value = [{ id: 1, name: 'General', slug: 'general', description: null, is_active: true }]
@@ -697,16 +984,24 @@ export const useTradeStore = defineStore('trades', () => {
   }
 
   async function fetchTradePsychology(tradeId: number): Promise<TradePsychology> {
-    const { data } = await api.get<TradePsychology>(`/trades/${tradeId}/psychology`)
-    syncStatusStore.markServerHealthy()
-    return data
+    try {
+      const { data } = await api.get<TradePsychology>(`/trades/${tradeId}/psychology`)
+      syncStatusStore.markServerHealthy()
+      return data
+    } catch (error) {
+      throw normalizeApiError(error)
+    }
   }
 
   async function upsertTradePsychology(tradeId: number, payload: Partial<TradePsychology>): Promise<TradePsychology> {
-    const { data } = await api.put<TradePsychology>(`/trades/${tradeId}/psychology`, payload)
-    syncStatusStore.markServerHealthy()
-    void analyticsStore.fetchAnalytics().catch(() => undefined)
-    return data
+    try {
+      const { data } = await api.put<TradePsychology>(`/trades/${tradeId}/psychology`, payload)
+      syncStatusStore.markServerHealthy()
+      void analyticsStore.fetchAnalytics().catch(() => undefined)
+      return data
+    } catch (error) {
+      throw normalizeApiError(error)
+    }
   }
 
   async function precheckTrade(payload: TradePayload, tradeId?: number, options?: TradePrecheckOptions): Promise<TradePrecheckResult> {
@@ -742,7 +1037,7 @@ export const useTradeStore = defineStore('trades', () => {
       }
 
       if (!shouldUseLocalFallback(error)) {
-        throw error
+        throw normalizeApiError(error)
       }
       syncStatusStore.markLocalFallback('trades-precheck')
       return {
@@ -837,7 +1132,7 @@ export const useTradeStore = defineStore('trades', () => {
       return data
     } catch (error) {
       if (!shouldUseLocalFallback(error)) {
-        throw error
+        throw normalizeApiError(error)
       }
       syncStatusStore.markLocalFallback('trade-images')
 
@@ -852,7 +1147,7 @@ export const useTradeStore = defineStore('trades', () => {
       syncStatusStore.markServerHealthy()
     } catch (error) {
       if (!shouldUseLocalFallback(error)) {
-        throw error
+        throw normalizeApiError(error)
       }
       syncStatusStore.markLocalFallback('trade-images')
       deleteLocalTradeImage(imageId)
@@ -868,9 +1163,13 @@ export const useTradeStore = defineStore('trades', () => {
       sort_order?: number
     }
   ): Promise<TradeImage> {
-    const { data } = await api.put<TradeImage>(`/trade-images/${imageId}`, payload)
-    syncStatusStore.markServerHealthy()
-    return data
+    try {
+      const { data } = await api.put<TradeImage>(`/trade-images/${imageId}`, payload)
+      syncStatusStore.markServerHealthy()
+      return data
+    } catch (error) {
+      throw normalizeApiError(error)
+    }
   }
 
   function resetFilters() {
@@ -880,6 +1179,7 @@ export const useTradeStore = defineStore('trades', () => {
   return {
     trades,
     visibleTrades,
+    tradeRevisionById,
     instruments,
     fxRates,
     strategyModels,
@@ -945,6 +1245,7 @@ function writeTradeQualityPreference(value: boolean): void {
 function toOptimisticTrade(payload: TradePayload, tempId: number): Trade {
   return {
     id: tempId,
+    revision: 1,
     pair: payload.symbol.toUpperCase(),
     account_id: payload.account_id,
     instrument_id: payload.instrument_id,

@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import api from '@/services/api'
+import { getScope, scopedKeyForScope } from '@/services/storageScope'
 import {
   enqueueSyncCreate,
   enqueueSyncDelete,
@@ -75,11 +76,11 @@ export const useAccountStore = defineStore('accounts', () => {
   function setSelectedAccountId(accountId: number | null) {
     selectedAccountId.value = accountId
     if (accountId === null) {
-      localStorage.removeItem(SELECTED_ACCOUNT_KEY)
+      removeSelectedAccountStorage()
       return
     }
 
-    localStorage.setItem(SELECTED_ACCOUNT_KEY, String(accountId))
+    writeSelectedAccountStorage(accountId)
   }
 
   async function fetchAccounts(params?: { is_active?: boolean }) {
@@ -440,12 +441,60 @@ export const useAccountStore = defineStore('accounts', () => {
 })
 
 function readSelectedAccountId(): number | null {
-  const raw = localStorage.getItem(SELECTED_ACCOUNT_KEY)
+  const raw = readSelectedAccountStorage()
   if (!raw) return null
 
   const value = Number(raw)
   if (!Number.isInteger(value) || value <= 0) return null
   return value
+}
+
+function selectedAccountStorageKey(): string {
+  const scope = getScope()
+  return scopedKeyForScope(
+    {
+      userId: scope.userId,
+      accountId: null,
+    },
+    'account-preferences',
+    SELECTED_ACCOUNT_KEY
+  )
+}
+
+function readSelectedAccountStorage(): string | null {
+  try {
+    const scoped = localStorage.getItem(selectedAccountStorageKey())
+    if (scoped !== null) {
+      return scoped
+    }
+
+    // Backward compatibility migration for pre-scoped storage key.
+    const legacy = localStorage.getItem(SELECTED_ACCOUNT_KEY)
+    if (legacy !== null) {
+      localStorage.setItem(selectedAccountStorageKey(), legacy)
+      localStorage.removeItem(SELECTED_ACCOUNT_KEY)
+    }
+
+    return legacy
+  } catch {
+    return null
+  }
+}
+
+function writeSelectedAccountStorage(accountId: number): void {
+  try {
+    localStorage.setItem(selectedAccountStorageKey(), String(accountId))
+  } catch {
+    // Ignore storage write failures.
+  }
+}
+
+function removeSelectedAccountStorage(): void {
+  try {
+    localStorage.removeItem(selectedAccountStorageKey())
+  } catch {
+    // Ignore storage remove failures.
+  }
 }
 
 function normalizeAccount(input: unknown): Account | null {

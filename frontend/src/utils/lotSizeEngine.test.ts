@@ -66,6 +66,7 @@ function runCase(
   instrument: LotSizeInstrumentSpec,
   entry_price: string,
   stop_loss: string,
+  account_currency = 'USD',
   conversion?: {
     rate: number
     symbolUsed: string | null
@@ -76,8 +77,10 @@ function runCase(
 ) {
   return calculateLotSize({
     ...BASE_INPUT,
+    account_currency,
     entry_price,
     stop_loss,
+    fx_rate_quote_to_account: conversion?.rate ?? null,
     instrument,
     fx_rate_quote_to_usd: conversion?.rate ?? null,
     fx_symbol_used: conversion?.symbolUsed ?? null,
@@ -119,7 +122,7 @@ describe('calculateLotSize FX-aware sizing', () => {
   })
 
   it('EURJPY uses inverse USDJPY conversion', () => {
-    const result = runCase(EURJPY, '160.00', '159.50', {
+    const result = runCase(EURJPY, '160.00', '159.50', 'USD', {
       rate: 1 / 150,
       symbolUsed: 'USDJPY',
       method: 'inverse',
@@ -137,13 +140,13 @@ describe('calculateLotSize FX-aware sizing', () => {
   })
 
   it('updates lot size when FX quote changes', () => {
-    const first = runCase(EURJPY, '160.00', '159.50', {
+    const first = runCase(EURJPY, '160.00', '159.50', 'USD', {
       rate: 1 / 150,
       symbolUsed: 'USDJPY',
       method: 'inverse',
       ts: 1700000000000,
     })
-    const second = runCase(EURJPY, '160.00', '159.50', {
+    const second = runCase(EURJPY, '160.00', '159.50', 'USD', {
       rate: 1 / 155,
       symbolUsed: 'USDJPY',
       method: 'inverse',
@@ -155,7 +158,7 @@ describe('calculateLotSize FX-aware sizing', () => {
   })
 
   it('EURGBP uses direct GBPUSD conversion', () => {
-    const result = runCase(EURGBP, '0.8600', '0.8580', {
+    const result = runCase(EURGBP, '0.8600', '0.8580', 'USD', {
       rate: 1.27,
       symbolUsed: 'GBPUSD',
       method: 'direct',
@@ -171,6 +174,24 @@ describe('calculateLotSize FX-aware sizing', () => {
     expect(result.actual_risk_at_stop).toBeCloseTo(99.06, 2)
     expect(result.actual_risk_at_stop).toBeLessThanOrEqual(result.target_risk_amount + 1)
     expect(result.if_sl_hits_text).toBe('If SL hits -> -$99.06')
+  })
+
+  it('calculateLotSize_non_usd_account_uses_account_currency', () => {
+    const result = runCase(EURJPY, '160.00', '159.50', 'EUR', {
+      // JPY -> EUR
+      rate: 1 / 165,
+      symbolUsed: 'USDJPY + EURUSD',
+      method: 'pivot',
+      ts: 1700000000000,
+      mode: 'mid',
+    })
+
+    expect(result.valid).toBe(true)
+    expect(result.risk_currency).toBe('EUR')
+    expect(result.conversion_rate_quote_to_account).toBeCloseTo(1 / 165, 8)
+    expect(result.risk_per_one_lot).toBeCloseTo(303.03, 2)
+    expect(result.lot_size).toBeCloseTo(0.33, 8)
+    expect(result.actual_risk_at_stop).toBeCloseTo(100, 2)
   })
 
   it('XAUUSD keeps USD quote (no conversion)', () => {

@@ -1,7 +1,62 @@
 <script setup lang="ts">
 import { computed, reactive, watch } from 'vue'
 import { X } from 'lucide-vue-next'
-import type { ChecklistItemType } from '@/types/rules'
+import type {
+  ChecklistItemType,
+  ChecklistRuleDefinition,
+  ChecklistRuleOperator,
+  ChecklistRuleType,
+} from '@/types/rules'
+
+const RULE_TYPE_OPTIONS: Array<{ label: string; value: ChecklistRuleType }> = [
+  { label: 'Boolean', value: 'boolean' },
+  { label: 'Numeric', value: 'numeric' },
+  { label: 'Select', value: 'select' },
+  { label: 'Auto Metric', value: 'auto_metric' },
+]
+
+const METRIC_OPTIONS: Array<{ label: string; value: string }> = [
+  { label: 'Risk %', value: 'risk_percent' },
+  { label: 'Risk Amount', value: 'risk_amount' },
+  { label: 'R Multiple', value: 'r_multiple' },
+  { label: 'PnL Amount', value: 'pnl_amount' },
+]
+
+const OPERATOR_OPTIONS: Record<ChecklistRuleType, Array<{ label: string; value: ChecklistRuleOperator }>> = {
+  boolean: [
+    { label: 'Equals (==)', value: '==' },
+    { label: 'Not Equals (!=)', value: '!=' },
+  ],
+  numeric: [
+    { label: '>', value: '>' },
+    { label: '>=', value: '>=' },
+    { label: '<', value: '<' },
+    { label: '<=', value: '<=' },
+    { label: '==', value: '==' },
+    { label: '!=', value: '!=' },
+  ],
+  auto_metric: [
+    { label: '>', value: '>' },
+    { label: '>=', value: '>=' },
+    { label: '<', value: '<' },
+    { label: '<=', value: '<=' },
+    { label: '==', value: '==' },
+    { label: '!=', value: '!=' },
+  ],
+  select: [
+    { label: 'In', value: 'in' },
+    { label: 'Not In', value: 'not_in' },
+    { label: '==', value: '==' },
+    { label: '!=', value: '!=' },
+  ],
+}
+
+const DEFAULT_OPERATOR: Record<ChecklistRuleType, ChecklistRuleOperator> = {
+  boolean: '==',
+  numeric: '<=',
+  auto_metric: '<=',
+  select: 'in',
+}
 
 const props = withDefaults(
   defineProps<{
@@ -20,6 +75,7 @@ const emit = defineEmits<{
   (event: 'create', payload: {
     title: string
     type: ChecklistItemType
+    rule: ChecklistRuleDefinition
     required: boolean
     category: string
     help_text: string | null
@@ -28,17 +84,15 @@ const emit = defineEmits<{
   }): void
 }>()
 
-const quickExamples = [
-  'I have a defined entry, stop, and target before entry.',
-  'I am trading in line with HTF bias.',
-  'I am emotionally neutral before entering.',
-  'I will not increase risk after a losing trade.',
-  'I will stop after 2 losing trades.',
-]
-
 const form = reactive({
   title: '',
   help_text: '',
+  rule_type: 'boolean' as ChecklistRuleType,
+  metric_key: 'risk_percent',
+  operator: '==' as ChecklistRuleOperator,
+  threshold_scalar: 'true',
+  threshold_list: '',
+  required: true,
 })
 
 const titleCount = computed(() => form.title.trim().length)
@@ -46,33 +100,169 @@ const whyCount = computed(() => form.help_text.trim().length)
 const defaultCategory = computed(() =>
   props.categories.find((value) => value.trim().length > 0)?.trim() || 'Risk & Compliance'
 )
+const availableOperators = computed(() => OPERATOR_OPTIONS[form.rule_type])
+const needsMetric = computed(() => form.rule_type === 'auto_metric' || form.rule_type === 'numeric')
+const thresholdUsesList = computed(() =>
+  form.rule_type === 'select' && (form.operator === 'in' || form.operator === 'not_in')
+)
 
 watch(
   () => props.open,
   (open) => {
     if (!open) return
-    form.title = ''
-    form.help_text = ''
+    resetForm()
   }
 )
 
-function applyExample(example: string) {
-  form.title = example
+watch(
+  () => form.rule_type,
+  (nextType) => {
+    form.operator = DEFAULT_OPERATOR[nextType]
+    if (nextType === 'boolean') {
+      form.threshold_scalar = 'true'
+      form.threshold_list = ''
+      return
+    }
+
+    if (nextType === 'select') {
+      form.threshold_scalar = 'pass'
+      form.threshold_list = 'pass'
+      return
+    }
+
+    form.threshold_scalar = '1'
+    form.threshold_list = ''
+  }
+)
+
+watch(
+  () => form.operator,
+  () => {
+    if (!thresholdUsesList.value) return
+    if (!form.threshold_list.trim()) {
+      form.threshold_list = form.threshold_scalar.trim() || 'pass'
+    }
+  }
+)
+
+const thresholdValue = computed<number | string | boolean | Array<number | string | boolean> | null>(() => {
+  if (form.rule_type === 'boolean') {
+    return form.threshold_scalar === 'true'
+  }
+
+  if (thresholdUsesList.value) {
+    const values = form.threshold_list
+      .split(',')
+      .map((entry) => entry.trim())
+      .filter((entry) => entry.length > 0)
+    return values
+  }
+
+  if (form.rule_type === 'numeric' || form.rule_type === 'auto_metric') {
+    const parsed = Number(form.threshold_scalar)
+    if (!Number.isFinite(parsed)) return null
+    return parsed
+  }
+
+  const normalized = form.threshold_scalar.trim()
+  return normalized.length > 0 ? normalized : null
+})
+
+const thresholdValid = computed(() => {
+  const value = thresholdValue.value
+  if (value === null) return false
+  if (Array.isArray(value)) return value.length > 0
+  if (typeof value === 'string') return value.trim().length > 0
+  return true
+})
+
+const metricValid = computed(() => !needsMetric.value || form.metric_key.trim().length > 0)
+const canSubmit = computed(() =>
+  form.title.trim().length > 0 && thresholdValid.value && metricValid.value && !props.saving
+)
+
+const previewText = computed(() => {
+  const target = (() => {
+    if (form.rule_type === 'auto_metric') return `metric ${form.metric_key || '(metric_key)'}`
+    if (form.rule_type === 'numeric') {
+      return form.metric_key.trim() ? `metric ${form.metric_key.trim()}` : 'input value'
+    }
+    if (form.rule_type === 'select') return 'selected option'
+    return 'checkbox value'
+  })()
+
+  const thresholdPreview = (() => {
+    if (thresholdValue.value === null) return '(threshold)'
+    if (Array.isArray(thresholdValue.value)) return `[${thresholdValue.value.join(', ')}]`
+    return String(thresholdValue.value)
+  })()
+
+  const requirement = form.required ? 'required' : 'optional'
+  return `${target} ${form.operator} ${thresholdPreview} (${requirement})`
+})
+
+function resetForm() {
+  form.title = ''
+  form.help_text = ''
+  form.rule_type = 'boolean'
+  form.metric_key = 'risk_percent'
+  form.operator = '=='
+  form.threshold_scalar = 'true'
+  form.threshold_list = ''
+  form.required = true
+}
+
+function mapRuleTypeToItemType(ruleType: ChecklistRuleType): ChecklistItemType {
+  if (ruleType === 'boolean') return 'checkbox'
+  if (ruleType === 'select') return 'dropdown'
+  return 'number'
 }
 
 function submit() {
-  if (props.saving) return
-  if (!form.title.trim()) return
+  if (!canSubmit.value) return
+  const threshold = thresholdValue.value
+  if (threshold === null) return
+
+  const rule: ChecklistRuleDefinition = {
+    type: form.rule_type,
+    operator: form.operator,
+    threshold,
+    required: form.required,
+    metric_key: needsMetric.value ? form.metric_key.trim() : null,
+  }
+
+  const config: Record<string, unknown> = {
+    weight: form.required ? 'hard' : 'soft',
+    rule,
+  }
+
+  if (rule.type === 'select') {
+    const options = Array.isArray(rule.threshold)
+      ? rule.threshold.map((entry) => String(entry))
+      : [String(rule.threshold)]
+    config.options = options.filter((entry) => entry.trim().length > 0)
+  }
+
+  if (rule.type === 'numeric' || rule.type === 'auto_metric') {
+    const thresholdNumber = typeof rule.threshold === 'number' ? rule.threshold : Number(rule.threshold)
+    if (Number.isFinite(thresholdNumber)) {
+      config.threshold = thresholdNumber
+    }
+    config.comparator = rule.operator === '==' ? '=' : rule.operator
+  }
+
+  if (rule.type === 'auto_metric' && rule.metric_key) {
+    config.auto_metric = rule.metric_key
+  }
 
   emit('create', {
     title: form.title.trim(),
-    type: 'checkbox',
-    required: true,
+    type: mapRuleTypeToItemType(form.rule_type),
+    rule,
+    required: form.required,
     category: defaultCategory.value,
     help_text: form.help_text.trim() ? form.help_text.trim() : null,
-    config: {
-      weight: 'hard',
-    },
+    config,
     is_active: true,
   })
 }
@@ -86,7 +276,7 @@ function submit() {
           <header class="rule-modal-head">
             <div>
               <h3 class="section-title">Add Trading Rule</h3>
-              <p class="section-note">Write rules you can mark as Followed or Broken during your trading.</p>
+              <p class="section-note">Define the exact schema used by UI, API, and evaluation engine.</p>
             </div>
             <button type="button" class="rule-close" @click="emit('close')" aria-label="Close">
               <X class="h-5 w-5" />
@@ -95,33 +285,84 @@ function submit() {
 
           <form class="rule-form" @submit.prevent="submit" @keydown.meta.enter.prevent="submit" @keydown.ctrl.enter.prevent="submit">
             <section class="rule-block">
-              <label class="rule-label" for="new-rule-title">Rule <span>(actionable)</span></label>
-              <p class="rule-help">Write it so you can mark it as Followed or Broken.</p>
+              <label class="rule-label" for="new-rule-title">Rule title <span>(human readable)</span></label>
               <textarea
                 id="new-rule-title"
                 v-model="form.title"
                 class="rule-textarea primary"
                 maxlength="120"
                 rows="3"
-                placeholder="e.g. I will not enter a trade without a defined stop loss"
+                placeholder="e.g. Risk percent must stay under 1.0%"
                 required
               />
               <p class="rule-counter">{{ titleCount }}/120</p>
             </section>
 
             <section class="rule-block">
-              <p class="rule-kicker">Quick examples</p>
-              <div class="rule-chips">
-                <button
-                  v-for="example in quickExamples"
-                  :key="example"
-                  type="button"
-                  class="rule-chip"
-                  @click="applyExample(example)"
-                >
-                  {{ example }}
-                </button>
+              <p class="rule-kicker">Rule schema</p>
+              <div class="rule-grid">
+                <label class="field-block">
+                  <span>Type</span>
+                  <select v-model="form.rule_type" class="rule-input" required>
+                    <option v-for="entry in RULE_TYPE_OPTIONS" :key="entry.value" :value="entry.value">
+                      {{ entry.label }}
+                    </option>
+                  </select>
+                </label>
+
+                <label v-if="needsMetric" class="field-block">
+                  <span>Metric</span>
+                  <select v-model="form.metric_key" class="rule-input" :required="needsMetric">
+                    <option v-for="metric in METRIC_OPTIONS" :key="metric.value" :value="metric.value">
+                      {{ metric.label }}
+                    </option>
+                  </select>
+                </label>
+
+                <label class="field-block">
+                  <span>Operator</span>
+                  <select v-model="form.operator" class="rule-input" required>
+                    <option v-for="entry in availableOperators" :key="entry.value" :value="entry.value">
+                      {{ entry.label }}
+                    </option>
+                  </select>
+                </label>
+
+                <label v-if="form.rule_type === 'boolean'" class="field-block">
+                  <span>Threshold</span>
+                  <select v-model="form.threshold_scalar" class="rule-input">
+                    <option value="true">true</option>
+                    <option value="false">false</option>
+                  </select>
+                </label>
+
+                <label v-else-if="thresholdUsesList" class="field-block field-block-wide">
+                  <span>Threshold list (comma separated)</span>
+                  <input
+                    v-model="form.threshold_list"
+                    class="rule-input"
+                    type="text"
+                    placeholder="allowed, approved, pass"
+                  >
+                </label>
+
+                <label v-else class="field-block">
+                  <span>Threshold</span>
+                  <input
+                    v-model="form.threshold_scalar"
+                    class="rule-input"
+                    :type="form.rule_type === 'numeric' || form.rule_type === 'auto_metric' ? 'number' : 'text'"
+                    :step="form.rule_type === 'numeric' || form.rule_type === 'auto_metric' ? 'any' : undefined"
+                    placeholder="Enter threshold"
+                  >
+                </label>
+
+                <label class="field-check">
+                  <input v-model="form.required" type="checkbox">
+                  <span>Required</span>
+                </label>
               </div>
+              <p class="rule-help">Preview: {{ previewText }}</p>
             </section>
 
             <section class="rule-block">
@@ -132,7 +373,7 @@ function submit() {
                 class="rule-textarea"
                 maxlength="220"
                 rows="3"
-                placeholder="What problem does this rule protect you from? (e.g., revenge trading, FOMO, overtrading)"
+                placeholder="What failure pattern does this rule prevent?"
               />
               <p class="rule-counter">{{ whyCount }}/220</p>
             </section>
@@ -144,7 +385,7 @@ function submit() {
                 <button
                   type="submit"
                   class="btn btn-primary px-4 py-2 text-sm"
-                  :disabled="props.saving || !form.title.trim()"
+                  :disabled="!canSubmit"
                 >
                   {{ props.saving ? 'Saving...' : 'Save Rule' }}
                 </button>
@@ -237,7 +478,7 @@ function submit() {
 }
 
 .rule-help {
-  margin: 0.32rem 0 0.55rem;
+  margin: 0.5rem 0 0;
   color: var(--muted);
   font-size: 0.78rem;
 }
@@ -274,27 +515,44 @@ function submit() {
   font-size: 0.8rem;
 }
 
-.rule-chips {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.45rem;
+.rule-grid {
+  display: grid;
+  gap: 0.55rem;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
-.rule-chip {
-  max-width: 260px;
-  border-radius: 10px;
-  border: 1px solid color-mix(in srgb, var(--border) 14%, transparent 86%);
-  background: color-mix(in srgb, var(--panel) 82%, var(--panel-soft) 18%);
+.field-block {
+  display: grid;
+  gap: 0.28rem;
+}
+
+.field-block span {
+  font-size: 0.75rem;
+  color: var(--muted);
+}
+
+.field-block-wide {
+  grid-column: 1 / -1;
+}
+
+.rule-input {
+  width: 100%;
+  min-height: 2.25rem;
+  border-radius: 9px;
+  border: 1px solid color-mix(in srgb, var(--border) 24%, transparent 76%);
+  background: color-mix(in srgb, var(--panel) 84%, var(--panel-soft) 16%);
   color: var(--text);
-  padding: 0.42rem 0.6rem;
-  font-size: 0.78rem;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  padding: 0.5rem 0.62rem;
+  font-size: 0.88rem;
 }
 
-.rule-chip:hover {
-  border-color: color-mix(in srgb, var(--primary) 32%, var(--border) 68%);
+.field-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding-top: 1.2rem;
+  font-size: 0.82rem;
+  font-weight: 600;
 }
 
 .rule-actions {
@@ -317,6 +575,18 @@ function submit() {
 }
 
 @media (max-width: 640px) {
+  .rule-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .field-block-wide {
+    grid-column: auto;
+  }
+
+  .field-check {
+    padding-top: 0.2rem;
+  }
+
   .rule-actions {
     flex-direction: column;
     align-items: stretch;

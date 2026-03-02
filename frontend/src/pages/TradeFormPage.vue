@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
-import type { AxiosError } from 'axios'
 import { ArrowLeft, Check, DollarSign, TrendingUp } from 'lucide-vue-next'
 import { useRoute, useRouter } from 'vue-router'
 import GlassPanel from '@/components/layout/GlassPanel.vue'
@@ -31,6 +30,7 @@ import { useTradeRulesStore } from '@/stores/tradeRulesStore'
 import { useSyncStatusStore } from '@/stores/syncStatusStore'
 import { useUiStore } from '@/stores/uiStore'
 import type { ImageContextTag, Instrument, Paginated, SessionEnum, Trade, TradeEmotion, TradeImage, TradeLeg, TradePsychology } from '@/types/trade'
+import { normalizeApiError, type NormalizedError } from '@/utils/apiError'
 import { asCurrency, asSignedCurrency } from '@/utils/format'
 
 const router = useRouter()
@@ -50,6 +50,7 @@ const {
   optionalItems: checklistOptionalItems,
   archivedResponses: checklistArchivedResponses,
   readiness: checklistReadiness,
+  serverReadiness: checklistServerReadiness,
   executionSnapshot: checklistExecutionSnapshot,
   loading: checklistLoading,
   saving: checklistSaving,
@@ -58,11 +59,15 @@ const {
   submitAttempted: checklistSubmitAttempted,
   isStrict: checklistStrictMode,
   checklistIncomplete,
+  strictSubmitBlocked: checklistStrictSubmitBlocked,
+  serverReadinessMismatch: checklistServerReadinessMismatch,
+  serverReadinessReasons: checklistServerReadinessReasons,
   hasChecklist,
 } = storeToRefs(tradeChecklistStore)
 
 const loadingTrade = ref(false)
 const submitAttempted = ref(false)
+const serverFieldErrors = ref<Record<string, string[]>>({})
 const loadedTradeUpdatedAt = ref<string | null>(null)
 const staleWriteCheckInProgress = ref(false)
 const staleWriteConfirmedFingerprint = ref<string | null>(null)
@@ -333,9 +338,7 @@ const isSaveBlocked = computed(() =>
   || Boolean(liveFxConversionError.value)
 )
 const isChecklistStrictBlocked = computed(() =>
-  checklistStrictMode.value
-  && hasChecklist.value
-  && (checklistIncomplete.value || failedRequiredRuleIds.value.length > 0)
+  checklistStrictSubmitBlocked.value
 )
 const checklistGateIncomplete = computed(() =>
   hasChecklist.value && (checklistIncomplete.value || failedRequiredRuleIds.value.length > 0)
@@ -383,9 +386,13 @@ const riskStatusClass = computed(() => {
   return ''
 })
 const blockedSummary = computed(() => {
-  if (!submitAttempted.value || (!isSaveBlocked.value && !isChecklistContextMismatch.value)) return ''
+  if (!submitAttempted.value || (!isSaveBlocked.value && !isChecklistContextMismatch.value && !isChecklistStrictBlocked.value)) return ''
   if (isFxPending.value) return 'Fetching FX quote...'
   if (isChecklistContextMismatch.value) return 'Rule context is refreshing for the selected account and strategy.'
+  if (isChecklistStrictBlocked.value) {
+    const firstReason = checklistServerReadinessReasons.value[0]?.reason?.trim()
+    return firstReason || 'Strict mode is blocked by server checklist readiness.'
+  }
   if (precheckError.value) return precheckError.value
   if (liveFxConversionError.value) return liveFxConversionError.value
   if (isRiskEngineUnavailable.value && !hasAcceptedLocalRiskOverride.value) {
@@ -934,39 +941,50 @@ const formErrors = computed<Record<string, string>>(() => {
 })
 
 function fieldError(name: string) {
-  return submitAttempted.value ? formErrors.value[name] : ''
+  if (!submitAttempted.value) return ''
+  const localMessage = formErrors.value[name]
+  if (localMessage) return localMessage
+  return serverFieldErrors.value[name]?.[0] ?? ''
 }
 
 function extractErrorMessage(error: unknown): string {
-  const axiosError = error as AxiosError<{ message?: string; errors?: Record<string, string[]> }>
-  const responseMessage = axiosError.response?.data?.message
-  const responseErrors = axiosError.response?.data?.errors
-  const firstValidationError = responseErrors
-    ? Object.values(responseErrors).flat().find((message) => Boolean(message))
-    : null
-
-  return firstValidationError || responseMessage || 'Please review input values and try again.'
+  return normalizeApiError(error).message
 }
 
 function extractFailingRuleIds(error: unknown): number[] {
-  const axiosError = error as AxiosError<{
-    failed_required_rule_ids?: Array<number | null>
-    failing_rules?: Array<{ checklist_item_id?: number | null }>
-  }>
+  return normalizeApiError(error).failingRuleIds
+}
 
-  const failedIds = axiosError.response?.data?.failed_required_rule_ids
-  if (Array.isArray(failedIds)) {
-    return failedIds
-      .map((value) => Number(value ?? 0))
-      .filter((id) => Number.isInteger(id) && id > 0)
+function isTradeRevisionConflict(error: unknown): boolean {
+  return normalizeApiError(error).isConflict
+}
+
+function mapServerFieldName(field: string): string {
+  const normalized = field.trim()
+  if (normalized === 'pair') return 'instrument_id'
+  if (normalized === 'lot_size') return 'position_size'
+  if (normalized === 'actual_exit_price') return 'exit_price'
+  return normalized
+}
+
+function applyServerFieldErrors(normalized: NormalizedError): void {
+  if (!normalized.isValidation) {
+    serverFieldErrors.value = {}
+    return
   }
 
-  const rows = axiosError.response?.data?.failing_rules
-  if (!Array.isArray(rows)) return []
+  const next: Record<string, string[]> = {}
+  for (const [field, messages] of Object.entries(normalized.fieldErrors)) {
+    const mappedField = mapServerFieldName(field)
+    const cleanedMessages = messages
+      .map((message) => `${message ?? ''}`.trim())
+      .filter((message) => message.length > 0)
+    if (cleanedMessages.length > 0) {
+      next[mappedField] = cleanedMessages
+    }
+  }
 
-  return rows
-    .map((row) => Number(row?.checklist_item_id ?? 0))
-    .filter((id) => Number.isInteger(id) && id > 0)
+  serverFieldErrors.value = next
 }
 
 function buildPayload(): TradePayload {
@@ -1180,6 +1198,10 @@ const precheckRunner = createDebouncedLatestRunner<
   onRequestSuccess: (result, context) => {
     if (precheckActiveRequestId.value !== context.requestId) return
     precheckResult.value = result
+    tradeChecklistStore.applyServerReadinessPreview(result.checklist_gate ?? null)
+    if (Array.isArray(result.checklist_gate?.failed_required_rule_ids)) {
+      failedRequiredRuleIds.value = result.checklist_gate.failed_required_rule_ids
+    }
     precheckError.value = ''
   },
   onRequestError: (error, context) => {
@@ -1594,6 +1616,7 @@ async function submitForm() {
   }
 
   submitAttempted.value = true
+  serverFieldErrors.value = {}
   tradeChecklistStore.markSubmitAttempted(true)
   const firstError = Object.values(formErrors.value)[0]
   if (firstError) {
@@ -1622,7 +1645,15 @@ async function submitForm() {
     return
   }
 
-  if (isChecklistStrictBlocked.value) return
+  if (isChecklistStrictBlocked.value) {
+    uiStore.toast({
+      type: 'error',
+      title: 'Blocked by strict rules',
+      message: checklistServerReadinessReasons.value[0]?.reason
+        || 'Server checklist readiness is not ready yet.',
+    })
+    return
+  }
 
   try {
     const payload = buildPayload()
@@ -1645,6 +1676,7 @@ async function submitForm() {
     await uploadPendingImages(savedTrade)
     loadedTradeUpdatedAt.value = normalizeUpdatedAt(savedTrade.updated_at)
     clearStaleWriteWarning()
+    serverFieldErrors.value = {}
 
     uiStore.toast({
       type: 'success',
@@ -1657,6 +1689,22 @@ async function submitForm() {
     tradeChecklistStore.clearSubmitAttempted()
     void router.push('/trades')
   } catch (error) {
+    const normalized = normalizeApiError(error)
+    applyServerFieldErrors(normalized)
+
+    if (isTradeRevisionConflict(error) && isEditMode.value && tradeId.value !== null) {
+      clearPendingImages()
+      await loadTradeIfNeeded()
+      await loadChecklistState()
+      schedulePrecheck()
+      uiStore.toast({
+        type: 'info',
+        title: 'Trade updated elsewhere',
+        message: 'This trade was updated elsewhere. Reloaded latest version.',
+      })
+      return
+    }
+
     const failingRuleIds = extractFailingRuleIds(error)
     if (failingRuleIds.length > 0) {
       failedRequiredRuleIds.value = failingRuleIds
@@ -1665,7 +1713,7 @@ async function submitForm() {
     uiStore.toast({
       type: 'error',
       title: 'Failed to save execution',
-      message: extractErrorMessage(error),
+      message: normalized.message,
     })
   }
 }
@@ -1680,6 +1728,7 @@ async function loadTradeIfNeeded() {
     tradeCompleted.value = true
     loadedTradeUpdatedAt.value = null
     clearStaleWriteWarning()
+    serverFieldErrors.value = {}
     form.date = nowLocalDateTime()
     ensureDefaultExitLeg()
     setPsychologyFromPayload(null)
@@ -1692,6 +1741,7 @@ async function loadTradeIfNeeded() {
     const data = await tradeStore.fetchTradeDetails(tradeId.value)
     loadedTradeUpdatedAt.value = normalizeUpdatedAt(data.trade.updated_at)
     clearStaleWriteWarning()
+    serverFieldErrors.value = {}
     setFormFromTrade(data.trade, data.legs ?? [], data.psychology ?? null)
     existingImages.value = (data.images ?? [])
       .slice()
@@ -2208,6 +2258,9 @@ async function loadImage(file: File): Promise<HTMLImageElement> {
           :optional-items="checklistOptionalItems"
           :archived-responses="checklistArchivedResponses"
           :readiness="checklistReadiness"
+          :server-readiness="checklistServerReadiness"
+          :server-readiness-mismatch="checklistServerReadinessMismatch"
+          :server-readiness-reasons="checklistServerReadinessReasons"
           :execution-snapshot="checklistExecutionSnapshot"
           :loading="checklistLoading"
           :saving="checklistSaving"
@@ -2524,7 +2577,7 @@ async function loadImage(file: File): Promise<HTMLImageElement> {
             class="btn btn-primary px-4 py-2 text-sm"
             :disabled="isSubmittingDisabled"
             :class="{ 'opacity-60': isChecklistStrictBlocked }"
-            :title="isChecklistStrictBlocked ? 'Strict mode: complete all required rules to enable execution.' : ''"
+            :title="isChecklistStrictBlocked ? 'Strict mode: blocked until server readiness is Ready.' : ''"
             @click="handleExecuteClick"
           >
             {{
@@ -2547,6 +2600,9 @@ async function loadImage(file: File): Promise<HTMLImageElement> {
           :optional-items="checklistOptionalItems"
           :archived-responses="checklistArchivedResponses"
           :readiness="checklistReadiness"
+          :server-readiness="checklistServerReadiness"
+          :server-readiness-mismatch="checklistServerReadinessMismatch"
+          :server-readiness-reasons="checklistServerReadinessReasons"
           :execution-snapshot="checklistExecutionSnapshot"
           :loading="checklistLoading"
           :saving="checklistSaving"

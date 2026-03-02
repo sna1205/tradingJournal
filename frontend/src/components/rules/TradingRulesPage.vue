@@ -7,7 +7,8 @@ import { useRulesStore } from '@/stores/rulesStore'
 import { useAccountStore } from '@/stores/accountStore'
 import { useTradeStore } from '@/stores/tradeStore'
 import { useUiStore } from '@/stores/uiStore'
-import type { ChecklistItemType, ChecklistScope } from '@/types/rules'
+import type { ChecklistItemType, ChecklistRuleDefinition, ChecklistScope } from '@/types/rules'
+import { normalizeApiError } from '@/utils/apiError'
 
 const checklistStore = useRulesStore()
 const accountStore = useAccountStore()
@@ -67,6 +68,10 @@ const checklistStatsByChecklistId = computed<Record<number, {
   return stats
 })
 
+function errorMessage(error: unknown): string {
+  return normalizeApiError(error).message
+}
+
 async function loadChecklists() {
   try {
     await checklistStore.fetchChecklists({
@@ -78,11 +83,11 @@ async function loadChecklists() {
     }
     await ensureStarterChecklistIfEmpty()
     await preloadChecklistStats()
-  } catch {
+  } catch (error) {
     uiStore.toast({
       type: 'error',
       title: 'Failed to load rule sets',
-      message: 'Please refresh and try again.',
+      message: errorMessage(error),
     })
   }
 }
@@ -129,9 +134,9 @@ async function createChecklist(payload: {
     lastSavedAt.value = new Date().toISOString()
     unsavedChanges.value = false
     uiStore.toast({ type: 'success', title: 'Rule set created' })
-  } catch {
+  } catch (error) {
     unsavedChanges.value = true
-    uiStore.toast({ type: 'error', title: 'Failed to create rule set' })
+    uiStore.toast({ type: 'error', title: 'Failed to create rule set', message: errorMessage(error) })
   }
 }
 
@@ -141,9 +146,9 @@ async function updateChecklist(checklistId: number, payload: Record<string, unkn
     await checklistStore.updateChecklist(checklistId, payload)
     lastSavedAt.value = new Date().toISOString()
     unsavedChanges.value = false
-  } catch {
+  } catch (error) {
     unsavedChanges.value = true
-    uiStore.toast({ type: 'error', title: 'Failed to update rule set' })
+    uiStore.toast({ type: 'error', title: 'Failed to update rule set', message: errorMessage(error) })
   }
 }
 
@@ -152,8 +157,8 @@ async function duplicateChecklist(checklistId: number) {
     await checklistStore.duplicateChecklist(checklistId)
     await preloadChecklistStats()
     uiStore.toast({ type: 'success', title: 'Rule set duplicated' })
-  } catch {
-    uiStore.toast({ type: 'error', title: 'Failed to duplicate rule set' })
+  } catch (error) {
+    uiStore.toast({ type: 'error', title: 'Failed to duplicate rule set', message: errorMessage(error) })
   }
 }
 
@@ -168,14 +173,15 @@ async function removeChecklist(checklistId: number) {
   try {
     await checklistStore.removeChecklist(checklistId)
     uiStore.toast({ type: 'success', title: 'Rule set archived' })
-  } catch {
-    uiStore.toast({ type: 'error', title: 'Failed to archive rule set' })
+  } catch (error) {
+    uiStore.toast({ type: 'error', title: 'Failed to archive rule set', message: errorMessage(error) })
   }
 }
 
 async function createItem(checklistId: number, payload: {
   title: string
   type: ChecklistItemType
+  rule?: ChecklistRuleDefinition
   required?: boolean
   category?: string
   help_text?: string | null
@@ -188,9 +194,9 @@ async function createItem(checklistId: number, payload: {
     lastSavedAt.value = new Date().toISOString()
     unsavedChanges.value = false
     uiStore.toast({ type: 'success', title: 'Rule added' })
-  } catch {
+  } catch (error) {
     unsavedChanges.value = true
-    uiStore.toast({ type: 'error', title: 'Failed to add rule' })
+    uiStore.toast({ type: 'error', title: 'Failed to add rule', message: errorMessage(error) })
   }
 }
 
@@ -200,9 +206,9 @@ async function updateItem(itemId: number, payload: Record<string, unknown>) {
     await checklistStore.updateItem(itemId, payload)
     lastSavedAt.value = new Date().toISOString()
     unsavedChanges.value = false
-  } catch {
+  } catch (error) {
     unsavedChanges.value = true
-    uiStore.toast({ type: 'error', title: 'Failed to update rule' })
+    uiStore.toast({ type: 'error', title: 'Failed to update rule', message: errorMessage(error) })
   }
 }
 
@@ -221,9 +227,9 @@ async function removeItem(checklistId: number, itemId: number) {
     lastSavedAt.value = new Date().toISOString()
     unsavedChanges.value = false
     uiStore.toast({ type: 'success', title: 'Rule deleted' })
-  } catch {
+  } catch (error) {
     unsavedChanges.value = true
-    uiStore.toast({ type: 'error', title: 'Failed to delete rule' })
+    uiStore.toast({ type: 'error', title: 'Failed to delete rule', message: errorMessage(error) })
   }
 }
 
@@ -233,9 +239,9 @@ async function reorderItems(checklistId: number, orderedIds: number[]) {
     await checklistStore.reorderItems(checklistId, orderedIds)
     lastSavedAt.value = new Date().toISOString()
     unsavedChanges.value = false
-  } catch {
+  } catch (error) {
     unsavedChanges.value = true
-    uiStore.toast({ type: 'error', title: 'Failed to reorder rules' })
+    uiStore.toast({ type: 'error', title: 'Failed to reorder rules', message: errorMessage(error) })
   }
 }
 
@@ -444,10 +450,11 @@ async function ensureStarterChecklistIfEmpty() {
       title: 'Starter rule set created',
       message: 'You can edit or replace it anytime.',
     })
-  } catch {
+  } catch (error) {
     uiStore.toast({
       type: 'error',
       title: 'Failed to create starter rule set',
+      message: errorMessage(error),
     })
   }
 }
@@ -473,10 +480,11 @@ onMounted(async () => {
       tradeStore.fetchDictionaries(),
     ])
     await loadChecklists()
-  } catch {
+  } catch (error) {
     uiStore.toast({
       type: 'error',
       title: 'Failed to initialize rules builder',
+      message: errorMessage(error),
     })
   }
 })

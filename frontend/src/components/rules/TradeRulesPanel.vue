@@ -6,6 +6,7 @@ import type {
   TradeChecklistExecutionSnapshot,
   TradeChecklistItemWithResponse,
   TradeChecklistReadiness,
+  TradeChecklistResponsePayload,
   TradeChecklistResponseRecord,
 } from '@/types/rules'
 import type { TradePrecheckResult } from '@/stores/tradeStore'
@@ -18,6 +19,9 @@ const props = withDefaults(
     optionalItems: TradeChecklistItemWithResponse[]
     archivedResponses: TradeChecklistResponseRecord[]
     readiness: TradeChecklistReadiness
+    serverReadiness?: TradeChecklistReadiness
+    serverReadinessMismatch?: boolean
+    serverReadinessReasons?: TradeChecklistResponsePayload['failing_rules']
     executionSnapshot?: TradeChecklistExecutionSnapshot | null
     loading?: boolean
     saving?: boolean
@@ -34,6 +38,9 @@ const props = withDefaults(
     mode: 'auto',
     riskPrecheck: null,
     executionSnapshot: null,
+    serverReadiness: undefined,
+    serverReadinessMismatch: false,
+    serverReadinessReasons: () => [],
   }
 )
 
@@ -57,6 +64,9 @@ const isMobileOnly = computed(() => props.mode === 'mobile')
       :optional-items="optionalItems"
       :archived-responses="archivedResponses"
       :readiness="readiness"
+      :server-readiness="serverReadiness ?? readiness"
+      :server-readiness-mismatch="serverReadinessMismatch"
+      :server-readiness-reasons="serverReadinessReasons ?? []"
       :execution-snapshot="executionSnapshot"
       :loading="loading"
       :saving="saving"
@@ -91,6 +101,9 @@ const isMobileOnly = computed(() => props.mode === 'mobile')
         :optional-items="optionalItems"
         :archived-responses="archivedResponses"
         :readiness="readiness"
+        :server-readiness="serverReadiness ?? readiness"
+        :server-readiness-mismatch="serverReadinessMismatch"
+        :server-readiness-reasons="serverReadinessReasons ?? []"
         :execution-snapshot="executionSnapshot"
         :loading="loading"
         :saving="saving"

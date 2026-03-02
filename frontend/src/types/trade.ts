@@ -10,6 +10,7 @@ export type TradeEmotion =
 
 export interface Trade {
   id: number
+  revision: number
   account_id: number
   instrument_id?: number | null
   strategy_model_id?: number | null

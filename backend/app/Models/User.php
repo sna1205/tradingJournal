@@ -22,6 +22,7 @@ class User extends Authenticatable
     protected $fillable = [
         'name',
         'email',
+        'role',
         'password',
     ];
 
@@ -45,7 +46,25 @@ class User extends Authenticatable
         return [
             'email_verified_at' => 'datetime',
             'password' => 'hashed',
+            'role' => 'string',
         ];
+    }
+
+    public function roleName(): string
+    {
+        $role = strtolower(trim((string) ($this->role ?? 'trader')));
+
+        return $role !== '' ? $role : 'trader';
+    }
+
+    public function isTrader(): bool
+    {
+        return $this->roleName() === 'trader';
+    }
+
+    public function canManageRiskPolicyMode(): bool
+    {
+        return in_array($this->roleName(), ['admin', 'governance'], true);
     }
 
     public function accounts(): HasMany

@@ -17,6 +17,7 @@ class Trade extends Model
     use SoftDeletes;
 
     protected $fillable = [
+        'revision',
         'account_id',
         'instrument_id',
         'strategy_model_id',
@@ -34,6 +35,8 @@ class Trade extends Model
         'risk_per_unit',
         'reward_per_unit',
         'monetary_risk',
+        'risk_amount_account_currency',
+        'risk_currency',
         'monetary_reward',
         'gross_profit_loss',
         'costs_total',
@@ -44,6 +47,9 @@ class Trade extends Model
         'fx_rate_quote_to_usd',
         'fx_symbol_used',
         'fx_rate_timestamp',
+        'fx_rate_used',
+        'fx_pair_used',
+        'fx_rate_provenance_at',
         'profit_loss',
         'rr',
         'r_multiple',
@@ -69,6 +75,7 @@ class Trade extends Model
     ];
 
     protected $casts = [
+        'revision' => 'integer',
         'account_id' => 'integer',
         'instrument_id' => 'integer',
         'strategy_model_id' => 'integer',
@@ -84,6 +91,8 @@ class Trade extends Model
         'risk_per_unit' => 'decimal:6',
         'reward_per_unit' => 'decimal:6',
         'monetary_risk' => 'decimal:6',
+        'risk_amount_account_currency' => 'decimal:6',
+        'risk_currency' => 'string',
         'monetary_reward' => 'decimal:6',
         'gross_profit_loss' => 'decimal:6',
         'costs_total' => 'decimal:6',
@@ -93,6 +102,9 @@ class Trade extends Model
         'slippage_cost' => 'decimal:6',
         'fx_rate_quote_to_usd' => 'decimal:10',
         'fx_rate_timestamp' => 'datetime',
+        'fx_rate_used' => 'decimal:10',
+        'fx_pair_used' => 'string',
+        'fx_rate_provenance_at' => 'datetime',
         'profit_loss' => 'decimal:2',
         'rr' => 'decimal:2',
         'r_multiple' => 'decimal:4',

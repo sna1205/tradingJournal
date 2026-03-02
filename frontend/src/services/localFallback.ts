@@ -34,6 +34,7 @@ const LEGACY_MISSED_TRADES_KEY = 'tj_local_missed_trades_v1'
 const OFFLINE_MODE_KEY = 'tj_offline_mode_enabled'
 const OFFLINE_MODE_ON = '1'
 const OFFLINE_MODE_OFF = '0'
+const DEFAULT_OFFLINE_MODE_ENABLED = import.meta.env.VITE_LOCAL_FALLBACK_DEFAULT_ENABLED === '1'
 const DEFAULT_TTL_MS = 7 * 24 * 60 * 60 * 1000
 const MAX_TRADES = 200
 const MAX_ACCOUNTS = 20
@@ -81,7 +82,7 @@ export interface MissedTradePayloadLike {
 }
 
 export function shouldUseLocalFallback(error: unknown): boolean {
-  return isConnectivityFailure(error)
+  return isOfflineModeEnabled() && isConnectivityFailure(error)
 }
 
 export function isOfflineModeEnabled(): boolean {
@@ -91,7 +92,7 @@ export function isOfflineModeEnabled(): boolean {
 
   const storage = safeLocalStorage()
   if (!storage) {
-    offlineModeEnabledCache = true
+    offlineModeEnabledCache = DEFAULT_OFFLINE_MODE_ENABLED
     return offlineModeEnabledCache
   }
 
@@ -105,7 +106,7 @@ export function isOfflineModeEnabled(): boolean {
     return offlineModeEnabledCache
   }
 
-  offlineModeEnabledCache = true
+  offlineModeEnabledCache = DEFAULT_OFFLINE_MODE_ENABLED
   return offlineModeEnabledCache
 }
 
@@ -438,6 +439,7 @@ export function createLocalTrade(payload: TradePayloadLike): Trade {
   const now = nowIso()
   const created: Trade = {
     id: trades.reduce((max, trade) => Math.max(max, trade.id), 0) + 1,
+    revision: 1,
     account_id: accountId,
     pair: payload.symbol.trim().toUpperCase(),
     direction: payload.direction,
@@ -1023,6 +1025,7 @@ function normalizeTrade(input: unknown): Trade | null {
 
   return {
     id,
+    revision: Math.max(1, toInt(input.revision ?? 1)),
     account_id: Math.max(1, toInt(input.account_id)),
     pair: String(input.pair ?? '').toUpperCase(),
     direction: input.direction === 'sell' ? 'sell' : 'buy',

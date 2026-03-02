@@ -55,6 +55,7 @@ class TradeRiskPolicyService
     public function evaluate(array $input): array
     {
         $accountId = (int) $input['account_id'];
+        $actorRole = strtolower(trim((string) ($input['actor_role'] ?? 'trader')));
         $accountStartingBalance = (float) $input['account_starting_balance'];
         $accountCurrentBalance = (float) $input['account_current_balance'];
         $riskPercent = (float) $input['risk_percent'];
@@ -119,7 +120,8 @@ class TradeRiskPolicyService
 
         $hasViolations = count($violations) > 0;
         $enforced = (bool) $policy->enforce_hard_limits;
-        $canOverride = (bool) $policy->allow_override;
+        $isTraderRole = $actorRole === '' || $actorRole === 'trader';
+        $canOverride = (bool) $policy->allow_override && ! $isTraderRole;
         $hasOverrideReason = $overrideReason !== '';
         $requiresOverrideReason = $hasViolations && $enforced && $canOverride && ! $hasOverrideReason;
 
@@ -137,7 +139,7 @@ class TradeRiskPolicyService
                 'max_total_drawdown_pct' => (float) $policy->max_total_drawdown_pct,
                 'max_open_risk_pct' => (float) $policy->max_open_risk_pct,
                 'enforce_hard_limits' => (bool) $policy->enforce_hard_limits,
-                'allow_override' => (bool) $policy->allow_override,
+                'allow_override' => $canOverride,
             ],
             'violations' => $violations,
             'stats' => [

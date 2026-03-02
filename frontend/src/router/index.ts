@@ -1,7 +1,7 @@
 import { createRouter, createWebHistory, type RouteRecordRaw } from 'vue-router'
 import { useAuthStore } from '@/stores/authStore'
 
-const Dashboard = () => import('@/pages/Dashboard.vue')
+const AnalyticsPage = () => import('@/pages/Dashboard.vue')
 const Trades = () => import('@/pages/Trades.vue')
 const TradeFormPage = () => import('@/pages/TradeFormPage.vue')
 const MissedTrades = () => import('@/pages/MissedTrades.vue')
@@ -71,7 +71,7 @@ const router = createRouter({
     {
       path: '/dashboard',
       name: 'dashboard',
-      component: Dashboard,
+      component: AnalyticsPage,
     },
     {
       path: '/trades',

@@ -53,7 +53,7 @@ class TradeChecklistEnforcementTest extends TestCase
         $checklist = $this->createChecklistWithRequiredRule('global', null, null);
         $requiredItem = $checklist->items()->firstOrFail();
 
-        $response = $this->postJson('/api/trades', $this->tradePayload((int) $account->id));
+        $response = $this->withTradeIdempotencyKey()->postJson('/api/trades', $this->tradePayload((int) $account->id));
 
         $response->assertStatus(422);
         $response->assertJsonPath('checklist.id', (int) $checklist->id);
@@ -82,7 +82,7 @@ class TradeChecklistEnforcementTest extends TestCase
             'emotion' => 'calm',
         ]);
 
-        $response = $this->putJson("/api/trades/{$trade->id}", [
+        $response = $this->withHeaders(['If-Match' => '1'])->putJson("/api/trades/{$trade->id}", [
             'notes' => 'Updated note',
         ]);
 
@@ -104,7 +104,7 @@ class TradeChecklistEnforcementTest extends TestCase
             ['item_id' => (int) $requiredItem->id, 'value' => true],
         ];
 
-        $response = $this->postJson('/api/trades', $payload);
+        $response = $this->withTradeIdempotencyKey()->postJson('/api/trades', $payload);
         $response->assertCreated();
 
         $tradeId = (int) $response->json('id');
@@ -135,7 +135,7 @@ class TradeChecklistEnforcementTest extends TestCase
             ['checklist_item_id' => (int) $requiredItem->id, 'value' => true],
         ];
 
-        $created = $this->postJson('/api/trades', $payload);
+        $created = $this->withTradeIdempotencyKey()->postJson('/api/trades', $payload);
         $created->assertCreated();
         $tradeId = (int) $created->json('id');
 
@@ -194,7 +194,7 @@ class TradeChecklistEnforcementTest extends TestCase
             ['checklist_item_id' => (int) $requiredItem->id, 'value' => true],
         ];
 
-        $response = $this->postJson('/api/trades', $payload);
+        $response = $this->withTradeIdempotencyKey()->postJson('/api/trades', $payload);
         $response->assertStatus(500);
         $this->assertDatabaseCount('trades', 0);
         $this->assertDatabaseCount('trade_checklist_responses', 0);
@@ -275,7 +275,7 @@ class TradeChecklistEnforcementTest extends TestCase
             ['checklist_item_id' => (int) $requiredItem->id, 'value' => null],
         ];
 
-        $response = $this->postJson('/api/trades', $payload);
+        $response = $this->withTradeIdempotencyKey()->postJson('/api/trades', $payload);
         $response->assertStatus(422);
         $response->assertJsonPath('failed_required_rule_ids.0', (int) $requiredItem->id);
         $response->assertJsonPath('failed_rule_reasons.0.checklist_item_id', (int) $requiredItem->id);
@@ -310,7 +310,7 @@ class TradeChecklistEnforcementTest extends TestCase
             'pip_value' => 0.0,
         ];
 
-        $response = $this->postJson('/api/trades', $payload);
+        $response = $this->withTradeIdempotencyKey()->postJson('/api/trades', $payload);
         $response->assertStatus(422);
         $response->assertJsonPath('message', 'Checklist strict validation failed.');
         $response->assertJsonPath('failed_required_rule_ids.0', (int) $requiredItem->id);
@@ -341,7 +341,7 @@ class TradeChecklistEnforcementTest extends TestCase
             ['checklist_item_id' => (int) $requiredItem->id, 'value' => null],
         ];
 
-        $response = $this->postJson('/api/trades', $payload);
+        $response = $this->withTradeIdempotencyKey()->postJson('/api/trades', $payload);
         $response->assertCreated();
         $tradeId = (int) $response->json('id');
         $this->assertGreaterThan(0, $tradeId);
@@ -398,6 +398,13 @@ class TradeChecklistEnforcementTest extends TestCase
             'starting_balance' => 10_000,
             'current_balance' => 10_000,
             'is_active' => true,
+        ]);
+    }
+
+    private function withTradeIdempotencyKey(): self
+    {
+        return $this->withHeaders([
+            'Idempotency-Key' => (string) Str::uuid(),
         ]);
     }
 

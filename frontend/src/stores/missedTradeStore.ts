@@ -13,6 +13,7 @@ import {
 } from '@/services/localFallback'
 import { useSyncStatusStore } from '@/stores/syncStatusStore'
 import type { MissedTrade, MissedTradeImage, Paginated } from '@/types/trade'
+import { normalizeApiError } from '@/utils/apiError'
 
 interface MissedTradeFilters {
   pair: string
@@ -74,8 +75,9 @@ export const useMissedTradeStore = defineStore('missed-trades', () => {
       pagination.value.total = data.total
     } catch (err) {
       if (!shouldUseLocalFallback(err)) {
-        error.value = 'Failed to load missed trades.'
-        throw err
+        const normalized = normalizeApiError(err)
+        error.value = normalized.message
+        throw normalized
       }
       syncStatusStore.markLocalFallback('missed-trades')
 
@@ -106,9 +108,11 @@ export const useMissedTradeStore = defineStore('missed-trades', () => {
       syncStatusStore.markServerHealthy()
       await fetchMissedTrades(1)
       return data
-    } catch (error) {
-      if (!shouldUseLocalFallback(error)) {
-        throw error
+    } catch (caughtError) {
+      if (!shouldUseLocalFallback(caughtError)) {
+        const normalized = normalizeApiError(caughtError)
+        error.value = normalized.message
+        throw normalized
       }
       syncStatusStore.markLocalFallback('missed-trades')
 
@@ -127,9 +131,11 @@ export const useMissedTradeStore = defineStore('missed-trades', () => {
       syncStatusStore.markServerHealthy()
       await fetchMissedTrades(pagination.value.current_page)
       return data
-    } catch (error) {
-      if (!shouldUseLocalFallback(error)) {
-        throw error
+    } catch (caughtError) {
+      if (!shouldUseLocalFallback(caughtError)) {
+        const normalized = normalizeApiError(caughtError)
+        error.value = normalized.message
+        throw normalized
       }
       syncStatusStore.markLocalFallback('missed-trades')
 
@@ -145,9 +151,11 @@ export const useMissedTradeStore = defineStore('missed-trades', () => {
     try {
       await api.delete(`/missed-trades/${id}`)
       syncStatusStore.markServerHealthy()
-    } catch (error) {
-      if (!shouldUseLocalFallback(error)) {
-        throw error
+    } catch (caughtError) {
+      if (!shouldUseLocalFallback(caughtError)) {
+        const normalized = normalizeApiError(caughtError)
+        error.value = normalized.message
+        throw normalized
       }
       syncStatusStore.markLocalFallback('missed-trades')
       deleteLocalMissedTrade(id)
@@ -160,9 +168,11 @@ export const useMissedTradeStore = defineStore('missed-trades', () => {
       const { data } = await api.get<MissedTrade>(`/missed-trades/${id}`)
       syncStatusStore.markServerHealthy()
       return data
-    } catch (error) {
-      if (!shouldUseLocalFallback(error)) {
-        throw error
+    } catch (caughtError) {
+      if (!shouldUseLocalFallback(caughtError)) {
+        const normalized = normalizeApiError(caughtError)
+        error.value = normalized.message
+        throw normalized
       }
       syncStatusStore.markLocalFallback('missed-trade-details')
       return fetchLocalMissedTrade(id)
@@ -197,9 +207,11 @@ export const useMissedTradeStore = defineStore('missed-trades', () => {
       syncStatusStore.markServerHealthy()
 
       return data
-    } catch (error) {
-      if (!shouldUseLocalFallback(error)) {
-        throw error
+    } catch (caughtError) {
+      if (!shouldUseLocalFallback(caughtError)) {
+        const normalized = normalizeApiError(caughtError)
+        error.value = normalized.message
+        throw normalized
       }
       syncStatusStore.markLocalFallback('missed-trade-images')
       onProgress?.(100)
@@ -211,9 +223,11 @@ export const useMissedTradeStore = defineStore('missed-trades', () => {
     try {
       await api.delete(`/missed-trade-images/${imageId}`)
       syncStatusStore.markServerHealthy()
-    } catch (error) {
-      if (!shouldUseLocalFallback(error)) {
-        throw error
+    } catch (caughtError) {
+      if (!shouldUseLocalFallback(caughtError)) {
+        const normalized = normalizeApiError(caughtError)
+        error.value = normalized.message
+        throw normalized
       }
       syncStatusStore.markLocalFallback('missed-trade-images')
       deleteLocalMissedTradeImage(imageId)

@@ -182,6 +182,104 @@ class TradeChecklistServiceEvaluatorTest extends TestCase
         $this->assertStringContainsString('comparator', strtolower((string) ($reasons[0]['reason'] ?? '')));
     }
 
+    public function test_explicit_numeric_rule_schema_is_evaluated(): void
+    {
+        $item = $this->createItemWithConfig('number', [
+            'rule' => [
+                'type' => 'numeric',
+                'operator' => '<=',
+                'threshold' => 1.0,
+                'required' => true,
+            ],
+        ]);
+
+        $passResult = $this->service->evaluateDraftReadiness(
+            $item->checklist,
+            [[
+                'checklist_item_id' => (int) $item->id,
+                'value' => 0.9,
+            ]]
+        );
+        $this->assertTrue((bool) ($passResult['readiness']['ready'] ?? false));
+
+        $failResult = $this->service->evaluateDraftReadiness(
+            $item->checklist,
+            [[
+                'checklist_item_id' => (int) $item->id,
+                'value' => 1.5,
+            ]]
+        );
+        $this->assertFalse((bool) ($failResult['readiness']['ready'] ?? true));
+        $this->assertSame([(int) $item->id], $failResult['failed_required_rule_ids'] ?? []);
+    }
+
+    public function test_explicit_select_rule_not_in_operator_blocks_disallowed_values(): void
+    {
+        $item = $this->createItemWithConfig('dropdown', [
+            'rule' => [
+                'type' => 'select',
+                'operator' => 'not_in',
+                'threshold' => ['blocked'],
+                'required' => true,
+            ],
+        ]);
+
+        $passResult = $this->service->evaluateDraftReadiness(
+            $item->checklist,
+            [[
+                'checklist_item_id' => (int) $item->id,
+                'value' => 'allowed',
+            ]]
+        );
+        $this->assertTrue((bool) ($passResult['readiness']['ready'] ?? false));
+
+        $failResult = $this->service->evaluateDraftReadiness(
+            $item->checklist,
+            [[
+                'checklist_item_id' => (int) $item->id,
+                'value' => 'blocked',
+            ]]
+        );
+        $this->assertFalse((bool) ($failResult['readiness']['ready'] ?? true));
+        $this->assertSame([(int) $item->id], $failResult['failed_required_rule_ids'] ?? []);
+    }
+
+    public function test_explicit_auto_metric_rule_uses_metric_key(): void
+    {
+        $item = $this->createItemWithConfig('number', [
+            'rule' => [
+                'type' => 'auto_metric',
+                'metric_key' => 'risk_percent',
+                'operator' => '<=',
+                'threshold' => 0.8,
+                'required' => true,
+            ],
+        ]);
+
+        $passResult = $this->service->evaluateDraftReadiness(
+            $item->checklist,
+            [[
+                'checklist_item_id' => (int) $item->id,
+                'value' => null,
+            ]],
+            true,
+            ['risk_percent' => 0.5]
+        );
+        $this->assertTrue((bool) ($passResult['readiness']['ready'] ?? false));
+
+        $failResult = $this->service->evaluateDraftReadiness(
+            $item->checklist,
+            [[
+                'checklist_item_id' => (int) $item->id,
+                'value' => null,
+            ]],
+            true,
+            ['risk_percent' => 1.2]
+        );
+        $this->assertFalse((bool) ($failResult['readiness']['ready'] ?? true));
+        $this->assertSame([(int) $item->id], $failResult['failed_required_rule_ids'] ?? []);
+    }
+
     private function createItemWithConfig(string $type, array $config): ChecklistItem
     {
         $checklist = Checklist::query()->create([

@@ -13,6 +13,9 @@ use Illuminate\Validation\ValidationException;
 
 class ChecklistItemController extends Controller
 {
+    private const EXPLICIT_RULE_TYPES = ['boolean', 'numeric', 'select', 'auto_metric'];
+    private const EXPLICIT_RULE_OPERATORS = ['>', '>=', '<', '<=', '==', '!=', 'in', 'not_in'];
+
     public function __construct(
         private readonly ChecklistService $checklistService
     ) {
@@ -98,6 +101,7 @@ class ChecklistItemController extends Controller
             'category' => ['sometimes', 'string', 'max:80'],
             'help_text' => ['sometimes', 'nullable', 'string', 'max:2000'],
             'config' => ['sometimes', 'array'],
+            'rule' => ['sometimes', 'array'],
             'is_active' => ['sometimes', 'boolean'],
         ]);
 
@@ -187,9 +191,16 @@ class ChecklistItemController extends Controller
                     $validator->errors()->add('config', 'Scale min must be lower than max.');
                 }
             }
+
+            $rawRule = $this->extractRawRuleDefinition($request);
+            if ($rawRule !== null) {
+                $this->validateExplicitRuleSchema($validator, $rawRule);
+            }
         });
 
-        return $validator->validate();
+        $payload = $validator->validate();
+
+        return $this->normalizeRulePayload($payload);
     }
 
     private function abortIfUnauthorizedChecklist(Request $request, Checklist $checklist): void
@@ -202,5 +213,293 @@ class ChecklistItemController extends Controller
         $checklist = Checklist::query()->whereKey((int) $item->checklist_id)->first();
         abort_unless($checklist !== null, 404);
         $this->abortIfUnauthorizedChecklist($request, $checklist);
+    }
+
+    private function extractRawRuleDefinition(Request $request): mixed
+    {
+        if ($request->exists('rule')) {
+            return $request->input('rule');
+        }
+
+        $config = $request->input('config');
+        if (is_array($config) && array_key_exists('rule', $config)) {
+            return $config['rule'];
+        }
+
+        return null;
+    }
+
+    private function validateExplicitRuleSchema($validator, mixed $rawRule): void
+    {
+        if (!is_array($rawRule)) {
+            $validator->errors()->add('rule', 'Rule definition must be an object.');
+            return;
+        }
+
+        $type = $this->asTrimmedLowerString($rawRule['type'] ?? null);
+        if ($type === null || !in_array($type, self::EXPLICIT_RULE_TYPES, true)) {
+            $validator->errors()->add('rule.type', 'Rule type must be one of boolean, numeric, select, auto_metric.');
+        }
+
+        $operator = $this->asTrimmedLowerString($rawRule['operator'] ?? null);
+        if ($operator === null || !in_array($operator, self::EXPLICIT_RULE_OPERATORS, true)) {
+            $validator->errors()->add('rule.operator', 'Rule operator must be one of >, >=, <, <=, ==, !=, in, not_in.');
+        }
+
+        if (!array_key_exists('threshold', $rawRule)) {
+            $validator->errors()->add('rule.threshold', 'Rule threshold is required.');
+        }
+
+        if (!array_key_exists('required', $rawRule) || !is_bool($rawRule['required'])) {
+            $validator->errors()->add('rule.required', 'Rule required must be a boolean.');
+        }
+
+        $metricKey = $this->asTrimmedString($rawRule['metric_key'] ?? null);
+        if ($type === 'auto_metric' && $metricKey === null) {
+            $validator->errors()->add('rule.metric_key', 'auto_metric rules require metric_key.');
+        }
+        if (array_key_exists('metric_key', $rawRule) && $rawRule['metric_key'] !== null && $metricKey === null) {
+            $validator->errors()->add('rule.metric_key', 'metric_key must be a non-empty string or null.');
+        }
+
+        $threshold = $rawRule['threshold'] ?? null;
+        if ($operator === 'in' || $operator === 'not_in') {
+            if (!is_array($threshold) || count($threshold) === 0) {
+                $validator->errors()->add('rule.threshold', 'in/not_in operators require a non-empty threshold array.');
+                return;
+            }
+
+            foreach ($threshold as $index => $entry) {
+                if (!is_scalar($entry)) {
+                    $validator->errors()->add("rule.threshold.$index", 'Each threshold entry must be a scalar value.');
+                    continue;
+                }
+                if (trim((string) $entry) === '') {
+                    $validator->errors()->add("rule.threshold.$index", 'Threshold entries cannot be empty.');
+                }
+            }
+        } elseif (is_array($threshold)) {
+            $validator->errors()->add('rule.threshold', 'Only in/not_in operators accept array thresholds.');
+        } elseif (($type === 'numeric' || $type === 'auto_metric') && !is_numeric($threshold)) {
+            $validator->errors()->add('rule.threshold', 'Numeric and auto_metric rules require numeric thresholds.');
+        }
+
+        if ($type === 'boolean' && !in_array($operator, ['==', '!='], true)) {
+            $validator->errors()->add('rule.operator', 'Boolean rules only support == or != operators.');
+        }
+        if ($type === 'select' && !in_array($operator, ['==', '!=', 'in', 'not_in'], true)) {
+            $validator->errors()->add('rule.operator', 'Select rules only support ==, !=, in, not_in operators.');
+        }
+        if (($type === 'numeric' || $type === 'auto_metric') && !in_array($operator, ['>', '>=', '<', '<=', '==', '!='], true)) {
+            $validator->errors()->add('rule.operator', 'Numeric and auto_metric rules only support >, >=, <, <=, ==, != operators.');
+        }
+    }
+
+    private function normalizeRulePayload(array $payload): array
+    {
+        $explicitRule = $payload['rule'] ?? ($payload['config']['rule'] ?? null);
+        $normalizedRule = is_array($explicitRule)
+            ? $this->normalizeExplicitRule($explicitRule)
+            : $this->normalizeLegacyRule($payload);
+
+        if ($normalizedRule !== null) {
+            $payload['required'] = (bool) $normalizedRule['required'];
+            $payload['type'] = $this->mapRuleTypeToChecklistItemType((string) $normalizedRule['type']);
+            $config = is_array($payload['config'] ?? null) ? $payload['config'] : [];
+            $config['rule'] = $normalizedRule;
+
+            if ((string) $normalizedRule['type'] === 'select' && !array_key_exists('options', $config)) {
+                $threshold = $normalizedRule['threshold'];
+                $options = is_array($threshold) ? $threshold : [$threshold];
+                $config['options'] = array_values(array_map(
+                    fn (mixed $entry): string => trim((string) $entry),
+                    array_filter($options, fn (mixed $entry): bool => is_scalar($entry) && trim((string) $entry) !== '')
+                ));
+            }
+
+            $payload['config'] = $config;
+        }
+
+        unset($payload['rule']);
+
+        return $payload;
+    }
+
+    private function normalizeExplicitRule(array $rawRule): ?array
+    {
+        $type = $this->asTrimmedLowerString($rawRule['type'] ?? null);
+        $operator = $this->asTrimmedLowerString($rawRule['operator'] ?? null);
+        $required = $rawRule['required'] ?? null;
+
+        if ($type === null || !in_array($type, self::EXPLICIT_RULE_TYPES, true)) {
+            return null;
+        }
+        if ($operator === null || !in_array($operator, self::EXPLICIT_RULE_OPERATORS, true)) {
+            return null;
+        }
+        if (!array_key_exists('threshold', $rawRule) || !is_bool($required)) {
+            return null;
+        }
+
+        $threshold = $rawRule['threshold'];
+        if ($operator === 'in' || $operator === 'not_in') {
+            if (!is_array($threshold)) {
+                return null;
+            }
+            $threshold = array_values(array_map(
+                fn (mixed $entry): string => trim((string) $entry),
+                array_filter($threshold, fn (mixed $entry): bool => is_scalar($entry) && trim((string) $entry) !== '')
+            ));
+        } elseif ($type === 'numeric' || $type === 'auto_metric') {
+            if (!is_numeric($threshold)) {
+                return null;
+            }
+            $threshold = (float) $threshold;
+        } elseif (is_scalar($threshold)) {
+            $threshold = trim((string) $threshold);
+        }
+
+        if (($operator === 'in' || $operator === 'not_in') && $threshold === []) {
+            return null;
+        }
+
+        $normalized = [
+            'type' => $type,
+            'operator' => $operator,
+            'threshold' => $threshold,
+            'required' => (bool) $required,
+        ];
+
+        $metricKey = $this->asTrimmedString($rawRule['metric_key'] ?? null);
+        if ($metricKey !== null) {
+            $normalized['metric_key'] = $metricKey;
+        } elseif ($type === 'auto_metric') {
+            return null;
+        }
+
+        return $normalized;
+    }
+
+    private function normalizeLegacyRule(array $payload): ?array
+    {
+        $type = (string) ($payload['type'] ?? '');
+        $config = is_array($payload['config'] ?? null) ? $payload['config'] : [];
+        $required = (bool) ($payload['required'] ?? false);
+
+        if ($type === 'checkbox') {
+            return [
+                'type' => 'boolean',
+                'operator' => '==',
+                'threshold' => 'true',
+                'required' => $required,
+            ];
+        }
+
+        if ($type === 'dropdown') {
+            $options = $this->extractOptionStrings($config['options'] ?? null);
+            if ($options === []) {
+                return null;
+            }
+
+            return [
+                'type' => 'select',
+                'operator' => 'in',
+                'threshold' => $options,
+                'required' => $required,
+            ];
+        }
+
+        if ($type !== 'number') {
+            return null;
+        }
+
+        $normalizedOperator = $this->normalizeLegacyComparatorToExplicitOperator($config['comparator'] ?? null);
+        if ($normalizedOperator === null || !array_key_exists('threshold', $config) || !is_numeric($config['threshold'])) {
+            return null;
+        }
+
+        $legacy = [
+            'type' => $this->asTrimmedString($config['auto_metric'] ?? null) !== null ? 'auto_metric' : 'numeric',
+            'operator' => $normalizedOperator,
+            'threshold' => (float) $config['threshold'],
+            'required' => $required,
+        ];
+
+        $metricKey = $this->asTrimmedString($config['auto_metric'] ?? null);
+        if ($metricKey !== null) {
+            $legacy['metric_key'] = $metricKey;
+        }
+
+        return $legacy;
+    }
+
+    /**
+     * @return array<int,string>
+     */
+    private function extractOptionStrings(mixed $rawOptions): array
+    {
+        if (!is_array($rawOptions)) {
+            return [];
+        }
+
+        $options = [];
+        foreach ($rawOptions as $entry) {
+            if (is_scalar($entry)) {
+                $normalized = trim((string) $entry);
+            } elseif (is_array($entry)) {
+                $candidate = $entry['key'] ?? $entry['value'] ?? $entry['id'] ?? $entry['label'] ?? null;
+                $normalized = is_scalar($candidate) ? trim((string) $candidate) : '';
+            } else {
+                $normalized = '';
+            }
+
+            if ($normalized !== '') {
+                $options[] = $normalized;
+            }
+        }
+
+        return array_values(array_unique($options));
+    }
+
+    private function normalizeLegacyComparatorToExplicitOperator(mixed $rawComparator): ?string
+    {
+        if (!is_scalar($rawComparator)) {
+            return null;
+        }
+
+        return match (strtolower(trim((string) $rawComparator))) {
+            '>', 'gt', 'greater_than' => '>',
+            '>=', 'gte', 'greater_than_or_equal' => '>=',
+            '<', 'lt', 'less_than' => '<',
+            '<=', 'lte', 'less_than_or_equal' => '<=',
+            '=', 'eq', 'equals' => '==',
+            default => null,
+        };
+    }
+
+    private function mapRuleTypeToChecklistItemType(string $ruleType): string
+    {
+        return match ($ruleType) {
+            'boolean' => 'checkbox',
+            'select' => 'dropdown',
+            'numeric', 'auto_metric' => 'number',
+            default => 'checkbox',
+        };
+    }
+
+    private function asTrimmedString(mixed $value): ?string
+    {
+        if (!is_scalar($value)) {
+            return null;
+        }
+
+        $normalized = trim((string) $value);
+        return $normalized === '' ? null : $normalized;
+    }
+
+    private function asTrimmedLowerString(mixed $value): ?string
+    {
+        $normalized = $this->asTrimmedString($value);
+        return $normalized === null ? null : strtolower($normalized);
     }
 }

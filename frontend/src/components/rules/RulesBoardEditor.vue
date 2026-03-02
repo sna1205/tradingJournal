@@ -2,7 +2,7 @@
 import { computed, reactive, ref, watch, type Component } from 'vue'
 import { CircleCheck, Plus, ShieldCheck, Zap } from 'lucide-vue-next'
 import BaseSelect from '@/components/form/BaseSelect.vue'
-import type { Checklist, ChecklistItem, ChecklistItemType } from '@/types/rules'
+import type { Checklist, ChecklistItem, ChecklistItemType, ChecklistRuleDefinition } from '@/types/rules'
 import AddRuleModal from '@/components/rules/AddRuleModal.vue'
 import RuleItemRow from '@/components/rules/RuleItemRow.vue'
 import {
@@ -51,6 +51,7 @@ const emit = defineEmits<{
   (event: 'create-item', checklistId: number, payload: {
     title: string
     type: ChecklistItemType
+    rule?: ChecklistRuleDefinition
     required?: boolean
     category?: string
     help_text?: string | null
@@ -169,6 +170,7 @@ function openAddRuleForLane(lane: RuleLane) {
 function onCreateItem(payload: {
   title: string
   type: ChecklistItemType
+  rule?: ChecklistRuleDefinition
   required?: boolean
   category?: string
   help_text?: string | null
