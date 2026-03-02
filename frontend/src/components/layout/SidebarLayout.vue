@@ -112,14 +112,6 @@ const navSections: NavSection[] = [
         navHint: 'Targets',
       },
       {
-        label: 'Settings',
-        to: '/settings/hub',
-        icon: Settings2,
-        title: 'Settings Hub',
-        subtitle: 'Profile, theme, offline mode, security sessions, and governance shortcuts in one place.',
-        navHint: 'Control center',
-      },
-      {
         label: 'Rules',
         to: '/settings/rules',
         icon: ListChecks,
@@ -142,15 +134,35 @@ const navSections: NavSection[] = [
       },
     ],
   },
+  {
+    label: 'Settings',
+    items: [
+      {
+        label: 'Settings',
+        to: '/settings/hub',
+        icon: Settings2,
+        title: 'Settings Hub',
+        subtitle: 'Profile, theme, offline mode, security sessions, and governance in one page.',
+        navHint: 'Control center',
+      },
+    ],
+  },
 ]
 
 const navItems = computed(() => navSections.flatMap((section) => section.items))
+const routePathAndHash = computed(() => `${route.path}${route.hash}`)
 const currentItem = computed(() => {
-  const exactMatch = navItems.value.find((item) => route.path === item.to)
+  const exactMatch = navItems.value.find((item) => routePathAndHash.value === item.to)
   if (exactMatch) return exactMatch
 
+  const pathMatch = navItems.value.find((item) => route.path === item.to.split('#')[0])
+  if (pathMatch) return pathMatch
+
   const prefixMatch = navItems.value
-    .filter((item) => route.path.startsWith(`${item.to}/`))
+    .filter((item) => {
+      const itemPath = item.to.split('#')[0]
+      return route.path.startsWith(`${itemPath}/`)
+    })
     .sort((left, right) => right.to.length - left.to.length)[0]
 
   return prefixMatch ?? navItems.value[0]!
@@ -243,6 +255,17 @@ function formatConflictPayload(payload: unknown): string {
   }
 }
 
+function isNavItemActive(item: NavItem): boolean {
+  const [itemPath, itemHashPart = ''] = item.to.split('#')
+  const itemHash = itemHashPart ? `#${itemHashPart}` : ''
+
+  if (itemHash !== '') {
+    return route.path === itemPath && route.hash === itemHash
+  }
+
+  return route.path === itemPath || route.path.startsWith(`${itemPath}/`)
+}
+
 onMounted(() => {
   document.addEventListener('click', handleDocumentClick)
   document.addEventListener('keydown', handleEscape)
@@ -291,7 +314,7 @@ watch(
               :key="item.to"
               :to="item.to"
               class="workspace-nav-link"
-              active-class="is-active"
+              :class="{ 'is-active': isNavItemActive(item) }"
             >
               <span class="workspace-nav-icon">
                 <component :is="item.icon" class="h-4 w-4" />
@@ -448,7 +471,7 @@ watch(
               :key="`mobile-drawer-${item.to}`"
               :to="item.to"
               class="mobile-nav-drawer-link"
-              active-class="is-active"
+              :class="{ 'is-active': isNavItemActive(item) }"
               @click="closeMobileNav"
             >
               <span class="mobile-nav-drawer-icon">
