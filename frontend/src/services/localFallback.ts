@@ -35,6 +35,7 @@ const OFFLINE_MODE_KEY = 'tj_offline_mode_enabled'
 const OFFLINE_MODE_ON = '1'
 const OFFLINE_MODE_OFF = '0'
 const DEFAULT_OFFLINE_MODE_ENABLED = import.meta.env.VITE_LOCAL_FALLBACK_DEFAULT_ENABLED === '1'
+const IS_VISUAL_TEST_MODE = import.meta.env.VITE_VISUAL_TEST_MODE === '1'
 const DEFAULT_TTL_MS = 7 * 24 * 60 * 60 * 1000
 const MAX_TRADES = 200
 const MAX_ACCOUNTS = 20
@@ -167,7 +168,9 @@ export async function purgeLocalFallbackPersistenceForUser(userId: number | null
   const normalized = normalizeScopeUserId(userId)
   if (normalized === null) {
     clearSensitiveScopeCache(getScope())
-    purgeLegacySensitiveScopedKeys()
+    if (!IS_VISUAL_TEST_MODE) {
+      purgeLegacySensitiveScopedKeys()
+    }
     return
   }
 

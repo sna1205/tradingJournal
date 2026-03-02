@@ -2,6 +2,7 @@ import { expect, test } from '@playwright/test'
 
 const scopedAccountsKey = 'tj:v3:u:anon:a:all:local-fallback:accounts_v1'
 const scopedTradesKey = 'tj:v3:u:anon:a:all:local-fallback:trades_v1'
+const offlineModeKey = 'tj_offline_mode_enabled'
 
 const seededAccounts = [
   {
@@ -103,9 +104,9 @@ test.beforeEach(async ({ page }) => {
     await route.abort('failed')
   })
 
-  await page.goto('/__visual-regression')
-  await page.evaluate(
-    ({ accounts, trades, accountsKey, tradesKey }) => {
+  await page.addInitScript(
+    ({ accounts, trades, accountsKey, tradesKey, offlineKey }) => {
+      localStorage.setItem(offlineKey, '1')
       localStorage.setItem(accountsKey, accounts)
       localStorage.setItem(tradesKey, trades)
     },
@@ -114,8 +115,10 @@ test.beforeEach(async ({ page }) => {
       trades: envelope(seededTrades),
       accountsKey: scopedAccountsKey,
       tradesKey: scopedTradesKey,
+      offlineKey: offlineModeKey,
     }
   )
+  await page.goto('/__visual-regression?visual=1')
 })
 
 test('trade log excludes drafts/unverified by default and includes them when toggled', async ({ page }) => {

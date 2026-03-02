@@ -1,5 +1,9 @@
 import { expect, test } from '@playwright/test'
 
+const scopedAccountsKey = 'tj:v3:u:anon:a:all:local-fallback:accounts_v1'
+const scopedTradesKey = 'tj:v3:u:anon:a:all:local-fallback:trades_v1'
+const offlineModeKey = 'tj_offline_mode_enabled'
+
 const seededAccounts = [
   {
     id: 1,
@@ -53,19 +57,34 @@ const seededTrades = [
   },
 ]
 
+function envelope<T>(data: T) {
+  return JSON.stringify({
+    created_at: '2026-01-01T00:00:00.000Z',
+    expire_at: null,
+    data,
+  })
+}
+
 test.beforeEach(async ({ page }) => {
   await page.route('**/api/**', async (route) => {
     await route.abort('failed')
   })
 
-  await page.goto('/__visual-regression')
-  await page.evaluate(
-    ({ accounts, trades }) => {
-      localStorage.setItem('tj_local_accounts_v1', JSON.stringify(accounts))
-      localStorage.setItem('tj_local_trades_v1', JSON.stringify(trades))
+  await page.addInitScript(
+    ({ accounts, trades, accountsKey, tradesKey, offlineKey }) => {
+      localStorage.setItem(offlineKey, '1')
+      localStorage.setItem(accountsKey, accounts)
+      localStorage.setItem(tradesKey, trades)
     },
-    { accounts: seededAccounts, trades: seededTrades }
+    {
+      accounts: envelope(seededAccounts),
+      trades: envelope(seededTrades),
+      accountsKey: scopedAccountsKey,
+      tradesKey: scopedTradesKey,
+      offlineKey: offlineModeKey,
+    }
   )
+  await page.goto('/__visual-regression?visual=1')
 })
 
 test.describe('Key routes render on all visual projects', () => {
