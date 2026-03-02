@@ -27,7 +27,9 @@ return Application::configure(basePath: dirname(__DIR__))
 
             return '/';
         });
-        $middleware->statefulApi();
+        if ((bool) config('sanctum.stateful_api', true)) {
+            $middleware->statefulApi();
+        }
         $middleware->alias([
             'idempotency' => \App\Http\Middleware\IdempotencyMiddleware::class,
         ]);

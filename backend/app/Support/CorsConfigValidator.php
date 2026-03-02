@@ -14,7 +14,8 @@ final class CorsConfigValidator
         string $appEnv,
         array $allowedOrigins,
         array $allowedOriginPatterns = [],
-        bool $supportsCredentials = true
+        bool $supportsCredentials = true,
+        bool $statefulApi = true
     ): void
     {
         if (strtolower($appEnv) !== 'production') {
@@ -30,16 +31,18 @@ final class CorsConfigValidator
             );
         }
 
-        if (count($patterns) > 0) {
-            throw new RuntimeException(
-                'Invalid CORS configuration: CORS_ALLOWED_ORIGIN_PATTERNS is not allowed in production. Use explicit CORS_ALLOWED_ORIGINS only.'
-            );
-        }
+        if ($statefulApi) {
+            if (count($patterns) > 0) {
+                throw new RuntimeException(
+                    'Invalid CORS configuration: CORS_ALLOWED_ORIGIN_PATTERNS is not allowed in production when SANCTUM_STATEFUL_API=true. Use explicit CORS_ALLOWED_ORIGINS only.'
+                );
+            }
 
-        if ($supportsCredentials !== true) {
-            throw new RuntimeException(
-                'Invalid CORS configuration: CORS_SUPPORTS_CREDENTIALS must be true in production for Sanctum SPA cookie authentication.'
-            );
+            if ($supportsCredentials !== true) {
+                throw new RuntimeException(
+                    'Invalid CORS configuration: CORS_SUPPORTS_CREDENTIALS must be true in production for Sanctum SPA cookie authentication.'
+                );
+            }
         }
 
         foreach ($origins as $origin) {

@@ -93,7 +93,8 @@ class AppServiceProvider extends ServiceProvider
             (string) config('app.env', 'production'),
             is_array(config('cors.allowed_origins')) ? config('cors.allowed_origins') : [],
             is_array(config('cors.allowed_origins_patterns')) ? config('cors.allowed_origins_patterns') : [],
-            (bool) config('cors.supports_credentials', true)
+            (bool) config('cors.supports_credentials', true),
+            (bool) config('sanctum.stateful_api', true)
         );
 
         RateLimiter::for('auth-login', function (Request $request): array {

@@ -51,6 +51,18 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Stateful API Middleware Mode
+    |--------------------------------------------------------------------------
+    |
+    | Toggle Sanctum's stateful SPA cookie middleware behavior. Disable this
+    | when using bearer token auth only (for example, mobile clients).
+    |
+    */
+
+    'stateful_api' => filter_var(env('SANCTUM_STATEFUL_API', true), FILTER_VALIDATE_BOOL),
+
+    /*
+    |--------------------------------------------------------------------------
     | Token Prefix
     |--------------------------------------------------------------------------
     |

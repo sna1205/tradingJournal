@@ -24,12 +24,12 @@ class CorsConfigValidatorTest extends TestCase
         CorsConfigValidator::validate('production', ['*'], []);
     }
 
-    public function test_production_rejects_origin_patterns(): void
+    public function test_production_rejects_origin_patterns_when_stateful_api_is_enabled(): void
     {
         $this->expectException(RuntimeException::class);
-        $this->expectExceptionMessage('CORS_ALLOWED_ORIGIN_PATTERNS is not allowed in production');
+        $this->expectExceptionMessage('CORS_ALLOWED_ORIGIN_PATTERNS is not allowed in production when SANCTUM_STATEFUL_API=true');
 
-        CorsConfigValidator::validate('production', ['https://app.example.com'], ['^https://.*$']);
+        CorsConfigValidator::validate('production', ['https://app.example.com'], ['^https://.*$'], true, true);
     }
 
     public function test_production_accepts_explicit_https_origins_only(): void
@@ -49,11 +49,18 @@ class CorsConfigValidatorTest extends TestCase
         $this->expectNotToPerformAssertions();
     }
 
-    public function test_production_requires_cors_credentials_support(): void
+    public function test_production_requires_cors_credentials_support_for_stateful_api(): void
     {
         $this->expectException(RuntimeException::class);
         $this->expectExceptionMessage('CORS_SUPPORTS_CREDENTIALS must be true');
 
-        CorsConfigValidator::validate('production', ['https://app.example.com'], [], false);
+        CorsConfigValidator::validate('production', ['https://app.example.com'], [], false, true);
+    }
+
+    public function test_production_allows_patterns_and_non_credentials_for_token_api_mode(): void
+    {
+        CorsConfigValidator::validate('production', ['https://app.example.com'], ['^https://preview-.*\\.example\\.com$'], false, false);
+
+        $this->expectNotToPerformAssertions();
     }
 }
