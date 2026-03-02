@@ -1,0 +1,4 @@
+.runlogs/*.log
+.runlogs/*.pid
+frontend/test-results/
+NUL
