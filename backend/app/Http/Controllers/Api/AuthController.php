@@ -39,9 +39,11 @@ class AuthController extends Controller
             'password' => (string) $payload['password'],
         ]);
 
-        Auth::guard('web')->login($user);
-        if ($request->hasSession()) {
-            $request->session()->regenerate();
+        if ($this->statefulApiEnabled()) {
+            Auth::guard('web')->login($user);
+            if ($request->hasSession()) {
+                $request->session()->regenerate();
+            }
         }
 
         $this->authEventLogger->log(
@@ -52,9 +54,10 @@ class AuthController extends Controller
             email: $user->email
         );
 
-        return response()->json([
-            'user' => $user,
-        ], 201);
+        return response()->json(
+            $this->authSuccessPayload($user),
+            201
+        );
     }
 
     /**
@@ -117,9 +120,11 @@ class AuthController extends Controller
         RateLimiter::clear($failureKey);
         RateLimiter::clear($backoffKey);
 
-        Auth::guard('web')->login($user);
-        if ($request->hasSession()) {
-            $request->session()->regenerate();
+        if ($this->statefulApiEnabled()) {
+            Auth::guard('web')->login($user);
+            if ($request->hasSession()) {
+                $request->session()->regenerate();
+            }
         }
 
         $this->authEventLogger->log(
@@ -130,9 +135,7 @@ class AuthController extends Controller
             email: $user->email
         );
 
-        return response()->json([
-            'user' => $user,
-        ]);
+        return response()->json($this->authSuccessPayload($user));
     }
 
     private function loginIdentityKey(Request $request, string $email): string
@@ -162,11 +165,15 @@ class AuthController extends Controller
     public function logout(Request $request)
     {
         $user = $request->user();
-        Auth::guard('web')->logout();
+        if ($this->statefulApiEnabled()) {
+            Auth::guard('web')->logout();
 
-        if ($request->hasSession()) {
-            $request->session()->invalidate();
-            $request->session()->regenerateToken();
+            if ($request->hasSession()) {
+                $request->session()->invalidate();
+                $request->session()->regenerateToken();
+            }
+        } else {
+            $request->user()?->currentAccessToken()?->delete();
         }
 
         $this->authEventLogger->log(
@@ -177,11 +184,17 @@ class AuthController extends Controller
             email: $user?->email
         );
 
-        return response()->json([
+        $response = response()->json([
             'message' => 'Logged out.',
-        ])
-            ->withoutCookie((string) config('session.cookie'))
-            ->withoutCookie('XSRF-TOKEN');
+        ]);
+
+        if ($this->statefulApiEnabled()) {
+            return $response
+                ->withoutCookie((string) config('session.cookie'))
+                ->withoutCookie('XSRF-TOKEN');
+        }
+
+        return $response;
     }
 
     public function logoutAll(Request $request)
@@ -238,5 +251,30 @@ class AuthController extends Controller
             'revoked_sessions' => $revokedSessions,
             'revoked_tokens' => $revokedTokens,
         ]);
+    }
+
+    private function statefulApiEnabled(): bool
+    {
+        return (bool) config('sanctum.stateful_api', true);
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function authSuccessPayload(User $user): array
+    {
+        if ($this->statefulApiEnabled()) {
+            return [
+                'user' => $user,
+            ];
+        }
+
+        $token = $user->createToken('auth-token')->plainTextToken;
+
+        return [
+            'token' => $token,
+            'token_type' => 'Bearer',
+            'user' => $user,
+        ];
     }
 }

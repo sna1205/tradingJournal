@@ -20,22 +20,26 @@ use App\Http\Controllers\Api\TradePsychologyController;
 use App\Http\Controllers\Api\UserPreferenceController;
 use Illuminate\Support\Facades\Route;
 
+$statefulApi = filter_var((string) env('SANCTUM_STATEFUL_API', true), FILTER_VALIDATE_BOOL);
+$publicAuthMiddleware = $statefulApi ? ['web'] : [];
+$authenticatedAuthMiddleware = $statefulApi ? ['web', 'auth:sanctum'] : ['auth:sanctum'];
+
 Route::get('health', fn () => response()->json([
     'status' => 'ok',
     'service' => 'trading-journal-api',
     'time' => now()->toIso8601String(),
 ]));
 
-Route::prefix('auth')->middleware('web')->group(function () {
+Route::prefix('auth')->middleware($publicAuthMiddleware)->group(function () {
     Route::post('register', [AuthController::class, 'register'])->middleware('throttle:auth-register');
     Route::post('login', [AuthController::class, 'login'])->middleware('throttle:auth-login');
 });
 
-    Route::prefix('auth')->middleware(['web', 'auth:sanctum'])->group(function () {
-        Route::get('me', [AuthController::class, 'me']);
-        Route::post('logout', [AuthController::class, 'logout']);
-        Route::post('logout-all', [AuthController::class, 'logoutAll']);
-    });
+Route::prefix('auth')->middleware($authenticatedAuthMiddleware)->group(function () {
+    Route::get('me', [AuthController::class, 'me']);
+    Route::post('logout', [AuthController::class, 'logout']);
+    Route::post('logout-all', [AuthController::class, 'logoutAll']);
+});
 
 Route::middleware('auth:sanctum')->group(function () {
     Route::get('user/preferences', [UserPreferenceController::class, 'show']);
