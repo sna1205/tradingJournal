@@ -27,7 +27,7 @@ return Application::configure(basePath: dirname(__DIR__))
 
             return '/';
         });
-        if ((bool) config('sanctum.stateful_api', true)) {
+        if (filter_var(env('SANCTUM_STATEFUL_API', true), FILTER_VALIDATE_BOOL)) {
             $middleware->statefulApi();
         }
         $middleware->alias([
