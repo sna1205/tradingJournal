@@ -1,7 +1,11 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { storeToRefs } from 'pinia'
+import VChart from 'vue-echarts'
+import { ensureLineChartsRegistered } from '@/components/charts/echartsSetupLine'
 import { useUiStore } from '@/stores/uiStore'
+
+ensureLineChartsRegistered()
 
 const props = withDefaults(
   defineProps<{

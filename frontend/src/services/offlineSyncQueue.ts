@@ -1,8 +1,8 @@
 import { isAxiosError } from 'axios'
 import api from '@/services/api'
 
-const AUTH_USER_ID_KEY = 'tj_auth_user_id'
 const SYNC_QUEUE_KEY_PREFIX = 'tj_sync_queue_v2'
+let currentSyncQueueUserScope = 'anon'
 
 export type SyncQueueStatus = 'draft_local' | 'pending_sync' | 'synced' | 'conflict'
 export type SyncQueueEntity = 'trades' | 'accounts'
@@ -51,6 +51,17 @@ export interface ReplaySyncQueueResult {
   errors: number
   halted_by_connectivity: boolean
   queue: SyncQueueItem[]
+}
+
+export function setSyncQueueUserScope(userId: number | string | null | undefined): void {
+  const normalized = String(userId ?? '').trim()
+  currentSyncQueueUserScope = normalized !== '' ? normalized : 'anon'
+
+  try {
+    localStorage.removeItem('tj_auth_user_id')
+  } catch {
+    // Ignore storage access failures.
+  }
 }
 
 interface BaseEnqueueArgs {
@@ -565,8 +576,7 @@ function normalizeConflictReason(value: unknown): SyncConflictPayload['reason'] 
 }
 
 function syncQueueKey(): string {
-  const userScope = String(localStorage.getItem(AUTH_USER_ID_KEY) ?? '').trim() || 'anon'
-  return `${SYNC_QUEUE_KEY_PREFIX}:${userScope}`
+  return `${SYNC_QUEUE_KEY_PREFIX}:${currentSyncQueueUserScope}`
 }
 
 function nowIso(): string {

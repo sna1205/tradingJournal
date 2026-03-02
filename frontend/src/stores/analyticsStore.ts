@@ -2,6 +2,12 @@ import { defineStore } from 'pinia'
 import { computed, ref, type Ref } from 'vue'
 import api from '@/services/api'
 import { fetchLocalAccounts, queryLocalTrades, shouldUseLocalFallback } from '@/services/localFallback'
+import type {
+  OfflineAnalyticsFallbackSnapshot,
+  OfflineAnalyticsWorkerPayload,
+  OfflineAnalyticsWorkerRequestMessage,
+  OfflineAnalyticsWorkerResponseMessage,
+} from '@/services/offlineAnalyticsWorkerProtocol'
 import { useAccountStore } from '@/stores/accountStore'
 import { useSyncStatusStore } from '@/stores/syncStatusStore'
 import type { SummaryStats, Trade } from '@/types/trade'
@@ -201,6 +207,7 @@ interface DashboardSummaryPayload {
 export interface AnalyticsRangeFilters {
   date_from?: string
   date_to?: string
+  include_drafts_unverified?: boolean
 }
 
 interface BreakdownPoint {
@@ -231,6 +238,106 @@ export const useAnalyticsStore = defineStore('analytics', () => {
   const reportingCurrency = ref('USD')
   const fxNormalized = ref(false)
   const loading = ref(false)
+  const offlineFallbackComputing = ref(false)
+
+  let offlineAnalyticsWorker: Worker | null = null
+  let offlineAnalyticsWorkerMessageId = 0
+
+  function ensureOfflineAnalyticsWorker(): Worker | null {
+    if (offlineAnalyticsWorker) return offlineAnalyticsWorker
+    if (typeof Worker === 'undefined') return null
+
+    try {
+      offlineAnalyticsWorker = new Worker(
+        new URL('../workers/offlineAnalytics.worker.ts', import.meta.url),
+        { type: 'module' }
+      )
+      return offlineAnalyticsWorker
+    } catch {
+      return null
+    }
+  }
+
+  async function runOfflineAnalyticsWorker(
+    payload: OfflineAnalyticsWorkerPayload
+  ): Promise<OfflineAnalyticsFallbackSnapshot> {
+    const worker = ensureOfflineAnalyticsWorker()
+    if (!worker) {
+      throw new Error('Offline analytics worker is unavailable.')
+    }
+
+    const messageId = ++offlineAnalyticsWorkerMessageId
+    const request: OfflineAnalyticsWorkerRequestMessage = {
+      id: messageId,
+      payload,
+    }
+
+    return await new Promise<OfflineAnalyticsFallbackSnapshot>((resolve, reject) => {
+      const onMessage = (event: Event) => {
+        const typed = event as MessageEvent<OfflineAnalyticsWorkerResponseMessage>
+        if (!typed.data || typed.data.id !== messageId) return
+
+        cleanup()
+        if (typed.data.error) {
+          reject(new Error(typed.data.error))
+          return
+        }
+        if (!typed.data.result) {
+          reject(new Error('Offline analytics worker returned no result.'))
+          return
+        }
+        resolve(typed.data.result)
+      }
+
+      const onError = () => {
+        cleanup()
+        reject(new Error('Offline analytics worker failed.'))
+      }
+
+      const cleanup = () => {
+        worker.removeEventListener('message', onMessage)
+        worker.removeEventListener('error', onError)
+      }
+
+      worker.addEventListener('message', onMessage)
+      worker.addEventListener('error', onError)
+      worker.postMessage(request)
+    })
+  }
+
+  function collectRawLocalTradesSubset(selectedAccountId: number | null): Trade[] {
+    const rows: Trade[] = []
+    const maxPages = 2000
+    let page = 1
+
+    while (page <= maxPages) {
+      const batch = queryLocalTrades({
+        page,
+        per_page: 100,
+        account_id: selectedAccountId ?? undefined,
+        include_drafts_unverified: true,
+      })
+      rows.push(...batch.data)
+      if (page >= batch.last_page) break
+      page += 1
+    }
+
+    return rows
+  }
+
+  function applyOfflineFallbackSnapshot(snapshot: OfflineAnalyticsFallbackSnapshot) {
+    overview.value = snapshot.overview as unknown as AnalyticsOverview
+    dailyStats.value = snapshot.dailyStats as unknown as AnalyticsDailyRow[]
+    performanceProfile.value = snapshot.performanceProfile as unknown as PerformanceProfile
+    equity.value = snapshot.equity as unknown as EquityPayload
+    drawdown.value = snapshot.drawdown as unknown as DrawdownPayload
+    streaks.value = snapshot.streaks as unknown as StreakPayload
+    metrics.value = snapshot.metrics as unknown as MetricsPayload
+    rankings.value = snapshot.rankings as unknown as RankingsPayload
+    monthlyHeatmap.value = snapshot.monthlyHeatmap as unknown as MonthlyHeatmapPayload
+    riskStatus.value = snapshot.riskStatus as unknown as RiskStatusPayload
+    behavioral.value = snapshot.behavioral as unknown as BehavioralPayload
+  }
 
   const bySymbol = computed(() =>
     (rankings.value?.symbols ?? []).map((row) => ({
@@ -339,14 +446,18 @@ export const useAnalyticsStore = defineStore('analytics', () => {
     }
   })
 
-  async function fetchAnalytics(filters?: AnalyticsRangeFilters, accountIdOverride?: number | null) {
+  async function fetchAnalytics(
+    filters?: AnalyticsRangeFilters,
+    accountIdOverride?: number | null,
+    signal?: AbortSignal
+  ) {
     loading.value = true
     const activeAccountId =
       accountIdOverride === undefined ? accountStore.selectedAccountId : accountIdOverride
     const params = analyticsQueryParams(activeAccountId, filters)
 
     try {
-      const { data: summaryRes } = await api.get<DashboardSummaryPayload>('/analytics/dashboard-summary', { params })
+      const { data: summaryRes } = await api.get<DashboardSummaryPayload>('/analytics/dashboard-summary', { params, signal })
       syncStatusStore.markServerHealthy()
       reportingCurrency.value = String(summaryRes.reporting_currency || 'USD').toUpperCase()
       fxNormalized.value = Boolean(summaryRes.fx_normalized)
@@ -524,30 +635,46 @@ export const useAnalyticsStore = defineStore('analytics', () => {
       reportingCurrency.value = 'USD'
       fxNormalized.value = false
 
-      const localTrades = queryLocalTrades({
-        page: 1,
-        per_page: 100000,
-        account_id: activeAccountId ?? undefined,
-        date_from: filters?.date_from,
-        date_to: filters?.date_to,
-      }).data
+      const localTradesSubset = collectRawLocalTradesSubset(activeAccountId)
       const localAccounts = fetchLocalAccounts()
-      applyLocalAnalyticsFallback({
-        trades: localTrades,
-        accounts: localAccounts,
+      const workerPayload: OfflineAnalyticsWorkerPayload = {
+        trades: localTradesSubset,
+        accounts: localAccounts.map((account) => ({
+          id: account.id,
+          starting_balance: account.starting_balance,
+        })),
         selectedAccountId: activeAccountId,
-        overview,
-        dailyStats,
-        performanceProfile,
-        equity,
-        drawdown,
-        streaks,
-        metrics,
-        rankings,
-        monthlyHeatmap,
-        riskStatus,
-        behavioral,
-      })
+        filters: {
+          date_from: filters?.date_from,
+          date_to: filters?.date_to,
+          include_drafts_unverified: filters?.include_drafts_unverified,
+        },
+      }
+
+      offlineFallbackComputing.value = true
+      try {
+        const snapshot = await runOfflineAnalyticsWorker(workerPayload)
+        applyOfflineFallbackSnapshot(snapshot)
+      } catch {
+        applyLocalAnalyticsFallback({
+          trades: localTradesSubset,
+          accounts: localAccounts,
+          selectedAccountId: activeAccountId,
+          overview,
+          dailyStats,
+          performanceProfile,
+          equity,
+          drawdown,
+          streaks,
+          metrics,
+          rankings,
+          monthlyHeatmap,
+          riskStatus,
+          behavioral,
+        })
+      } finally {
+        offlineFallbackComputing.value = false
+      }
     } finally {
       loading.value = false
     }
@@ -578,6 +705,7 @@ export const useAnalyticsStore = defineStore('analytics', () => {
     bySetup,
     byWeekday,
     loading,
+    offlineFallbackComputing,
     bestSymbol,
     fetchAnalytics,
     fetchAll,
@@ -600,6 +728,13 @@ function analyticsQueryParams(
 
   if (filters?.date_to) {
     params.date_to = filters.date_to
+  }
+
+  const includeDrafts = filters?.include_drafts_unverified === true
+  params.include_drafts_unverified = includeDrafts ? 1 : 0
+  if (!includeDrafts) {
+    params.local_sync_status = 'synced'
+    params.risk_validation_status = 'verified'
   }
 
   return Object.keys(params).length > 0 ? params : undefined

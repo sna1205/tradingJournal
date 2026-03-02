@@ -27,6 +27,7 @@ export interface LotSizeInstrumentSpec {
 
 export interface LotSizeInput {
   account_balance: string
+  account_currency?: string | null
   risk_mode: RiskMode
   risk_percent: string
   risk_amount_fixed: string
@@ -39,6 +40,7 @@ export interface LotSizeInput {
   slippage_ticks?: string
   leverage?: string
   instrument: LotSizeInstrumentSpec | null
+  fx_rate_quote_to_account?: string | number | null
   fx_rate_quote_to_usd?: string | number | null
   fx_symbol_used?: string | null
   fx_rate_timestamp?: number | null
@@ -62,8 +64,9 @@ export interface LotSizeResult {
   valid: boolean
   field_errors: Partial<Record<LotSizeFieldErrorKey, string>>
   warnings: string[]
-  risk_currency: 'USD'
+  risk_currency: string
   quote_currency: string | null
+  conversion_rate_quote_to_account: number | null
   conversion_rate_quote_to_usd: number | null
   conversion_symbol_used: string | null
   conversion_method: FxResolutionMethod | null
@@ -87,6 +90,8 @@ export interface LotSizeResult {
   rr_ratio: number | null
   margin_required: number | null
   pip_or_point_value_per_lot: number | null
+  pip_value_per_lot_account: number | null
+  tick_value_per_lot_account: number | null
   pip_value_per_lot_usd: number | null
   tick_value_per_lot_usd: number | null
   if_sl_hits_text: string
@@ -103,6 +108,7 @@ export function calculateLotSize(input: LotSizeInput): LotSizeResult {
   }
 
   const quoteCurrency = String(input.instrument.quote_currency ?? '').trim().toUpperCase()
+  const accountCurrency = String(input.account_currency ?? 'USD').trim().toUpperCase() || 'USD'
 
   const accountBalance = parseFixed(input.account_balance)
   if (accountBalance === null || accountBalance <= 0n) {
@@ -140,6 +146,8 @@ export function calculateLotSize(input: LotSizeInput): LotSizeResult {
   if (input.risk_mode === 'percent') {
     if (riskPercent === null || riskPercent <= 0n) {
       fieldErrors.risk_percent = 'Risk % must be greater than 0.'
+    } else if (riskPercent > fromInt(100)) {
+      fieldErrors.risk_percent = 'Risk % must be between 0 and 100.'
     } else if (accountBalance !== null && accountBalance > 0n) {
       targetRiskAmount = mulFixed(accountBalance, divFixed(riskPercent, fromInt(100)))
     }
@@ -152,46 +160,54 @@ export function calculateLotSize(input: LotSizeInput): LotSizeResult {
   }
 
   if (Object.keys(fieldErrors).length > 0 || entry === null || stop === null || accountBalance === null || tickSize === null || lotStep === null || minLot === null || contractSize === null || targetRiskAmount === null) {
-    return emptyResult(fieldErrors, warnings, quoteCurrency)
+    return emptyResult(fieldErrors, warnings, quoteCurrency, accountCurrency)
   }
 
   const conversionMode: FxRateMode = input.fx_rate_mode ?? 'mid'
-  const conversionMethod: FxResolutionMethod | null = quoteCurrency === 'USD'
+  const conversionMethod: FxResolutionMethod | null = quoteCurrency === accountCurrency
     ? 'identity'
     : (input.fx_conversion_method ?? null)
-  const conversionSymbolUsed = quoteCurrency === 'USD'
+  const conversionSymbolUsed = quoteCurrency === accountCurrency
     ? null
     : (input.fx_symbol_used ?? null)
-  const conversionTimestamp = quoteCurrency === 'USD'
+  const conversionTimestamp = quoteCurrency === accountCurrency
     ? null
     : (input.fx_rate_timestamp ?? null)
+
+  const rateQuoteToAccountValue = quoteCurrency === accountCurrency
+    ? 1
+    : Number(input.fx_rate_quote_to_account ?? (
+      accountCurrency === 'USD'
+        ? input.fx_rate_quote_to_usd
+        : null
+    ) ?? 0)
+  if (!(rateQuoteToAccountValue > 0)) {
+    const message = `Missing live FX quote to convert ${quoteCurrency}->${accountCurrency}`
+    fieldErrors.instrument = message
+    warnings.push(message)
+    return emptyResult(fieldErrors, warnings, quoteCurrency, accountCurrency, null, null, conversionSymbolUsed, conversionMethod, conversionMode, conversionTimestamp)
+  }
+
+  const rateQuoteToAccount = parseFixed(String(rateQuoteToAccountValue))
+  if (rateQuoteToAccount === null || rateQuoteToAccount <= 0n) {
+    fieldErrors.instrument = 'FX conversion rate is invalid.'
+    return emptyResult(fieldErrors, warnings, quoteCurrency, accountCurrency, null, null, conversionSymbolUsed, conversionMethod, conversionMode, conversionTimestamp)
+  }
 
   const rateQuoteToUsdValue = quoteCurrency === 'USD'
     ? 1
     : Number(input.fx_rate_quote_to_usd ?? 0)
-  if (!(rateQuoteToUsdValue > 0)) {
-    const message = `Missing live FX quote to convert ${quoteCurrency}->USD`
-    fieldErrors.instrument = message
-    warnings.push(message)
-    return emptyResult(fieldErrors, warnings, quoteCurrency, null, conversionSymbolUsed, conversionMethod, conversionMode, conversionTimestamp)
-  }
-
-  const rateQuoteToUsd = parseFixed(String(rateQuoteToUsdValue))
-  if (rateQuoteToUsd === null || rateQuoteToUsd <= 0n) {
-    fieldErrors.instrument = 'FX conversion rate is invalid.'
-    return emptyResult(fieldErrors, warnings, quoteCurrency, null, conversionSymbolUsed, conversionMethod, conversionMode, conversionTimestamp)
-  }
 
   const stopDistance = absFixed(entry - stop)
   if (stopDistance === 0n) {
     fieldErrors.stop_loss = 'Stop loss must differ from entry.'
-    return emptyResult(fieldErrors, warnings, quoteCurrency, rateQuoteToUsdValue, conversionSymbolUsed, conversionMethod, conversionMode, conversionTimestamp)
+    return emptyResult(fieldErrors, warnings, quoteCurrency, accountCurrency, rateQuoteToAccountValue, rateQuoteToUsdValue > 0 ? rateQuoteToUsdValue : null, conversionSymbolUsed, conversionMethod, conversionMode, conversionTimestamp)
   }
 
   const stopTicks = divFixed(stopDistance, tickSize)
   if (stopTicks <= 0n) {
     fieldErrors.stop_loss = 'Stop distance is too small for selected instrument tick size.'
-    return emptyResult(fieldErrors, warnings, quoteCurrency, rateQuoteToUsdValue, conversionSymbolUsed, conversionMethod, conversionMode, conversionTimestamp)
+    return emptyResult(fieldErrors, warnings, quoteCurrency, accountCurrency, rateQuoteToAccountValue, rateQuoteToUsdValue > 0 ? rateQuoteToUsdValue : null, conversionSymbolUsed, conversionMethod, conversionMode, conversionTimestamp)
   }
 
   const pipValuePerLotQuote = pipSize !== null && pipSize > 0n
@@ -205,16 +221,16 @@ export function calculateLotSize(input: LotSizeInput): LotSizeResult {
 
   if (riskPerOneLotQuote <= 0n) {
     fieldErrors.stop_loss = 'Unable to compute risk per lot.'
-    return emptyResult(fieldErrors, warnings, quoteCurrency, rateQuoteToUsdValue, conversionSymbolUsed, conversionMethod, conversionMode, conversionTimestamp)
+    return emptyResult(fieldErrors, warnings, quoteCurrency, accountCurrency, rateQuoteToAccountValue, rateQuoteToUsdValue > 0 ? rateQuoteToUsdValue : null, conversionSymbolUsed, conversionMethod, conversionMode, conversionTimestamp)
   }
 
-  const riskPerOneLotUsd = mulFixed(riskPerOneLotQuote, rateQuoteToUsd)
-  if (riskPerOneLotUsd <= 0n) {
-    fieldErrors.stop_loss = 'Unable to convert risk per lot to USD.'
-    return emptyResult(fieldErrors, warnings, quoteCurrency, rateQuoteToUsdValue, conversionSymbolUsed, conversionMethod, conversionMode, conversionTimestamp)
+  const riskPerOneLotAccount = mulFixed(riskPerOneLotQuote, rateQuoteToAccount)
+  if (riskPerOneLotAccount <= 0n) {
+    fieldErrors.stop_loss = `Unable to convert risk per lot to ${accountCurrency}.`
+    return emptyResult(fieldErrors, warnings, quoteCurrency, accountCurrency, rateQuoteToAccountValue, rateQuoteToUsdValue > 0 ? rateQuoteToUsdValue : null, conversionSymbolUsed, conversionMethod, conversionMode, conversionTimestamp)
   }
 
-  const lotRaw = divFixed(targetRiskAmount, riskPerOneLotUsd)
+  const lotRaw = divFixed(targetRiskAmount, riskPerOneLotAccount)
   let lotStepped = floorToStep(lotRaw, lotStep)
   let usedMinLot = false
   if (lotStepped < minLot) {
@@ -225,14 +241,14 @@ export function calculateLotSize(input: LotSizeInput): LotSizeResult {
 
   const spreadTicks = parseFixed(input.spread_ticks ?? '') ?? 0n
   const slippageTicks = parseFixed(input.slippage_ticks ?? '') ?? 0n
-  const commissionPerLotUsd = parseFixed(input.commission_per_lot ?? '') ?? 0n
+  const commissionPerLotAccount = parseFixed(input.commission_per_lot ?? '') ?? 0n
   const leverage = parseFixed(input.leverage ?? '') ?? null
 
-  const spreadPerLotUsd = mulFixed(mulFixed(spreadTicks, tickValuePerLotQuote), rateQuoteToUsd)
-  const slippagePerLotUsd = mulFixed(mulFixed(slippageTicks, tickValuePerLotQuote), rateQuoteToUsd)
-  const transactionCostPerLot = spreadPerLotUsd + slippagePerLotUsd + commissionPerLotUsd
+  const spreadPerLotAccount = mulFixed(mulFixed(spreadTicks, tickValuePerLotQuote), rateQuoteToAccount)
+  const slippagePerLotAccount = mulFixed(mulFixed(slippageTicks, tickValuePerLotQuote), rateQuoteToAccount)
+  const transactionCostPerLot = spreadPerLotAccount + slippagePerLotAccount + commissionPerLotAccount
 
-  const actualRiskAtStop = mulFixed(riskPerOneLotUsd, lotStepped)
+  const actualRiskAtStop = mulFixed(riskPerOneLotAccount, lotStepped)
   const estimatedCosts = mulFixed(transactionCostPerLot, lotStepped)
   const totalLossIfStopped = actualRiskAtStop + estimatedCosts
   const actualRiskPercent = accountBalance > 0n
@@ -277,8 +293,8 @@ export function calculateLotSize(input: LotSizeInput): LotSizeResult {
     const rewardPerOneLotQuote = isForex && pipSize !== null && pipSize > 0n
       ? mulFixed(divFixed(tpDistance, pipSize), pipValuePerLotQuote ?? 0n)
       : mulFixed(tpDistance, contractSize)
-    const rewardPerOneLotUsd = mulFixed(rewardPerOneLotQuote, rateQuoteToUsd)
-    expectedProfitAtTp = mulFixed(rewardPerOneLotUsd, lotStepped)
+    const rewardPerOneLotAccount = mulFixed(rewardPerOneLotQuote, rateQuoteToAccount)
+    expectedProfitAtTp = mulFixed(rewardPerOneLotAccount, lotStepped)
     if (targetRiskAmount > 0n) {
       rrRatio = divFixed(expectedProfitAtTp, targetRiskAmount)
     }
@@ -291,11 +307,11 @@ export function calculateLotSize(input: LotSizeInput): LotSizeResult {
     warnings.push('Take profit is above entry for a short setup.')
   }
 
-  const tickValuePerLotUsd = mulFixed(tickValuePerLotQuote, rateQuoteToUsd)
-  const pipValuePerLotUsd = pipValuePerLotQuote !== null
-    ? mulFixed(pipValuePerLotQuote, rateQuoteToUsd)
+  const tickValuePerLotAccount = mulFixed(tickValuePerLotQuote, rateQuoteToAccount)
+  const pipValuePerLotAccount = pipValuePerLotQuote !== null
+    ? mulFixed(pipValuePerLotQuote, rateQuoteToAccount)
     : null
-  const pipOrPointValuePerLot = pipValuePerLotUsd ?? tickValuePerLotUsd
+  const pipOrPointValuePerLot = pipValuePerLotAccount ?? tickValuePerLotAccount
 
   const stopDistancePips = pipSize !== null && pipSize > 0n
     ? divFixed(stopDistance, pipSize)
@@ -307,14 +323,15 @@ export function calculateLotSize(input: LotSizeInput): LotSizeResult {
 
   const lotPrecision = Math.min(decimalPlaces(input.instrument.lot_step), 8)
   const lotText = toScaledString(lotStepped, lotPrecision)
-  const actualRiskText = asCurrency(toNumber(actualRiskAtStop, 2))
+  const actualRiskText = formatCurrencyForCode(toNumber(actualRiskAtStop, 2), accountCurrency)
 
   return {
     valid: Object.keys(fieldErrors).length === 0,
     field_errors: fieldErrors,
     warnings,
-    risk_currency: 'USD',
+    risk_currency: accountCurrency,
     quote_currency: quoteCurrency,
+    conversion_rate_quote_to_account: rateQuoteToAccountValue,
     conversion_rate_quote_to_usd: rateQuoteToUsdValue,
     conversion_symbol_used: conversionSymbolUsed,
     conversion_method: conversionMethod,
@@ -326,7 +343,7 @@ export function calculateLotSize(input: LotSizeInput): LotSizeResult {
     stop_distance_ticks: toNumber(stopTicks, 6),
     stop_distance_pips: stopDistancePips !== null ? toNumber(stopDistancePips, 6) : null,
     risk_per_one_lot_quote: toNumber(riskPerOneLotQuote, 6),
-    risk_per_one_lot: toNumber(riskPerOneLotUsd, 6),
+    risk_per_one_lot: toNumber(riskPerOneLotAccount, 6),
     lot_size_raw: toNumber(lotRaw, 8),
     lot_size: toNumber(lotStepped, 8),
     lot_size_text: lotText,
@@ -338,8 +355,10 @@ export function calculateLotSize(input: LotSizeInput): LotSizeResult {
     rr_ratio: rrRatio !== null ? toNumber(rrRatio, 6) : null,
     margin_required: marginRequired !== null ? toNumber(marginRequired, 6) : null,
     pip_or_point_value_per_lot: toNumber(pipOrPointValuePerLot, 6),
-    pip_value_per_lot_usd: pipValuePerLotUsd !== null ? toNumber(pipValuePerLotUsd, 6) : null,
-    tick_value_per_lot_usd: toNumber(tickValuePerLotUsd, 6),
+    pip_value_per_lot_account: pipValuePerLotAccount !== null ? toNumber(pipValuePerLotAccount, 6) : null,
+    tick_value_per_lot_account: toNumber(tickValuePerLotAccount, 6),
+    pip_value_per_lot_usd: pipValuePerLotAccount !== null ? toNumber(pipValuePerLotAccount, 6) : null,
+    tick_value_per_lot_usd: toNumber(tickValuePerLotAccount, 6),
     if_sl_hits_text: `If SL hits -> -${actualRiskText}`,
     used_min_lot: usedMinLot,
   }
@@ -349,7 +368,9 @@ function emptyResult(
   fieldErrors: Partial<Record<LotSizeFieldErrorKey, string>>,
   warnings: string[],
   quoteCurrency: string | null = null,
-  conversionRate: number | null = null,
+  accountCurrency: string = 'USD',
+  conversionRateQuoteToAccount: number | null = null,
+  conversionRateQuoteToUsd: number | null = null,
   conversionSymbolUsed: string | null = null,
   conversionMethod: FxResolutionMethod | null = null,
   conversionMode: FxRateMode = 'mid',
@@ -359,9 +380,10 @@ function emptyResult(
     valid: Object.keys(fieldErrors).length === 0,
     field_errors: fieldErrors,
     warnings,
-    risk_currency: 'USD',
+    risk_currency: accountCurrency,
     quote_currency: quoteCurrency,
-    conversion_rate_quote_to_usd: conversionRate,
+    conversion_rate_quote_to_account: conversionRateQuoteToAccount,
+    conversion_rate_quote_to_usd: conversionRateQuoteToUsd,
     conversion_symbol_used: conversionSymbolUsed,
     conversion_method: conversionMethod,
     conversion_rate_mode: conversionMode,
@@ -384,9 +406,11 @@ function emptyResult(
     rr_ratio: null,
     margin_required: null,
     pip_or_point_value_per_lot: null,
+    pip_value_per_lot_account: null,
+    tick_value_per_lot_account: null,
     pip_value_per_lot_usd: null,
     tick_value_per_lot_usd: null,
-    if_sl_hits_text: `If SL hits -> -${asCurrency(0)}`,
+    if_sl_hits_text: `If SL hits -> -${formatCurrencyForCode(0, accountCurrency)}`,
     used_min_lot: false,
   }
 }
@@ -454,4 +478,23 @@ function toScaledString(value: bigint, decimals = 2): string {
 
   if (safeDecimals === 0) return `${sign}${whole.toString()}`
   return `${sign}${whole.toString()}.${fraction.toString().padStart(safeDecimals, '0')}`
+}
+
+function formatCurrencyForCode(value: number, currencyCode: string): string {
+  const safeValue = Number.isFinite(value) ? value : 0
+  const code = String(currencyCode ?? '').trim().toUpperCase()
+  if (!code) {
+    return asCurrency(safeValue)
+  }
+
+  try {
+    return new Intl.NumberFormat('en-US', {
+      style: 'currency',
+      currency: code,
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    }).format(safeValue)
+  } catch {
+    return asCurrency(safeValue)
+  }
 }

@@ -46,6 +46,7 @@ const detailsImages = ref<MissedTradeImage[]>([])
 const detailImageIndex = ref(0)
 const lightboxOpen = ref(false)
 const activeDetailImage = computed(() => detailsImages.value[detailImageIndex.value] ?? null)
+const activeDetailImageSrc = computed(() => resolveImageSrc(activeDetailImage.value))
 const filtersExpanded = ref(false)
 
 const selectedFilterInstrumentId = computed({
@@ -185,7 +186,18 @@ function modelLabel(value: string | null | undefined) {
 
 function primaryImage(item: MissedTrade): MissedTradeImage | null {
   const images = item.images ?? []
-  return images.length > 0 ? images[0]! : null
+  return images.find((image) => hasRenderableImage(image)) ?? null
+}
+
+function resolveImageSrc(image: Pick<MissedTradeImage, 'thumbnail_url' | 'image_url'> | null | undefined): string {
+  if (!image) return ''
+  const thumbnailUrl = image.thumbnail_url.trim()
+  if (thumbnailUrl) return thumbnailUrl
+  return image.image_url.trim()
+}
+
+function hasRenderableImage(image: Pick<MissedTradeImage, 'thumbnail_url' | 'image_url'> | null | undefined): boolean {
+  return resolveImageSrc(image).length > 0
 }
 
 function setImageFallback(event: Event, fallbackUrl?: string | null) {
@@ -251,6 +263,7 @@ async function openDetails(item: MissedTrade) {
     detailsImages.value = (entry.images ?? [])
       .slice()
       .sort((a, b) => a.sort_order - b.sort_order || a.id - b.id)
+      .filter((image) => hasRenderableImage(image))
   } catch {
     detailsOpen.value = false
     uiStore.toast({
@@ -269,7 +282,7 @@ function closeDetails() {
 }
 
 function openImageLightbox() {
-  if (!activeDetailImage.value) return
+  if (!activeDetailImage.value || !activeDetailImageSrc.value) return
   lightboxOpen.value = true
 }
 
@@ -518,7 +531,7 @@ onBeforeUnmount(() => {
           <button type="button" class="trade-db-media trade-card-reference-media" @click="openDetails(item)">
             <img
               v-if="primaryImage(item)"
-              :src="primaryImage(item)?.thumbnail_url || primaryImage(item)?.image_url"
+              :src="resolveImageSrc(primaryImage(item))"
               :alt="`${item.pair} missed trade screenshot`"
               loading="lazy"
               class="trade-db-image"
@@ -634,7 +647,7 @@ onBeforeUnmount(() => {
               <div class="trade-simple-image-shell">
                 <img
                   v-if="activeDetailImage"
-                  :src="activeDetailImage.image_url"
+                  :src="activeDetailImageSrc"
                   alt="Missed trade screenshot"
                   class="trade-simple-image is-zoomable"
                   @click="openImageLightbox"
@@ -735,7 +748,7 @@ onBeforeUnmount(() => {
         </button>
         <div class="trade-lightbox-content">
           <img
-            :src="activeDetailImage.image_url"
+            :src="activeDetailImageSrc"
             alt="Missed trade screenshot fullscreen"
             class="trade-lightbox-image"
             @error="setImageFallback($event, activeDetailImage.image_url)"

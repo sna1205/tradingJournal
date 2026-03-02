@@ -2,8 +2,18 @@
 
 namespace App\Services;
 
+use App\Domain\Instruments\InstrumentMath;
+use App\Domain\Instruments\InstrumentSpec;
+
 class TradeCalculationEngine
 {
+    private readonly InstrumentMath $instrumentMath;
+
+    public function __construct(?InstrumentMath $instrumentMath = null)
+    {
+        $this->instrumentMath = $instrumentMath ?? new InstrumentMath();
+    }
+
     /**
      * @param array{
      *   direction:string,
@@ -15,6 +25,12 @@ class TradeCalculationEngine
      *   account_balance_before_trade:numeric-string|int|float,
      *   instrument_tick_size?:numeric-string|int|float|null,
      *   instrument_tick_value?:numeric-string|int|float|null,
+     *   instrument_contract_size?:numeric-string|int|float|null,
+     *   instrument_quote_to_account_rate?:numeric-string|int|float|null,
+     *   instrument_quote_currency?:string|null,
+     *   instrument_base_currency?:string|null,
+     *   instrument_rounding_policy?:string|null,
+     *   account_currency?:string|null,
      *   commission?:numeric-string|int|float|null,
      *   swap?:numeric-string|int|float|null,
      *   spread_cost?:numeric-string|int|float|null,
@@ -63,6 +79,12 @@ class TradeCalculationEngine
      *   account_balance_before_trade:numeric-string|int|float,
      *   instrument_tick_size?:numeric-string|int|float|null,
      *   instrument_tick_value?:numeric-string|int|float|null,
+     *   instrument_contract_size?:numeric-string|int|float|null,
+     *   instrument_quote_to_account_rate?:numeric-string|int|float|null,
+     *   instrument_quote_currency?:string|null,
+     *   instrument_base_currency?:string|null,
+     *   instrument_rounding_policy?:string|null,
+     *   account_currency?:string|null,
      *   commission?:numeric-string|int|float|null,
      *   swap?:numeric-string|int|float|null,
      *   spread_cost?:numeric-string|int|float|null,
@@ -78,21 +100,20 @@ class TradeCalculationEngine
         $actualExitPrice = (float) ($input['actual_exit_price'] ?? $entryPrice);
         $positionSize = (float) ($input['lot_size'] ?? 0);
         $accountBalanceBeforeTrade = (float) $input['account_balance_before_trade'];
-        $tickSize = (float) ($input['instrument_tick_size'] ?? 0);
-        $tickValue = (float) ($input['instrument_tick_value'] ?? 0);
+        $instrumentContext = $this->resolveInstrumentContext($input);
 
         [$commission, $swap, $spreadCost, $slippageCost] = $this->extractCosts($input);
         $costsTotal = $commission + $swap + $spreadCost + $slippageCost;
 
         $riskPerUnit = abs($entryPrice - $stopLoss);
         $rewardPerUnit = abs($takeProfit - $entryPrice);
-        $monetaryRisk = $this->valueFromPriceDistance($riskPerUnit, $positionSize, $tickSize, $tickValue);
-        $monetaryReward = $this->valueFromPriceDistance($rewardPerUnit, $positionSize, $tickSize, $tickValue);
+        $monetaryRisk = $this->valueFromPriceDistance($riskPerUnit, $positionSize, $instrumentContext);
+        $monetaryReward = $this->valueFromPriceDistance($rewardPerUnit, $positionSize, $instrumentContext);
 
         $profitPerUnit = $direction === 'sell'
             ? ($entryPrice - $actualExitPrice)
             : ($actualExitPrice - $entryPrice);
-        $grossProfitLoss = $this->valueFromPriceDistance($profitPerUnit, $positionSize, $tickSize, $tickValue);
+        $grossProfitLoss = $this->valueFromPriceDistance($profitPerUnit, $positionSize, $instrumentContext);
         $profitLoss = $grossProfitLoss - $costsTotal;
 
         $rr = $monetaryRisk > 0
@@ -147,8 +168,7 @@ class TradeCalculationEngine
         $actualExitFallback = (float) ($input['actual_exit_price'] ?? $entryPriceFallback);
         $positionSizeFallback = (float) ($input['lot_size'] ?? 0);
         $accountBalanceBeforeTrade = (float) ($input['account_balance_before_trade'] ?? 0);
-        $tickSize = (float) ($input['instrument_tick_size'] ?? 0);
-        $tickValue = (float) ($input['instrument_tick_value'] ?? 0);
+        $instrumentContext = $this->resolveInstrumentContext($input);
 
         [$commission, $swap, $spreadCost, $slippageCost] = $this->extractCosts($input);
         $legFeesTotal = array_sum(array_column($legs, 'fees'));
@@ -164,14 +184,13 @@ class TradeCalculationEngine
 
         $riskPerUnit = abs($avgEntryPrice - $stopLoss);
         $rewardPerUnit = abs($takeProfit - $avgEntryPrice);
-        $monetaryRisk = $this->valueFromPriceDistance($riskPerUnit, $effectivePositionSize, $tickSize, $tickValue);
-        $monetaryReward = $this->valueFromPriceDistance($rewardPerUnit, $effectivePositionSize, $tickSize, $tickValue);
+        $monetaryRisk = $this->valueFromPriceDistance($riskPerUnit, $effectivePositionSize, $instrumentContext);
+        $monetaryReward = $this->valueFromPriceDistance($rewardPerUnit, $effectivePositionSize, $instrumentContext);
 
         $grossProfitLoss = $this->realizedGrossFromLegs(
             $legs,
             $direction,
-            $tickSize,
-            $tickValue,
+            $instrumentContext,
             $avgEntryPrice,
             $effectivePositionSize
         );
@@ -317,8 +336,7 @@ class TradeCalculationEngine
     private function realizedGrossFromLegs(
         array $legs,
         string $direction,
-        float $tickSize,
-        float $tickValue,
+        array $instrumentContext,
         float $entryPriceFallback,
         float $positionSizeFallback
     ): float {
@@ -355,7 +373,7 @@ class TradeCalculationEngine
             $profitPerUnit = $direction === 'sell'
                 ? ($openAveragePrice - $leg['price'])
                 : ($leg['price'] - $openAveragePrice);
-            $realized += $this->valueFromPriceDistance($profitPerUnit, $closeQty, $tickSize, $tickValue);
+            $realized += $this->valueFromPriceDistance($profitPerUnit, $closeQty, $instrumentContext);
 
             $openQty -= $closeQty;
             if ($openQty <= 0.0000001) {
@@ -370,9 +388,24 @@ class TradeCalculationEngine
     private function valueFromPriceDistance(
         float $priceDistance,
         float $positionSize,
-        float $tickSize,
-        float $tickValue
+        array $instrumentContext
     ): float {
+        /** @var InstrumentSpec|null $spec */
+        $spec = $instrumentContext['spec'] ?? null;
+        $quoteToAccountRate = (float) ($instrumentContext['quote_to_account_rate'] ?? 1.0);
+        $accountCurrency = (string) ($instrumentContext['account_currency'] ?? 'USD');
+        if ($spec instanceof InstrumentSpec) {
+            return $this->instrumentMath->accountValueFromPriceDistance(
+                $priceDistance,
+                $positionSize,
+                $spec,
+                $quoteToAccountRate,
+                $accountCurrency
+            )->toFloat();
+        }
+
+        $tickSize = (float) ($instrumentContext['tick_size'] ?? 0);
+        $tickValue = (float) ($instrumentContext['tick_value'] ?? 0);
         if ($tickSize > 0 && $tickValue > 0) {
             $ticks = $priceDistance / $tickSize;
             return $ticks * $tickValue * $positionSize;
@@ -380,5 +413,40 @@ class TradeCalculationEngine
 
         // Legacy fallback for historical rows without instrument specs.
         return $priceDistance * $positionSize;
+    }
+
+    /**
+     * @param array<string,mixed> $input
+     * @return array{
+     *   spec:InstrumentSpec|null,
+     *   quote_to_account_rate:float,
+     *   account_currency:string,
+     *   tick_size:float,
+     *   tick_value:float
+     * }
+     */
+    private function resolveInstrumentContext(array $input): array
+    {
+        $spec = InstrumentSpec::fromArray([
+            'contract_size' => (float) ($input['instrument_contract_size'] ?? 0),
+            'tick_size' => (float) ($input['instrument_tick_size'] ?? 0),
+            'tick_value' => (float) ($input['instrument_tick_value'] ?? 0),
+            'quote_currency' => (string) ($input['instrument_quote_currency'] ?? ''),
+            'base_currency' => (string) ($input['instrument_base_currency'] ?? ''),
+            'rounding_policy' => (string) ($input['instrument_rounding_policy'] ?? 'half_up_6'),
+        ]);
+
+        $quoteToAccountRate = (float) ($input['instrument_quote_to_account_rate'] ?? 1.0);
+        if ($quoteToAccountRate <= 0) {
+            $quoteToAccountRate = 1.0;
+        }
+
+        return [
+            'spec' => $spec->isValid() ? $spec : null,
+            'quote_to_account_rate' => $quoteToAccountRate,
+            'account_currency' => strtoupper(trim((string) ($input['account_currency'] ?? 'USD'))),
+            'tick_size' => (float) ($input['instrument_tick_size'] ?? 0),
+            'tick_value' => (float) ($input['instrument_tick_value'] ?? 0),
+        ];
     }
 }

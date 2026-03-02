@@ -2,12 +2,15 @@
 
 namespace App\Services;
 
+use App\Exceptions\ChecklistConcurrencyException;
 use App\Models\Checklist;
 use App\Models\ChecklistItem;
 use App\Models\Trade;
 use App\Models\TradeChecklistResponse;
+use Carbon\CarbonImmutable;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 
 class ChecklistService
 {
@@ -15,6 +18,7 @@ class ChecklistService
     {
         $query = Checklist::query()
             ->with('account:id,name')
+            ->with('strategyModel:id,name')
             ->withCount(['items as active_items_count' => fn (Builder $q) => $q->where('is_active', true)])
             ->orderByDesc('is_active')
             ->orderBy('scope')
@@ -28,6 +32,10 @@ class ChecklistService
 
         if (array_key_exists('account_id', $filters) && $filters['account_id'] !== null) {
             $query->where('account_id', (int) $filters['account_id']);
+        }
+
+        if (array_key_exists('strategy_model_id', $filters) && $filters['strategy_model_id'] !== null) {
+            $query->where('strategy_model_id', (int) $filters['strategy_model_id']);
         }
 
         if (array_key_exists('is_active', $filters) && $filters['is_active'] !== null) {
@@ -44,46 +52,118 @@ class ChecklistService
 
     public function createChecklist(int $userId, array $payload): Checklist
     {
-        return Checklist::query()->create([
-            'user_id' => $userId,
-            'account_id' => $payload['scope'] === 'account'
-                ? (isset($payload['account_id']) ? (int) $payload['account_id'] : null)
-                : null,
-            'name' => trim((string) $payload['name']),
-            'scope' => (string) $payload['scope'],
-            'enforcement_mode' => (string) ($payload['enforcement_mode'] ?? 'soft'),
-            'is_active' => (bool) ($payload['is_active'] ?? true),
-        ]);
+        $scope = (string) $payload['scope'];
+        $accountId = $scope === 'account'
+            ? (isset($payload['account_id']) ? (int) $payload['account_id'] : null)
+            : null;
+        $strategyModelId = $scope === 'strategy'
+            ? (isset($payload['strategy_model_id']) ? (int) $payload['strategy_model_id'] : null)
+            : null;
+        $isActive = (bool) ($payload['is_active'] ?? true);
+
+        return DB::transaction(function () use ($userId, $payload, $scope, $accountId, $strategyModelId, $isActive): Checklist {
+            if ($isActive) {
+                $this->deactivateActiveScopeConflicts($userId, $scope, $accountId, $strategyModelId);
+            }
+
+            /** @var Checklist $checklist */
+            $checklist = Checklist::query()->create([
+                'user_id' => $userId,
+                'account_id' => $accountId,
+                'strategy_model_id' => $strategyModelId,
+                'name' => trim((string) $payload['name']),
+                'revision' => 1,
+                'scope' => $scope,
+                'enforcement_mode' => (string) ($payload['enforcement_mode'] ?? 'soft'),
+                'is_active' => $isActive,
+            ]);
+
+            return $checklist;
+        });
     }
 
-    public function updateChecklist(Checklist $checklist, array $payload): Checklist
+    /**
+     * @param array{if_match?:string|null,expected_revision?:int|null,expected_updated_at?:string|null,actor_user_id?:int|null,ip?:string|null,user_agent?:string|null} $context
+     */
+    public function updateChecklist(Checklist $checklist, array $payload, array $context = []): Checklist
     {
-        $checklist->fill([
-            'name' => array_key_exists('name', $payload) ? trim((string) $payload['name']) : $checklist->name,
-            'scope' => $payload['scope'] ?? $checklist->scope,
-            'enforcement_mode' => $payload['enforcement_mode'] ?? $checklist->enforcement_mode,
-            'is_active' => array_key_exists('is_active', $payload)
+        return DB::transaction(function () use ($checklist, $payload, $context): Checklist {
+            /** @var Checklist $lockedChecklist */
+            $lockedChecklist = Checklist::query()->whereKey((int) $checklist->id)->lockForUpdate()->firstOrFail();
+
+            $this->assertChecklistConcurrency($lockedChecklist, $context);
+
+            $resolvedScope = (string) ($payload['scope'] ?? $lockedChecklist->scope);
+            $previousEnforcementMode = (string) $lockedChecklist->enforcement_mode;
+            $nextIsActive = array_key_exists('is_active', $payload)
                 ? (bool) $payload['is_active']
-                : $checklist->is_active,
-            'account_id' => ($payload['scope'] ?? $checklist->scope) === 'account'
+                : (bool) $lockedChecklist->is_active;
+            $nextAccountId = $resolvedScope === 'account'
                 ? (array_key_exists('account_id', $payload)
                     ? ($payload['account_id'] !== null ? (int) $payload['account_id'] : null)
-                    : $checklist->account_id)
-                : null,
-        ]);
-        $checklist->save();
+                    : ($lockedChecklist->account_id !== null ? (int) $lockedChecklist->account_id : null))
+                : null;
+            $nextStrategyModelId = $resolvedScope === 'strategy'
+                ? (array_key_exists('strategy_model_id', $payload)
+                    ? ($payload['strategy_model_id'] !== null ? (int) $payload['strategy_model_id'] : null)
+                    : ($lockedChecklist->strategy_model_id !== null ? (int) $lockedChecklist->strategy_model_id : null))
+                : null;
 
-        return $checklist->fresh(['account']);
+            if ($nextIsActive && $lockedChecklist->user_id !== null) {
+                $this->deactivateActiveScopeConflicts(
+                    (int) $lockedChecklist->user_id,
+                    $resolvedScope,
+                    $nextAccountId,
+                    $nextStrategyModelId,
+                    (int) $lockedChecklist->id
+                );
+            }
+
+            $lockedChecklist->fill([
+                'name' => array_key_exists('name', $payload) ? trim((string) $payload['name']) : $lockedChecklist->name,
+                'scope' => $resolvedScope,
+                'enforcement_mode' => $payload['enforcement_mode'] ?? $lockedChecklist->enforcement_mode,
+                'is_active' => $nextIsActive,
+                'account_id' => $nextAccountId,
+                'strategy_model_id' => $nextStrategyModelId,
+                'revision' => (int) $lockedChecklist->revision + 1,
+            ]);
+            $lockedChecklist->save();
+
+            if ($previousEnforcementMode !== (string) $lockedChecklist->enforcement_mode) {
+                $this->recordEnforcementModeAudit(
+                    $lockedChecklist,
+                    $previousEnforcementMode,
+                    (string) $lockedChecklist->enforcement_mode,
+                    $context
+                );
+            }
+
+            /** @var Checklist $fresh */
+            $fresh = $lockedChecklist->fresh(['account', 'strategyModel']);
+            return $fresh;
+        });
     }
 
     public function duplicateChecklist(Checklist $source): Checklist
     {
         return DB::transaction(function () use ($source): Checklist {
+            if ($source->user_id !== null) {
+                $this->deactivateActiveScopeConflicts(
+                    (int) $source->user_id,
+                    (string) $source->scope,
+                    $source->account_id !== null ? (int) $source->account_id : null,
+                    $source->strategy_model_id !== null ? (int) $source->strategy_model_id : null
+                );
+            }
+
             /** @var Checklist $clone */
             $clone = Checklist::query()->create([
                 'user_id' => $source->user_id,
                 'account_id' => $source->account_id,
+                'strategy_model_id' => $source->strategy_model_id,
                 'name' => $source->name . ' (Copy)',
+                'revision' => 1,
                 'scope' => $source->scope,
                 'enforcement_mode' => $source->enforcement_mode,
                 'is_active' => true,
@@ -104,8 +184,14 @@ class ChecklistService
                 ]);
             }
 
-            return $clone->fresh(['items']);
+            return $clone->fresh(['items', 'account', 'strategyModel']);
         });
+    }
+
+    public function buildChecklistEtag(Checklist $checklist): string
+    {
+        $updatedAt = $checklist->updated_at?->toISOString() ?? '';
+        return sprintf('"%d:%s"', (int) $checklist->revision, $updatedAt);
     }
 
     public function softDeleteChecklist(Checklist $checklist): void
@@ -124,7 +210,7 @@ class ChecklistService
         $orderIndex = $payload['order_index']
             ?? ((int) ($checklist->items()->max('order_index') ?? -1) + 1);
 
-        return ChecklistItem::query()->create([
+        $item = ChecklistItem::query()->create([
             'checklist_id' => (int) $checklist->id,
             'order_index' => (int) $orderIndex,
             'title' => trim((string) $payload['title']),
@@ -135,6 +221,10 @@ class ChecklistService
             'config' => $payload['config'] ?? [],
             'is_active' => (bool) ($payload['is_active'] ?? true),
         ]);
+
+        $this->bumpRevision((int) $checklist->id);
+
+        return $item;
     }
 
     public function updateItem(ChecklistItem $item, array $payload): ChecklistItem
@@ -160,6 +250,7 @@ class ChecklistService
         }
 
         $item->save();
+        $this->bumpRevision((int) $item->checklist_id);
 
         return $item->fresh();
     }
@@ -186,36 +277,125 @@ class ChecklistService
                     ->update(['order_index' => $index]);
             }
         });
+        $this->bumpRevision((int) $checklist->id);
     }
 
     public function softDeleteItem(ChecklistItem $item): void
     {
         $item->is_active = false;
         $item->save();
+        $this->bumpRevision((int) $item->checklist_id);
     }
 
-    public function resolveApplicableChecklist(int $userId, ?int $accountId): ?Checklist
+    public function resolveApplicableChecklist(int $userId, ?int $accountId, ?int $strategyModelId = null): ?Checklist
     {
-        $base = Checklist::query()
+        return $this->resolveApplicableChecklistWithContext($userId, $accountId, $strategyModelId)['checklist'];
+    }
+
+    /**
+     * @return array{
+     *   checklist:Checklist|null,
+     *   resolved_scope:'strategy'|'account'|'global'|null,
+     *   resolved_account_id:int|null,
+     *   resolved_strategy_model_id:int|null
+     * }
+     */
+    public function resolveApplicableChecklistWithContext(int $userId, ?int $accountId, ?int $strategyModelId = null): array
+    {
+        $normalizedAccountId = $accountId !== null && $accountId > 0 ? (int) $accountId : null;
+        $normalizedStrategyModelId = $strategyModelId !== null && $strategyModelId > 0
+            ? (int) $strategyModelId
+            : null;
+
+        $strategyChecklist = $this->resolveScopeChecklist($userId, 'strategy', $normalizedAccountId, $normalizedStrategyModelId);
+        if ($strategyChecklist !== null) {
+            return [
+                'checklist' => $strategyChecklist,
+                'resolved_scope' => 'strategy',
+                'resolved_account_id' => null,
+                'resolved_strategy_model_id' => $normalizedStrategyModelId,
+            ];
+        }
+
+        $accountChecklist = $this->resolveScopeChecklist($userId, 'account', $normalizedAccountId, $normalizedStrategyModelId);
+        if ($accountChecklist !== null) {
+            return [
+                'checklist' => $accountChecklist,
+                'resolved_scope' => 'account',
+                'resolved_account_id' => $normalizedAccountId,
+                'resolved_strategy_model_id' => null,
+            ];
+        }
+
+        $globalChecklist = $this->resolveScopeChecklist($userId, 'global', $normalizedAccountId, $normalizedStrategyModelId);
+        if ($globalChecklist !== null) {
+            return [
+                'checklist' => $globalChecklist,
+                'resolved_scope' => 'global',
+                'resolved_account_id' => null,
+                'resolved_strategy_model_id' => null,
+            ];
+        }
+
+        return [
+            'checklist' => null,
+            'resolved_scope' => null,
+            'resolved_account_id' => null,
+            'resolved_strategy_model_id' => null,
+        ];
+    }
+
+    private function resolveScopeChecklist(
+        int $userId,
+        string $scope,
+        ?int $accountId,
+        ?int $strategyModelId
+    ): ?Checklist {
+        if ($scope === 'account' && $accountId === null) {
+            return null;
+        }
+        if ($scope === 'strategy' && $strategyModelId === null) {
+            return null;
+        }
+
+        $query = Checklist::query()
             ->where('is_active', true)
-            ->orderByRaw("CASE WHEN scope = 'account' THEN 0 ELSE 1 END")
+            ->where('scope', $scope);
+        $this->applyUserScope($query, $userId);
+
+        if ($scope === 'account') {
+            $query->where('account_id', $accountId);
+        } elseif ($scope === 'strategy') {
+            $query->where('strategy_model_id', $strategyModelId);
+        }
+
+        $matches = $query
             ->orderByDesc('updated_at')
-            ->orderByDesc('id');
+            ->orderByDesc('id')
+            ->get();
 
-        $this->applyUserScope($base, $userId);
+        if ($matches->count() > 1) {
+            Log::warning('Multiple active checklists in same scope; deterministic winner applied.', [
+                'user_id' => $userId,
+                'scope' => $scope,
+                'account_id' => $accountId,
+                'strategy_model_id' => $strategyModelId,
+                'winner_id' => (int) $matches->first()->id,
+                'candidate_ids' => $matches->pluck('id')->map(fn ($id): int => (int) $id)->all(),
+            ]);
+        }
 
-        $base->where(function (Builder $query) use ($accountId): void {
-            if ($accountId !== null && $accountId > 0) {
-                $query->where(function (Builder $q) use ($accountId): void {
-                    $q->where('scope', 'account')->where('account_id', $accountId);
-                })->orWhere('scope', 'global');
-                return;
-            }
+        return $matches->first();
+    }
 
-            $query->where('scope', 'global');
-        });
-
-        return $base->first();
+    private function bumpRevision(int $checklistId): void
+    {
+        Checklist::query()
+            ->whereKey($checklistId)
+            ->update([
+                'revision' => DB::raw('revision + 1'),
+                'updated_at' => now(),
+            ]);
     }
 
     public function ensureTradeInUserScope(Trade $trade, int $userId): bool
@@ -244,5 +424,136 @@ class ChecklistService
     public function scopeResponseQueryToUser($query, int $userId)
     {
         return $query->where('checklists.user_id', $userId);
+    }
+
+    /**
+     * @param array{if_match?:string|null,expected_revision?:int|null,expected_updated_at?:string|null} $context
+     */
+    private function assertChecklistConcurrency(Checklist $checklist, array $context): void
+    {
+        $expectedRevision = array_key_exists('expected_revision', $context) && $context['expected_revision'] !== null
+            ? (int) $context['expected_revision']
+            : null;
+        $expectedUpdatedAt = array_key_exists('expected_updated_at', $context)
+            ? $context['expected_updated_at']
+            : null;
+        $ifMatch = array_key_exists('if_match', $context) ? $context['if_match'] : null;
+        $hasExpectation = $expectedRevision !== null
+            || (is_string($expectedUpdatedAt) && trim($expectedUpdatedAt) !== '')
+            || (is_string($ifMatch) && trim($ifMatch) !== '');
+
+        if (!$hasExpectation) {
+            return;
+        }
+
+        $currentEtag = $this->buildChecklistEtag($checklist);
+        $currentUpdatedAt = $checklist->updated_at?->toISOString() ?? now()->toISOString();
+        if (is_string($ifMatch) && trim($ifMatch) !== '') {
+            if (!$this->ifMatchAllowsCurrentEtag($ifMatch, $currentEtag)) {
+                throw new ChecklistConcurrencyException((int) $checklist->revision, $currentUpdatedAt, $currentEtag);
+            }
+        }
+
+        if ($expectedRevision !== null && $expectedRevision !== (int) $checklist->revision) {
+            throw new ChecklistConcurrencyException((int) $checklist->revision, $currentUpdatedAt, $currentEtag);
+        }
+
+        if (is_string($expectedUpdatedAt) && trim($expectedUpdatedAt) !== '') {
+            if (!$this->timestampsMatch($expectedUpdatedAt, $currentUpdatedAt)) {
+                throw new ChecklistConcurrencyException((int) $checklist->revision, $currentUpdatedAt, $currentEtag);
+            }
+        }
+    }
+
+    private function ifMatchAllowsCurrentEtag(string $ifMatchHeader, string $currentEtag): bool
+    {
+        $rawTokens = array_filter(array_map('trim', explode(',', $ifMatchHeader)));
+        if ($rawTokens === []) {
+            return false;
+        }
+        if (in_array('*', $rawTokens, true)) {
+            return true;
+        }
+
+        $allowedTokens = [
+            $currentEtag,
+            'W/' . $currentEtag,
+        ];
+
+        foreach ($rawTokens as $token) {
+            if (in_array($token, $allowedTokens, true)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private function timestampsMatch(string $expected, string $current): bool
+    {
+        try {
+            $expectedAt = CarbonImmutable::parse($expected)->setTimezone('UTC');
+            $currentAt = CarbonImmutable::parse($current)->setTimezone('UTC');
+        } catch (\Throwable) {
+            return false;
+        }
+
+        return $expectedAt->equalTo($currentAt);
+    }
+
+    private function deactivateActiveScopeConflicts(
+        int $userId,
+        string $scope,
+        ?int $accountId,
+        ?int $strategyModelId,
+        ?int $exceptChecklistId = null
+    ): void
+    {
+        $query = Checklist::query()
+            ->where('user_id', $userId)
+            ->where('scope', $scope)
+            ->where('is_active', true);
+
+        if ($exceptChecklistId !== null) {
+            $query->where('id', '<>', $exceptChecklistId);
+        }
+
+        if ($scope === 'account') {
+            $query->where('account_id', $accountId);
+        } elseif ($scope === 'strategy') {
+            $query->where('strategy_model_id', $strategyModelId);
+        }
+
+        $query->update([
+            'is_active' => false,
+            'updated_at' => now(),
+        ]);
+    }
+
+    /**
+     * @param array{actor_user_id?:int|null,ip?:string|null,user_agent?:string|null} $context
+     */
+    private function recordEnforcementModeAudit(
+        Checklist $checklist,
+        string $fromMode,
+        string $toMode,
+        array $context
+    ): void {
+        DB::table('checklist_enforcement_mode_audits')->insert([
+            'checklist_id' => (int) $checklist->id,
+            'checklist_user_id' => $checklist->user_id !== null ? (int) $checklist->user_id : null,
+            'changed_by_user_id' => array_key_exists('actor_user_id', $context) && $context['actor_user_id'] !== null
+                ? (int) $context['actor_user_id']
+                : ($checklist->user_id !== null ? (int) $checklist->user_id : null),
+            'from_enforcement_mode' => $fromMode,
+            'to_enforcement_mode' => $toMode,
+            'ip' => array_key_exists('ip', $context) && is_string($context['ip']) && trim($context['ip']) !== ''
+                ? trim($context['ip'])
+                : null,
+            'user_agent' => array_key_exists('user_agent', $context) && is_string($context['user_agent']) && trim($context['user_agent']) !== ''
+                ? trim($context['user_agent'])
+                : null,
+            'created_at' => now(),
+        ]);
     }
 }

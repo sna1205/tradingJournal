@@ -1,16 +1,16 @@
 import { createRouter, createWebHistory, type RouteRecordRaw } from 'vue-router'
 import { useAuthStore } from '@/stores/authStore'
 
-const Dashboard = () => import('@/pages/Dashboard.vue')
+const AnalyticsPage = () => import('@/pages/Dashboard.vue')
 const Trades = () => import('@/pages/Trades.vue')
 const TradeFormPage = () => import('@/pages/TradeFormPage.vue')
 const MissedTrades = () => import('@/pages/MissedTrades.vue')
 const MissedTradeFormPage = () => import('@/pages/MissedTradeFormPage.vue')
 const Milestones = () => import('@/pages/Milestones.vue')
 const Accounts = () => import('@/pages/Accounts.vue')
-const PreTradeCheckPage = () => import('@/pages/PreTradeCheckPage.vue')
 const LotsCalculatorPage = () => import('@/pages/LotsCalculatorPage.vue')
-const ChecklistBuilderPage = () => import('@/pages/ChecklistBuilderPage.vue')
+const TradingRulesPage = () => import('@/pages/TradingRulesPage.vue')
+const SettingsPage = () => import('@/pages/SettingsPage.vue')
 const LoginPage = () => import('@/pages/LoginPage.vue')
 const UiRegressionPage = () => import('@/pages/UiRegressionPage.vue')
 
@@ -31,6 +31,25 @@ const visualRoutes: RouteRecordRaw[] = includeVisualRoutes
 
 const router = createRouter({
   history: createWebHistory(),
+  scrollBehavior(to, from, savedPosition) {
+    if (savedPosition) {
+      return savedPosition
+    }
+
+    if (to.hash) {
+      return {
+        el: to.hash,
+        top: 96,
+        behavior: 'smooth',
+      }
+    }
+
+    if (to.path !== from.path) {
+      return { top: 0 }
+    }
+
+    return {}
+  },
   routes: [
     {
       path: '/',
@@ -52,7 +71,7 @@ const router = createRouter({
     {
       path: '/dashboard',
       name: 'dashboard',
-      component: Dashboard,
+      component: AnalyticsPage,
     },
     {
       path: '/trades',
@@ -65,19 +84,20 @@ const router = createRouter({
       component: TradeFormPage,
     },
     {
-      path: '/tools/pre-trade-check',
-      name: 'tools-pre-trade-check',
-      component: PreTradeCheckPage,
-    },
-    {
       path: '/tools/lots-calculate',
       name: 'tools-lots-calculate',
       component: LotsCalculatorPage,
     },
     {
-      path: '/settings/checklists',
-      name: 'settings-checklists',
-      component: ChecklistBuilderPage,
+      path: '/settings/hub',
+      name: 'settings',
+      alias: ['/settings'],
+      component: SettingsPage,
+    },
+    {
+      path: '/settings/rules',
+      name: 'settings-rules',
+      component: TradingRulesPage,
     },
     {
       path: '/trades/:id/edit',

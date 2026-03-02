@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import api from '@/services/api'
+import { getScope, scopedKeyForScope } from '@/services/storageScope'
 import {
   enqueueSyncCreate,
   enqueueSyncDelete,
@@ -17,6 +18,7 @@ import {
   upsertLocalAccountSnapshot,
   updateLocalAccount,
 } from '@/services/localFallback'
+import { createRequestManager, isAbortError, stableSerialize } from '@/services/requestManager'
 import { useSyncStatusStore } from '@/stores/syncStatusStore'
 import type {
   Account,
@@ -55,32 +57,55 @@ const SELECTED_ACCOUNT_KEY = 'analytics_selected_account_id'
 
 export const useAccountStore = defineStore('accounts', () => {
   const syncStatusStore = useSyncStatusStore()
+  const requestManager = createRequestManager()
   const accounts = ref<Account[]>([])
   const loading = ref(false)
   const saving = ref(false)
   const selectedAccountId = ref<number | null>(readSelectedAccountId())
+  let fetchAccountsRequestVersion = 0
 
   const activeAccounts = computed(() => accounts.value.filter((account) => account.is_active))
   const selectedAccount = computed(() =>
     accounts.value.find((account) => account.id === selectedAccountId.value) ?? null
   )
 
+  function invalidateAccountLoadCaches(): void {
+    requestManager.invalidateCacheByPrefix('accounts:')
+  }
+
   function setSelectedAccountId(accountId: number | null) {
     selectedAccountId.value = accountId
     if (accountId === null) {
-      localStorage.removeItem(SELECTED_ACCOUNT_KEY)
+      removeSelectedAccountStorage()
       return
     }
 
-    localStorage.setItem(SELECTED_ACCOUNT_KEY, String(accountId))
+    writeSelectedAccountStorage(accountId)
   }
 
   async function fetchAccounts(params?: { is_active?: boolean }) {
+    const requestVersion = ++fetchAccountsRequestVersion
     loading.value = true
+    const requestParams = {
+      is_active: params?.is_active,
+    }
+    const fingerprint = stableSerialize(requestParams)
     try {
-      const { data } = await api.get<unknown>('/accounts', {
-        params,
+      const response = await requestManager.run({
+        key: 'fetchAccounts',
+        fingerprint,
+        cacheKey: `accounts:fetch:${fingerprint}`,
+        cacheTtlMs: 1_500,
+        execute: async ({ signal }) => {
+          const { data } = await api.get<unknown>('/accounts', {
+            params,
+            signal,
+          })
+          return data
+        },
       })
+      if (response.stale) return
+      const data = response.value
       syncStatusStore.markServerHealthy()
       const source = Array.isArray(data)
         ? data
@@ -102,6 +127,10 @@ export const useAccountStore = defineStore('accounts', () => {
         }
       }
     } catch (error) {
+      if (isAbortError(error)) {
+        return
+      }
+
       if (!shouldUseLocalFallback(error)) {
         throw error
       }
@@ -115,7 +144,9 @@ export const useAccountStore = defineStore('accounts', () => {
         }
       }
     } finally {
-      loading.value = false
+      if (requestVersion === fetchAccountsRequestVersion) {
+        loading.value = false
+      }
     }
   }
 
@@ -124,6 +155,7 @@ export const useAccountStore = defineStore('accounts', () => {
     try {
       const { data } = await api.post<unknown>('/accounts', payload)
       syncStatusStore.markServerHealthy()
+      invalidateAccountLoadCaches()
       const normalized = normalizeAccount(data)
       if (!normalized) {
         throw new Error('Invalid account payload returned by API.')
@@ -140,6 +172,7 @@ export const useAccountStore = defineStore('accounts', () => {
       }
 
       syncStatusStore.markLocalFallback('accounts')
+      invalidateAccountLoadCaches()
       const data = createLocalAccount(payload)
       enqueueSyncCreate({
         entity: 'accounts',
@@ -162,6 +195,7 @@ export const useAccountStore = defineStore('accounts', () => {
     try {
       const { data } = await api.put<unknown>(`/accounts/${id}`, payload)
       syncStatusStore.markServerHealthy()
+      invalidateAccountLoadCaches()
       const normalized = normalizeAccount(data)
       if (!normalized) {
         throw new Error('Invalid account payload returned by API.')
@@ -183,6 +217,7 @@ export const useAccountStore = defineStore('accounts', () => {
       }
 
       syncStatusStore.markLocalFallback('accounts')
+      invalidateAccountLoadCaches()
       if (existing) {
         upsertLocalAccountSnapshot(existing)
       }
@@ -210,6 +245,7 @@ export const useAccountStore = defineStore('accounts', () => {
     try {
       await api.delete(`/accounts/${id}`)
       syncStatusStore.markServerHealthy()
+      invalidateAccountLoadCaches()
       try {
         deleteLocalAccount(id)
       } catch {
@@ -225,6 +261,7 @@ export const useAccountStore = defineStore('accounts', () => {
       }
 
       syncStatusStore.markLocalFallback('accounts')
+      invalidateAccountLoadCaches()
       if (existing) {
         upsertLocalAccountSnapshot(existing)
       }
@@ -247,11 +284,27 @@ export const useAccountStore = defineStore('accounts', () => {
   }
 
   async function fetchAccountEquity(id: number) {
+    const fingerprint = `id:${id}`
     try {
-      const { data } = await api.get<AccountEquityPayload>(`/accounts/${id}/equity`)
+      const response = await requestManager.run({
+        key: `fetchAccountEquity:${id}`,
+        fingerprint,
+        cacheKey: `accounts:equity:${fingerprint}`,
+        cacheTtlMs: 2_000,
+        execute: async ({ signal }) => {
+          const { data } = await api.get<AccountEquityPayload>(`/accounts/${id}/equity`, { signal })
+          return data
+        },
+      })
+      if (response.stale) {
+        return response.value
+      }
       syncStatusStore.markServerHealthy()
-      return data
+      return response.value
     } catch (error) {
+      if (isAbortError(error)) {
+        throw error
+      }
       if (!shouldUseLocalFallback(error)) {
         throw error
       }
@@ -261,11 +314,27 @@ export const useAccountStore = defineStore('accounts', () => {
   }
 
   async function fetchAccountAnalytics(id: number) {
+    const fingerprint = `id:${id}`
     try {
-      const { data } = await api.get<AccountAnalyticsPayload>(`/accounts/${id}/analytics`)
+      const response = await requestManager.run({
+        key: `fetchAccountAnalytics:${id}`,
+        fingerprint,
+        cacheKey: `accounts:analytics:${fingerprint}`,
+        cacheTtlMs: 2_000,
+        execute: async ({ signal }) => {
+          const { data } = await api.get<AccountAnalyticsPayload>(`/accounts/${id}/analytics`, { signal })
+          return data
+        },
+      })
+      if (response.stale) {
+        return response.value
+      }
       syncStatusStore.markServerHealthy()
-      return data
+      return response.value
     } catch (error) {
+      if (isAbortError(error)) {
+        throw error
+      }
       if (!shouldUseLocalFallback(error)) {
         throw error
       }
@@ -275,11 +344,27 @@ export const useAccountStore = defineStore('accounts', () => {
   }
 
   async function fetchAccountChallenge(id: number): Promise<AccountChallenge | null> {
+    const fingerprint = `id:${id}`
     try {
-      const { data } = await api.get<AccountChallenge>(`/accounts/${id}/challenge`)
+      const response = await requestManager.run({
+        key: `fetchAccountChallenge:${id}`,
+        fingerprint,
+        cacheKey: `accounts:challenge:${fingerprint}`,
+        cacheTtlMs: 2_000,
+        execute: async ({ signal }) => {
+          const { data } = await api.get<AccountChallenge>(`/accounts/${id}/challenge`, { signal })
+          return data
+        },
+      })
+      if (response.stale) {
+        return response.value
+      }
       syncStatusStore.markServerHealthy()
-      return data
+      return response.value
     } catch (error) {
+      if (isAbortError(error)) {
+        throw error
+      }
       if (!shouldUseLocalFallback(error)) {
         throw error
       }
@@ -302,12 +387,31 @@ export const useAccountStore = defineStore('accounts', () => {
     }
   }
 
-  async function fetchAccountChallengeStatus(id: number): Promise<AccountChallengeStatusPayload | null> {
+  async function fetchAccountChallengeStatus(id: number, signal?: AbortSignal): Promise<AccountChallengeStatusPayload | null> {
+    const fingerprint = `id:${id}`
     try {
-      const { data } = await api.get<AccountChallengeStatusPayload>(`/accounts/${id}/challenge-status`)
+      const response = await requestManager.run({
+        key: `fetchAccountChallengeStatus:${id}`,
+        fingerprint,
+        cacheKey: `accounts:challenge-status:${fingerprint}`,
+        cacheTtlMs: 1_500,
+        externalSignal: signal,
+        execute: async ({ signal: managedSignal }) => {
+          const { data } = await api.get<AccountChallengeStatusPayload>(`/accounts/${id}/challenge-status`, {
+            signal: managedSignal,
+          })
+          return data
+        },
+      })
+      if (response.stale) {
+        return response.value
+      }
       syncStatusStore.markServerHealthy()
-      return data
+      return response.value
     } catch (error) {
+      if (isAbortError(error)) {
+        throw error
+      }
       if (!shouldUseLocalFallback(error)) {
         throw error
       }
@@ -337,12 +441,60 @@ export const useAccountStore = defineStore('accounts', () => {
 })
 
 function readSelectedAccountId(): number | null {
-  const raw = localStorage.getItem(SELECTED_ACCOUNT_KEY)
+  const raw = readSelectedAccountStorage()
   if (!raw) return null
 
   const value = Number(raw)
   if (!Number.isInteger(value) || value <= 0) return null
   return value
+}
+
+function selectedAccountStorageKey(): string {
+  const scope = getScope()
+  return scopedKeyForScope(
+    {
+      userId: scope.userId,
+      accountId: null,
+    },
+    'account-preferences',
+    SELECTED_ACCOUNT_KEY
+  )
+}
+
+function readSelectedAccountStorage(): string | null {
+  try {
+    const scoped = localStorage.getItem(selectedAccountStorageKey())
+    if (scoped !== null) {
+      return scoped
+    }
+
+    // Backward compatibility migration for pre-scoped storage key.
+    const legacy = localStorage.getItem(SELECTED_ACCOUNT_KEY)
+    if (legacy !== null) {
+      localStorage.setItem(selectedAccountStorageKey(), legacy)
+      localStorage.removeItem(SELECTED_ACCOUNT_KEY)
+    }
+
+    return legacy
+  } catch {
+    return null
+  }
+}
+
+function writeSelectedAccountStorage(accountId: number): void {
+  try {
+    localStorage.setItem(selectedAccountStorageKey(), String(accountId))
+  } catch {
+    // Ignore storage write failures.
+  }
+}
+
+function removeSelectedAccountStorage(): void {
+  try {
+    localStorage.removeItem(selectedAccountStorageKey())
+  } catch {
+    // Ignore storage remove failures.
+  }
 }
 
 function normalizeAccount(input: unknown): Account | null {

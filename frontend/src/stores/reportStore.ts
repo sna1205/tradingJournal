@@ -47,30 +47,125 @@ export const useReportStore = defineStore('reports', () => {
     return data
   }
 
-  function exportReportCsv(id: number, params?: Record<string, unknown>) {
-    const search = new URLSearchParams()
-    if (params) {
-      Object.entries(params).forEach(([key, value]) => {
-        if (value === undefined || value === null || value === '') return
-        search.set(key, String(value))
-      })
-    }
-    const query = search.toString()
-    const path = `/api/reports/${id}/export.csv${query ? `?${query}` : ''}`
-    window.open(path, '_blank')
+  async function exportReportCsv(id: number, params?: Record<string, unknown>) {
+    await downloadCsv(
+      `/reports/${id}/export.csv`,
+      params,
+      `report-${id}.csv`
+    )
   }
 
-  function exportAdHocCsv(params?: Record<string, unknown>) {
-    const search = new URLSearchParams()
-    if (params) {
-      Object.entries(params).forEach(([key, value]) => {
-        if (value === undefined || value === null || value === '') return
-        search.set(key, String(value))
-      })
+  async function exportAdHocCsv(params?: Record<string, unknown>) {
+    const scope = String(params?.scope ?? '').toLowerCase()
+    const fallbackName = scope === 'dashboard'
+      ? 'dashboard-export.csv'
+      : 'trade-log-export.csv'
+
+    await downloadCsv('/reports/export.csv', params, fallbackName)
+  }
+
+  async function downloadCsv(
+    endpoint: string,
+    params: Record<string, unknown> | undefined,
+    fallbackFilename: string
+  ): Promise<void> {
+    const response = await api.get<Blob>(endpoint, {
+      params: normalizeExportParams(params),
+      responseType: 'blob',
+      withCredentials: true,
+      headers: {
+        Accept: 'text/csv,application/octet-stream',
+      },
+    })
+
+    const fileName = resolveCsvFilename(
+      response.headers?.['content-disposition'] as string | undefined,
+      fallbackFilename
+    )
+
+    triggerBlobDownload(response.data, fileName)
+  }
+
+  function normalizeExportParams(params?: Record<string, unknown>): Record<string, string> {
+    if (!params) {
+      return {}
     }
-    const query = search.toString()
-    const path = `/api/reports/export.csv${query ? `?${query}` : ''}`
-    window.open(path, '_blank')
+
+    const normalized: Record<string, string> = {}
+    Object.entries(params).forEach(([key, value]) => {
+      if (value === undefined || value === null || value === '') {
+        return
+      }
+
+      if (Array.isArray(value)) {
+        if (value.length === 0) {
+          return
+        }
+        normalized[key] = value.map((entry) => String(entry)).join(',')
+        return
+      }
+
+      normalized[key] = String(value)
+    })
+
+    return normalized
+  }
+
+  function resolveCsvFilename(contentDisposition: string | undefined, fallback: string): string {
+    if (!contentDisposition) {
+      return sanitizeFilename(fallback)
+    }
+
+    const utf8Match = contentDisposition.match(/filename\*=UTF-8''([^;]+)/i)
+    if (utf8Match?.[1]) {
+      try {
+        return sanitizeFilename(decodeURIComponent(utf8Match[1].trim()))
+      } catch {
+        return sanitizeFilename(utf8Match[1].trim())
+      }
+    }
+
+    const filenameMatch = contentDisposition.match(/filename="?([^"]+)"?/i)
+    if (filenameMatch?.[1]) {
+      return sanitizeFilename(filenameMatch[1].trim())
+    }
+
+    return sanitizeFilename(fallback)
+  }
+
+  function sanitizeFilename(value: string): string {
+    const cleaned = value
+      .replace(/[<>:"/\\|?*\u0000-\u001F]/g, '_')
+      .replace(/\s+/g, ' ')
+      .trim()
+
+    if (cleaned === '') {
+      return 'export.csv'
+    }
+
+    return cleaned.toLowerCase().endsWith('.csv')
+      ? cleaned
+      : `${cleaned}.csv`
+  }
+
+  function triggerBlobDownload(blob: Blob, filename: string): void {
+    if (typeof window === 'undefined' || typeof document === 'undefined') {
+      return
+    }
+
+    const objectUrl = window.URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = objectUrl
+    link.download = filename
+    link.rel = 'noopener'
+    link.style.display = 'none'
+    document.body.appendChild(link)
+    link.click()
+    link.remove()
+
+    window.setTimeout(() => {
+      window.URL.revokeObjectURL(objectUrl)
+    }, 0)
   }
 
   return {

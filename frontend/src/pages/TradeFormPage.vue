@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
-import type { AxiosError } from 'axios'
 import { ArrowLeft, Check, DollarSign, TrendingUp } from 'lucide-vue-next'
 import { useRoute, useRouter } from 'vue-router'
 import GlassPanel from '@/components/layout/GlassPanel.vue'
@@ -10,9 +9,16 @@ import BaseSelect from '@/components/form/BaseSelect.vue'
 import BaseDateTime from '@/components/form/BaseDateTime.vue'
 import InstrumentPairSelect from '@/components/form/InstrumentPairSelect.vue'
 import TradeImageUploader from '@/components/trades/TradeImageUploader.vue'
-import TradeChecklistPanel from '@/components/checklists/TradeChecklistPanel.vue'
+import TradeRulesPanel from '@/components/rules/TradeRulesPanel.vue'
 import api from '@/services/api'
-import { FxRateResolutionError, FxToUsdService, type FxQuoteToUsdResolution } from '@/services/fxToUsdService'
+import { createTradeEditLock, type TradeEditLockHandle, type TradeEditLockState } from '@/services/editLockService'
+import {
+  FxRateResolutionError,
+  FxToUsdService,
+  resolveQuoteToUsdFromTable,
+  type FxQuoteToUsdResolution,
+} from '@/services/fxToUsdService'
+import { createDebouncedLatestRunner, stableStringify } from '@/services/precheckScheduler'
 import { livePriceFeedService } from '@/services/priceFeedService'
 import { useAccountStore } from '@/stores/accountStore'
 import {
@@ -20,35 +26,51 @@ import {
   type TradePayload,
   type TradePrecheckResult,
 } from '@/stores/tradeStore'
-import { useTradeChecklistStore } from '@/stores/tradeChecklistStore'
+import { useTradeRulesStore } from '@/stores/tradeRulesStore'
+import { useSyncStatusStore } from '@/stores/syncStatusStore'
 import { useUiStore } from '@/stores/uiStore'
 import type { ImageContextTag, Instrument, Paginated, SessionEnum, Trade, TradeEmotion, TradeImage, TradeLeg, TradePsychology } from '@/types/trade'
+import { normalizeApiError, type NormalizedError } from '@/utils/apiError'
 import { asCurrency, asSignedCurrency } from '@/utils/format'
 
 const router = useRouter()
 const route = useRoute()
 const tradeStore = useTradeStore()
-const tradeChecklistStore = useTradeChecklistStore()
+const tradeChecklistStore = useTradeRulesStore()
 const accountStore = useAccountStore()
+const syncStatusStore = useSyncStatusStore()
 const uiStore = useUiStore()
 const { accounts } = storeToRefs(accountStore)
-const { instruments, strategyModels, setups, killzones, tradeTags, sessionOptions } = storeToRefs(tradeStore)
+const { instruments, strategyModels, setups, killzones, tradeTags, sessionOptions, fxRates } = storeToRefs(tradeStore)
+const { isFallbackMode } = storeToRefs(syncStatusStore)
 const {
   checklist: activeChecklist,
+  items: checklistItems,
   requiredItems: checklistRequiredItems,
   optionalItems: checklistOptionalItems,
   archivedResponses: checklistArchivedResponses,
   readiness: checklistReadiness,
+  serverReadiness: checklistServerReadiness,
+  executionSnapshot: checklistExecutionSnapshot,
   loading: checklistLoading,
   saving: checklistSaving,
+  resolverContext: checklistResolverContext,
+  resolverContextCurrent: checklistResolverContextCurrent,
   submitAttempted: checklistSubmitAttempted,
   isStrict: checklistStrictMode,
   checklistIncomplete,
+  strictSubmitBlocked: checklistStrictSubmitBlocked,
+  serverReadinessMismatch: checklistServerReadinessMismatch,
+  serverReadinessReasons: checklistServerReadinessReasons,
   hasChecklist,
 } = storeToRefs(tradeChecklistStore)
 
 const loadingTrade = ref(false)
 const submitAttempted = ref(false)
+const serverFieldErrors = ref<Record<string, string[]>>({})
+const loadedTradeUpdatedAt = ref<string | null>(null)
+const staleWriteCheckInProgress = ref(false)
+const staleWriteConfirmedFingerprint = ref<string | null>(null)
 const emotionOptions: TradeEmotion[] = ['neutral', 'calm', 'confident', 'fearful', 'greedy', 'hesitant', 'revenge']
 const directionOptions = [
   { label: 'Buy', value: 'buy' },
@@ -210,6 +232,15 @@ const imageUploadError = ref('')
 const uploadingImages = ref(false)
 const deletingImageIds = ref<number[]>([])
 const uploadProgressByPendingId = ref<Record<string, number>>({})
+const editLockState = ref<TradeEditLockState | null>(null)
+const staleWriteWarning = ref<{
+  fingerprint: string
+  loaded_updated_at: string
+  latest_updated_at: string
+  diffs: Array<{ field: string; local: string; latest: string }>
+} | null>(null)
+let editLockHandle: TradeEditLockHandle | null = null
+let releaseEditLockSubscription: (() => void) | null = null
 
 const tradeId = computed(() => {
   const value = Number(route.params.id)
@@ -267,8 +298,10 @@ const instrumentSymbol = computed(() => selectedInstrument.value?.symbol ?? form
 const precheckLoading = ref(false)
 const precheckError = ref('')
 const precheckResult = ref<TradePrecheckResult | null>(null)
+const precheckActiveRequestId = ref<number | null>(null)
+const failedRequiredRuleIds = ref<number[]>([])
 const localRiskOverrideAccepted = ref(false)
-let precheckTimer: ReturnType<typeof setTimeout> | null = null
+const precheckUpdating = computed(() => precheckLoading.value && precheckResult.value !== null)
 const isRiskEngineUnavailable = computed(() => Boolean(precheckResult.value?.risk_engine_unavailable))
 const canUseLocalRiskOverride = computed(() =>
   isRiskEngineUnavailable.value
@@ -278,6 +311,26 @@ const hasAcceptedLocalRiskOverride = computed(() =>
   canUseLocalRiskOverride.value
   && localRiskOverrideAccepted.value
 )
+const selectedChecklistAccountId = computed(() => {
+  const id = Number(form.account_id)
+  return Number.isInteger(id) && id > 0 ? id : null
+})
+const selectedChecklistStrategyModelId = computed(() => {
+  const id = Number(form.strategy_model_id)
+  return Number.isInteger(id) && id > 0 ? id : null
+})
+const selectedChecklistTradeId = computed(() =>
+  isEditMode.value && tradeId.value !== null ? tradeId.value : null
+)
+const isChecklistContextMismatch = computed(() => {
+  const context = checklistResolverContext.value
+  if (!context) return true
+  if (!checklistResolverContextCurrent.value) return true
+
+  return context.requested_account_id !== selectedChecklistAccountId.value
+    || context.requested_strategy_model_id !== selectedChecklistStrategyModelId.value
+    || context.trade_id !== selectedChecklistTradeId.value
+})
 const isSaveBlocked = computed(() =>
   isFxPending.value
   || Boolean(precheckError.value)
@@ -285,22 +338,37 @@ const isSaveBlocked = computed(() =>
   || Boolean(liveFxConversionError.value)
 )
 const isChecklistStrictBlocked = computed(() =>
-  checklistStrictMode.value && hasChecklist.value && checklistIncomplete.value
+  checklistStrictSubmitBlocked.value
+)
+const checklistGateIncomplete = computed(() =>
+  hasChecklist.value && (checklistIncomplete.value || failedRequiredRuleIds.value.length > 0)
+)
+const showSoftChecklistNotice = computed(() =>
+  hasChecklist.value
+  && !checklistStrictMode.value
+  && checklistGateIncomplete.value
+)
+const isLockedByOtherTab = computed(() =>
+  isEditMode.value
+  && editLockState.value?.holder === 'other'
 )
 const isSubmittingDisabled = computed(() =>
   tradeStore.saving
   || uploadingImages.value
   || precheckLoading.value
+  || staleWriteCheckInProgress.value
+  || checklistLoading.value
   || isSaveBlocked.value
+  || (isEditMode.value && isLockedByOtherTab.value)
+  || isChecklistContextMismatch.value
   || isChecklistStrictBlocked.value
 )
-const softChecklistWarning = computed(() =>
-  hasChecklist.value
-  && !checklistStrictMode.value
-  && checklistIncomplete.value
-)
+const lockHolderLabel = computed(() => {
+  const label = editLockState.value?.record?.holder_label?.trim()
+  return label || 'another tab'
+})
 const riskStatusLabel = computed(() => {
-  if (precheckLoading.value) return 'Checking'
+  if (precheckLoading.value && precheckActiveRequestId.value !== null) return 'Checking...'
   if (isFxPending.value) return 'Fetching FX'
   if (precheckError.value) return 'Blocked'
   if (liveFxConversionError.value) return 'Blocked'
@@ -318,8 +386,13 @@ const riskStatusClass = computed(() => {
   return ''
 })
 const blockedSummary = computed(() => {
-  if (!submitAttempted.value || !isSaveBlocked.value) return ''
+  if (!submitAttempted.value || (!isSaveBlocked.value && !isChecklistContextMismatch.value && !isChecklistStrictBlocked.value)) return ''
   if (isFxPending.value) return 'Fetching FX quote...'
+  if (isChecklistContextMismatch.value) return 'Rule context is refreshing for the selected account and strategy.'
+  if (isChecklistStrictBlocked.value) {
+    const firstReason = checklistServerReadinessReasons.value[0]?.reason?.trim()
+    return firstReason || 'Strict mode is blocked by server checklist readiness.'
+  }
   if (precheckError.value) return precheckError.value
   if (liveFxConversionError.value) return liveFxConversionError.value
   if (isRiskEngineUnavailable.value && !hasAcceptedLocalRiskOverride.value) {
@@ -329,6 +402,7 @@ const blockedSummary = computed(() => {
 })
 
 async function refreshLiveFxConversion() {
+  const previousFxMaterialSignature = getFxMaterialSignature(liveFxConversion.value)
   const instrument = selectedInstrument.value
   if (!instrument) {
     liveFxConversion.value = null
@@ -363,10 +437,24 @@ async function refreshLiveFxConversion() {
     const rate = await fxResolver.getRate(quoteCurrency, 'mid')
     if (requestId !== liveFxResolveRequestId) return
     liveFxConversion.value = rate
+    if (getFxMaterialSignature(rate) !== previousFxMaterialSignature) {
+      schedulePrecheck()
+    }
     liveFxConversionErrorMessage.value = ''
     liveFxAttemptedSymbols.value = []
   } catch (error) {
     if (requestId !== liveFxResolveRequestId) return
+    const fallback = resolveQuoteToUsdFromTable(quoteCurrency, fxRates.value)
+    if (fallback) {
+      liveFxConversion.value = fallback
+      if (getFxMaterialSignature(fallback) !== previousFxMaterialSignature) {
+        schedulePrecheck()
+      }
+      liveFxConversionErrorMessage.value = ''
+      liveFxAttemptedSymbols.value = []
+      return
+    }
+
     liveFxConversion.value = null
     if (error instanceof FxRateResolutionError) {
       liveFxAttemptedSymbols.value = error.attemptedSymbols
@@ -853,18 +941,50 @@ const formErrors = computed<Record<string, string>>(() => {
 })
 
 function fieldError(name: string) {
-  return submitAttempted.value ? formErrors.value[name] : ''
+  if (!submitAttempted.value) return ''
+  const localMessage = formErrors.value[name]
+  if (localMessage) return localMessage
+  return serverFieldErrors.value[name]?.[0] ?? ''
 }
 
 function extractErrorMessage(error: unknown): string {
-  const axiosError = error as AxiosError<{ message?: string; errors?: Record<string, string[]> }>
-  const responseMessage = axiosError.response?.data?.message
-  const responseErrors = axiosError.response?.data?.errors
-  const firstValidationError = responseErrors
-    ? Object.values(responseErrors).flat().find((message) => Boolean(message))
-    : null
+  return normalizeApiError(error).message
+}
 
-  return firstValidationError || responseMessage || 'Please review input values and try again.'
+function extractFailingRuleIds(error: unknown): number[] {
+  return normalizeApiError(error).failingRuleIds
+}
+
+function isTradeRevisionConflict(error: unknown): boolean {
+  return normalizeApiError(error).isConflict
+}
+
+function mapServerFieldName(field: string): string {
+  const normalized = field.trim()
+  if (normalized === 'pair') return 'instrument_id'
+  if (normalized === 'lot_size') return 'position_size'
+  if (normalized === 'actual_exit_price') return 'exit_price'
+  return normalized
+}
+
+function applyServerFieldErrors(normalized: NormalizedError): void {
+  if (!normalized.isValidation) {
+    serverFieldErrors.value = {}
+    return
+  }
+
+  const next: Record<string, string[]> = {}
+  for (const [field, messages] of Object.entries(normalized.fieldErrors)) {
+    const mappedField = mapServerFieldName(field)
+    const cleanedMessages = messages
+      .map((message) => `${message ?? ''}`.trim())
+      .filter((message) => message.length > 0)
+    if (cleanedMessages.length > 0) {
+      next[mappedField] = cleanedMessages
+    }
+  }
+
+  serverFieldErrors.value = next
 }
 
 function buildPayload(): TradePayload {
@@ -990,42 +1110,132 @@ function buildPayload(): TradePayload {
     legs,
     risk_override_reason: form.risk_override_reason.trim() ? form.risk_override_reason.trim() : null,
     followed_rules: form.followed_rules,
-    checklist_incomplete: checklistIncomplete.value,
+    checklist_responses: checklistItems.value.map((item) => ({
+      checklist_item_id: item.id,
+      value: item.response.value,
+    })),
+    checklist_evaluation: {
+      status: checklistReadiness.value.status,
+      ready: checklistReadiness.value.ready,
+      completed_required: checklistReadiness.value.completed_required,
+      total_required: checklistReadiness.value.total_required,
+    },
+    precheck_snapshot: precheckResult.value?.calculated ?? null,
+    checklist_incomplete: checklistGateIncomplete.value,
     emotion: form.emotion,
     notes: form.notes.trim() ? form.notes.trim() : null,
   }
 }
 
-async function runPrecheck() {
-  precheckError.value = ''
-  precheckResult.value = null
-  localRiskOverrideAccepted.value = false
+function getFxMaterialSignature(value: FxQuoteToUsdResolution | null): string {
+  if (!value) return 'none'
+  // Only fields that influence risk math should trigger precheck refresh on quote updates.
+  return `${value.method}|${value.mode}|${value.symbolUsed ?? 'identity'}|${value.rate.toFixed(8)}`
+}
 
+function getMaterialPrecheckPayload(payload: TradePayload) {
+  return {
+    account_id: payload.account_id,
+    instrument_id: payload.instrument_id,
+    strategy_model_id: payload.strategy_model_id ?? null,
+    setup_id: payload.setup_id ?? null,
+    killzone_id: payload.killzone_id ?? null,
+    session_enum: payload.session_enum ?? null,
+    symbol: payload.symbol,
+    direction: payload.direction,
+    close_date: payload.close_date,
+    entry_price: payload.entry_price,
+    stop_loss: payload.stop_loss,
+    take_profit: payload.take_profit,
+    actual_exit_price: payload.actual_exit_price,
+    position_size: payload.position_size,
+    commission: payload.commission ?? 0,
+    swap: payload.swap ?? 0,
+    spread_cost: payload.spread_cost ?? 0,
+    slippage_cost: payload.slippage_cost ?? 0,
+    fx_rate_quote_to_usd: payload.fx_rate_quote_to_usd ?? null,
+    fx_symbol_used: payload.fx_symbol_used ?? null,
+    risk_override_reason: payload.risk_override_reason ?? null,
+    followed_rules: payload.followed_rules,
+    checklist_incomplete: payload.checklist_incomplete ?? false,
+    checklist_evaluation: payload.checklist_evaluation ?? null,
+    checklist_responses: (payload.checklist_responses ?? []).map((item) => ({
+      checklist_item_id: item.checklist_item_id,
+      value: item.value,
+    })),
+    legs: (payload.legs ?? []).map((leg) => ({
+      leg_type: leg.leg_type,
+      price: leg.price,
+      quantity_lots: leg.quantity_lots,
+      executed_at: leg.executed_at,
+      fees: leg.fees ?? 0,
+      notes: leg.notes ?? null,
+    })),
+  }
+}
+
+function payloadHash(payload: ReturnType<typeof getMaterialPrecheckPayload>): string {
+  return stableStringify(payload)
+}
+
+const precheckRunner = createDebouncedLatestRunner<
+  { payload: TradePayload; hash: string },
+  TradePrecheckResult
+>({
+  debounceMs: 800,
+  getHash: (input) => input.hash,
+  execute: async ({ payload }, context) => {
+    return await tradeStore.precheckTrade(payload, tradeId.value ?? undefined, {
+      signal: context.signal,
+    })
+  },
+  onRequestStart: (context) => {
+    precheckActiveRequestId.value = context.requestId
+    precheckLoading.value = true
+    precheckError.value = ''
+    localRiskOverrideAccepted.value = false
+  },
+  onRequestSuccess: (result, context) => {
+    if (precheckActiveRequestId.value !== context.requestId) return
+    precheckResult.value = result
+    tradeChecklistStore.applyServerReadinessPreview(result.checklist_gate ?? null)
+    if (Array.isArray(result.checklist_gate?.failed_required_rule_ids)) {
+      failedRequiredRuleIds.value = result.checklist_gate.failed_required_rule_ids
+    }
+    precheckError.value = ''
+  },
+  onRequestError: (error, context) => {
+    if (precheckActiveRequestId.value !== context.requestId) return
+    precheckError.value = extractErrorMessage(error)
+  },
+  onRequestSettled: (context) => {
+    if (precheckActiveRequestId.value !== context.requestId) return
+    precheckLoading.value = false
+  },
+})
+
+async function runPrecheck(options?: { force?: boolean }) {
   const firstError = Object.values(formErrors.value)[0]
   if (firstError) return
   if (isFxPending.value) return
 
   try {
     const payload = buildPayload()
-    precheckLoading.value = true
-    precheckResult.value = await tradeStore.precheckTrade(
-      payload,
-      tradeId.value ?? undefined
+    const materialPayload = getMaterialPrecheckPayload(payload)
+    precheckRunner.schedule(
+      {
+        payload,
+        hash: payloadHash(materialPayload),
+      },
+      { force: options?.force === true }
     )
   } catch (error) {
     precheckError.value = extractErrorMessage(error)
-  } finally {
-    precheckLoading.value = false
   }
 }
 
 function schedulePrecheck() {
-  if (precheckTimer) {
-    clearTimeout(precheckTimer)
-  }
-  precheckTimer = setTimeout(() => {
-    void runPrecheck()
-  }, 250)
+  void runPrecheck()
 }
 
 function clearPendingImages() {
@@ -1189,18 +1399,224 @@ function buildPsychologyPayload() {
   }
 }
 
+function setupEditLock() {
+  if (!isEditMode.value || tradeId.value === null) {
+    editLockState.value = null
+    return
+  }
+
+  if (releaseEditLockSubscription) {
+    releaseEditLockSubscription()
+    releaseEditLockSubscription = null
+  }
+  if (editLockHandle) {
+    editLockHandle.stop()
+    editLockHandle = null
+  }
+
+  editLockHandle = createTradeEditLock(tradeId.value)
+  releaseEditLockSubscription = editLockHandle.subscribe((next) => {
+    editLockState.value = next
+  })
+  editLockHandle.start()
+}
+
+function teardownEditLock() {
+  if (releaseEditLockSubscription) {
+    releaseEditLockSubscription()
+    releaseEditLockSubscription = null
+  }
+  if (editLockHandle) {
+    editLockHandle.stop()
+    editLockHandle = null
+  }
+  editLockState.value = null
+}
+
+function takeOverEditLock() {
+  if (!editLockHandle) return
+  const approved = typeof window === 'undefined'
+    ? true
+    : window.confirm('Take over edit lock from the other tab?')
+  if (!approved) return
+
+  const acquired = editLockHandle.takeOver()
+  if (acquired) {
+    uiStore.toast({
+      type: 'success',
+      title: 'Edit lock acquired',
+      message: 'This tab now controls saving for this trade.',
+    })
+    return
+  }
+
+  uiStore.toast({
+    type: 'error',
+    title: 'Could not take over lock',
+    message: 'Try again in a moment.',
+  })
+}
+
+function normalizeUpdatedAt(value: unknown): string | null {
+  if (typeof value !== 'string') return null
+  const trimmed = value.trim()
+  if (!trimmed) return null
+  const parsed = Date.parse(trimmed)
+  if (!Number.isFinite(parsed)) return null
+  return new Date(parsed).toISOString()
+}
+
+function formatUpdatedAtForBanner(value: string): string {
+  const parsed = Date.parse(value)
+  if (!Number.isFinite(parsed)) return value
+  return new Date(parsed).toLocaleString()
+}
+
+function stringValue(value: unknown): string {
+  if (value === null || value === undefined) return ''
+  if (typeof value === 'boolean') return value ? 'Yes' : 'No'
+  if (Array.isArray(value)) return value.map((item) => String(item)).join(', ')
+  return String(value)
+}
+
+function pushDiff(
+  diffs: Array<{ field: string; local: string; latest: string }>,
+  field: string,
+  localValue: unknown,
+  latestValue: unknown
+) {
+  const local = stringValue(localValue).trim()
+  const latest = stringValue(latestValue).trim()
+  if (local === latest) return
+  diffs.push({
+    field,
+    local: local || '-',
+    latest: latest || '-',
+  })
+}
+
+function staleWriteDiffs(payload: TradePayload, latestTrade: Trade): Array<{ field: string; local: string; latest: string }> {
+  const diffs: Array<{ field: string; local: string; latest: string }> = []
+  pushDiff(diffs, 'Account', payload.account_id, latestTrade.account_id)
+  pushDiff(diffs, 'Symbol', payload.symbol.toUpperCase(), latestTrade.pair)
+  pushDiff(diffs, 'Direction', payload.direction, latestTrade.direction)
+  pushDiff(diffs, 'Entry Price', payload.entry_price, latestTrade.entry_price)
+  pushDiff(diffs, 'Stop Loss', payload.stop_loss, latestTrade.stop_loss)
+  pushDiff(diffs, 'Take Profit', payload.take_profit, latestTrade.take_profit)
+  pushDiff(diffs, 'Exit Price', payload.actual_exit_price, latestTrade.actual_exit_price)
+  pushDiff(diffs, 'Position Size', payload.position_size, latestTrade.lot_size)
+  pushDiff(diffs, 'Close Date', payload.close_date, latestTrade.date)
+  pushDiff(diffs, 'Emotion', payload.emotion, latestTrade.emotion)
+  pushDiff(diffs, 'Followed Rules', payload.followed_rules, latestTrade.followed_rules)
+  pushDiff(
+    diffs,
+    'Tags',
+    [...(payload.tag_ids ?? [])].sort((a, b) => a - b).join(','),
+    [...(latestTrade.tag_ids ?? [])].sort((a, b) => a - b).join(',')
+  )
+  pushDiff(diffs, 'Notes', payload.notes ?? '', latestTrade.notes ?? '')
+  return diffs
+}
+
+function clearStaleWriteWarning() {
+  staleWriteWarning.value = null
+  staleWriteConfirmedFingerprint.value = null
+}
+
+async function verifyStaleWriteBeforeSave(payload: TradePayload): Promise<boolean> {
+  if (!isEditMode.value || tradeId.value === null) return true
+  const baselineUpdatedAt = normalizeUpdatedAt(loadedTradeUpdatedAt.value)
+  if (!baselineUpdatedAt) return true
+
+  let latestTrade: Trade | null = null
+  const snapshot = tradeStore.trades.find((row) => row.id === tradeId.value) ?? null
+  const snapshotUpdatedAt = normalizeUpdatedAt(snapshot?.updated_at)
+  if (snapshot && snapshotUpdatedAt && snapshotUpdatedAt !== baselineUpdatedAt) {
+    latestTrade = snapshot
+  }
+
+  if (!latestTrade) {
+    staleWriteCheckInProgress.value = true
+    try {
+      const latest = await tradeStore.fetchTradeDetails(tradeId.value)
+      latestTrade = latest.trade
+    } catch {
+      staleWriteCheckInProgress.value = false
+      return true
+    } finally {
+      staleWriteCheckInProgress.value = false
+    }
+  }
+
+  const latestUpdatedAt = normalizeUpdatedAt(latestTrade.updated_at)
+  if (!latestUpdatedAt || latestUpdatedAt === baselineUpdatedAt) {
+    clearStaleWriteWarning()
+    return true
+  }
+
+  const fingerprint = `${baselineUpdatedAt}|${latestUpdatedAt}`
+  staleWriteWarning.value = {
+    fingerprint,
+    loaded_updated_at: baselineUpdatedAt,
+    latest_updated_at: latestUpdatedAt,
+    diffs: staleWriteDiffs(payload, latestTrade),
+  }
+
+  if (staleWriteConfirmedFingerprint.value === fingerprint) {
+    return true
+  }
+
+  uiStore.toast({
+    type: 'info',
+    title: 'Trade was updated elsewhere',
+    message: 'Review differences and confirm overwrite before saving.',
+  })
+  return false
+}
+
+function confirmStaleOverwriteAndSave() {
+  if (!staleWriteWarning.value) return
+  staleWriteConfirmedFingerprint.value = staleWriteWarning.value.fingerprint
+  void submitForm()
+}
+
+async function reloadTradeFromLatest() {
+  if (!isEditMode.value || tradeId.value === null) return
+  const approved = typeof window === 'undefined'
+    ? true
+    : window.confirm('Reload latest server trade data? Unsaved changes and pending images will be discarded.')
+  if (!approved) return
+
+  clearPendingImages()
+  clearStaleWriteWarning()
+  await loadTradeIfNeeded()
+  await loadChecklistState()
+  schedulePrecheck()
+}
+
 function handleGlobalHotkeys(event: KeyboardEvent) {
   const key = event.key.toLowerCase()
   if (!(event.ctrlKey || event.metaKey)) return
 
   if (key === 's') {
     event.preventDefault()
-    void submitForm()
+    handleExecuteClick()
   }
 }
 
 async function submitForm() {
+  editLockHandle?.refresh()
+  if (isEditMode.value && isLockedByOtherTab.value) {
+    uiStore.toast({
+      type: 'error',
+      title: 'Edit locked by another tab',
+      message: 'Use "Take over" before saving from this tab.',
+    })
+    return
+  }
+
   submitAttempted.value = true
+  serverFieldErrors.value = {}
   tradeChecklistStore.markSubmitAttempted(true)
   const firstError = Object.values(formErrors.value)[0]
   if (firstError) {
@@ -1220,17 +1636,32 @@ async function submitForm() {
     return
   }
 
+  if (isChecklistContextMismatch.value) {
+    uiStore.toast({
+      type: 'info',
+      title: 'Rules refreshing',
+      message: 'Waiting for rule context to match selected account and strategy.',
+    })
+    return
+  }
+
   if (isChecklistStrictBlocked.value) {
     uiStore.toast({
       type: 'error',
-      title: 'Checklist incomplete',
-      message: 'Complete all required checklist items before saving.',
+      title: 'Blocked by strict rules',
+      message: checklistServerReadinessReasons.value[0]?.reason
+        || 'Server checklist readiness is not ready yet.',
     })
     return
   }
 
   try {
     const payload = buildPayload()
+    const staleSafe = await verifyStaleWriteBeforeSave(payload)
+    if (!staleSafe) {
+      return
+    }
+
     const hadPendingImages = pendingImages.value.length > 0
     let savedTrade: Trade
 
@@ -1240,11 +1671,12 @@ async function submitForm() {
       savedTrade = await tradeStore.addTrade(payload)
     }
 
-    await tradeChecklistStore.persistForTrade(savedTrade.id)
-
     await tradeStore.upsertTradePsychology(savedTrade.id, buildPsychologyPayload())
 
     await uploadPendingImages(savedTrade)
+    loadedTradeUpdatedAt.value = normalizeUpdatedAt(savedTrade.updated_at)
+    clearStaleWriteWarning()
+    serverFieldErrors.value = {}
 
     uiStore.toast({
       type: 'success',
@@ -1257,17 +1689,46 @@ async function submitForm() {
     tradeChecklistStore.clearSubmitAttempted()
     void router.push('/trades')
   } catch (error) {
+    const normalized = normalizeApiError(error)
+    applyServerFieldErrors(normalized)
+
+    if (isTradeRevisionConflict(error) && isEditMode.value && tradeId.value !== null) {
+      clearPendingImages()
+      await loadTradeIfNeeded()
+      await loadChecklistState()
+      schedulePrecheck()
+      uiStore.toast({
+        type: 'info',
+        title: 'Trade updated elsewhere',
+        message: 'This trade was updated elsewhere. Reloaded latest version.',
+      })
+      return
+    }
+
+    const failingRuleIds = extractFailingRuleIds(error)
+    if (failingRuleIds.length > 0) {
+      failedRequiredRuleIds.value = failingRuleIds
+    }
+
     uiStore.toast({
       type: 'error',
       title: 'Failed to save execution',
-      message: extractErrorMessage(error),
+      message: normalized.message,
     })
   }
+}
+
+function handleExecuteClick() {
+  if (isSubmittingDisabled.value) return
+  void submitForm()
 }
 
 async function loadTradeIfNeeded() {
   if (!isEditMode.value || tradeId.value === null) {
     tradeCompleted.value = true
+    loadedTradeUpdatedAt.value = null
+    clearStaleWriteWarning()
+    serverFieldErrors.value = {}
     form.date = nowLocalDateTime()
     ensureDefaultExitLeg()
     setPsychologyFromPayload(null)
@@ -1278,6 +1739,9 @@ async function loadTradeIfNeeded() {
   loadingTrade.value = true
   try {
     const data = await tradeStore.fetchTradeDetails(tradeId.value)
+    loadedTradeUpdatedAt.value = normalizeUpdatedAt(data.trade.updated_at)
+    clearStaleWriteWarning()
+    serverFieldErrors.value = {}
     setFormFromTrade(data.trade, data.legs ?? [], data.psychology ?? null)
     existingImages.value = (data.images ?? [])
       .slice()
@@ -1296,27 +1760,30 @@ async function loadTradeIfNeeded() {
 
 async function loadChecklistState() {
   tradeChecklistStore.clearSubmitAttempted()
-
-  if (isEditMode.value && tradeId.value !== null) {
-    await tradeChecklistStore.loadForTrade(tradeId.value)
-    return
-  }
-
-  const accountId = Number(form.account_id)
-  await tradeChecklistStore.loadForCreate(Number.isInteger(accountId) && accountId > 0 ? accountId : null)
+  await tradeChecklistStore.loadForContext(
+    selectedChecklistAccountId.value,
+    selectedChecklistStrategyModelId.value,
+    selectedChecklistTradeId.value
+  )
 }
 
 function onChecklistResponseChange(itemId: number, value: unknown) {
-  tradeChecklistStore.updateResponse(itemId, value, true)
+  tradeChecklistStore.updateResponse(itemId, value, false)
+}
+
+function onChecklistEvaluationChange(payload: { failedRequiredIds: number[]; firstFailingId: number | null }) {
+  failedRequiredRuleIds.value = payload.failedRequiredIds
 }
 
 onMounted(async () => {
   window.addEventListener('keydown', handleGlobalHotkeys)
+  setupEditLock()
 
   try {
     await Promise.all([
       accountStore.fetchAccounts(),
       tradeStore.fetchInstruments(),
+      tradeStore.fetchFxRates(),
       tradeStore.fetchDictionaries(),
     ])
   } catch {
@@ -1358,14 +1825,21 @@ onMounted(async () => {
 })
 
 watch(
-  () => form.account_id,
-  (value, previous) => {
-    if (value === previous) return
-    if (!isEditMode.value) {
-      const accountId = Number(value)
-      void tradeChecklistStore.loadForCreate(Number.isInteger(accountId) && accountId > 0 ? accountId : null)
-    }
+  () => tradeId.value,
+  (next, previous) => {
+    if (next === previous) return
+    setupEditLock()
+    void loadTradeIfNeeded()
+    void loadChecklistState()
     schedulePrecheck()
+  }
+)
+
+watch(
+  () => [form.account_id, form.strategy_model_id],
+  ([accountId, strategyModelId], [previousAccountId, previousStrategyModelId]) => {
+    if (accountId === previousAccountId && strategyModelId === previousStrategyModelId) return
+    void loadChecklistState()
   }
 )
 
@@ -1392,7 +1866,8 @@ watch(
     unsubscribeFxListeners = symbols.map((symbol) =>
       livePriceFeedService.subscribe(symbol, () => {
         quoteTickVersion.value += 1
-        schedulePrecheck()
+        // Do not trigger precheck on every quote tick.
+        // We only re-run precheck when `refreshLiveFxConversion` detects a material FX change.
       })
     )
     quoteTickVersion.value += 1
@@ -1492,11 +1967,10 @@ watch(
 
 onBeforeUnmount(() => {
   window.removeEventListener('keydown', handleGlobalHotkeys)
+  teardownEditLock()
   clearPendingImages()
   tradeChecklistStore.resetState()
-  if (precheckTimer) {
-    clearTimeout(precheckTimer)
-  }
+  precheckRunner.cancel()
   for (const unsubscribe of unsubscribeFxListeners) {
     unsubscribe()
   }
@@ -1576,14 +2050,16 @@ async function loadImage(file: File): Promise<HTMLImageElement> {
       </div>
 
       <div v-else class="trade-form-with-checklist">
-        <form :id="tradeFormId" class="form-block space-y-4 trade-form-main" @submit.prevent="submitForm">
+        <form :id="tradeFormId" class="form-block space-y-4 trade-form-main" @submit.prevent="handleExecuteClick">
         <div v-if="hasAcceptedLocalRiskOverride" class="risk-unverified-watermark">
           RISK UNVERIFIED · LOCAL DRAFT
         </div>
         <div class="execution-long-header">
           <div>
             <h2 class="section-title">{{ pageTitle }}</h2>
-            <p class="section-note">Minimal form for fast execution logging.</p>
+            <p class="section-note">
+              Minimal form for fast execution logging.
+            </p>
           </div>
           <button type="button" class="btn btn-ghost inline-flex items-center gap-2 px-3 py-2 text-sm" @click="router.push('/trades')">
             <ArrowLeft class="h-4 w-4" />
@@ -1592,6 +2068,43 @@ async function loadImage(file: File): Promise<HTMLImageElement> {
         </div>
 
         <p v-if="blockedSummary" class="field-error-text">{{ blockedSummary }}</p>
+        <div v-if="isLockedByOtherTab" class="panel p-3 text-sm risk-unverified-banner">
+          <p class="font-semibold">Edit lock active in {{ lockHolderLabel }}</p>
+          <p class="mt-1">
+            Another tab currently owns this trade edit session. Saving is blocked in this tab until you take over.
+          </p>
+          <div class="mt-3 flex flex-wrap gap-2">
+            <button type="button" class="btn btn-secondary px-3 py-1.5 text-sm" @click="takeOverEditLock">
+              Take over
+            </button>
+            <button type="button" class="btn btn-ghost px-3 py-1.5 text-sm" @click="void loadTradeIfNeeded()">
+              Refresh
+            </button>
+          </div>
+        </div>
+
+        <div v-if="staleWriteWarning" class="panel p-3 text-sm">
+          <p class="font-semibold">Stale write warning</p>
+          <p class="mt-1">
+            This trade changed after you loaded the edit form.
+            Loaded: <strong>{{ formatUpdatedAtForBanner(staleWriteWarning.loaded_updated_at) }}</strong> ·
+            Latest: <strong>{{ formatUpdatedAtForBanner(staleWriteWarning.latest_updated_at) }}</strong>
+          </p>
+          <ul v-if="staleWriteWarning.diffs.length > 0" class="mt-2 list-disc pl-5">
+            <li v-for="diff in staleWriteWarning.diffs" :key="diff.field">
+              {{ diff.field }}: current form <strong>{{ diff.local }}</strong> vs latest <strong>{{ diff.latest }}</strong>
+            </li>
+          </ul>
+          <div class="mt-3 flex flex-wrap gap-2">
+            <button type="button" class="btn btn-secondary px-3 py-1.5 text-sm" @click="confirmStaleOverwriteAndSave">
+              Confirm overwrite and save
+            </button>
+            <button type="button" class="btn btn-ghost px-3 py-1.5 text-sm" @click="void reloadTradeFromLatest()">
+              Reload latest
+            </button>
+          </div>
+        </div>
+
         <div v-if="isRiskEngineUnavailable" class="panel p-3 text-sm risk-unverified-banner">
           <p class="font-semibold">Risk engine unavailable</p>
           <p class="mt-1">
@@ -1603,9 +2116,6 @@ async function loadImage(file: File): Promise<HTMLImageElement> {
             <span>I accept risk (local-only draft)</span>
           </label>
         </div>
-        <p v-if="softChecklistWarning" class="field-error-text">
-          Checklist is incomplete. Save is allowed in soft mode and this trade will be flagged.
-        </p>
 
         <section class="trade-form-section execution-long-section">
           <div class="execution-section-heading">
@@ -1738,33 +2248,27 @@ async function loadImage(file: File): Promise<HTMLImageElement> {
               :options="sessionEnumOptions"
               :error="fieldError('session_enum')"
             />
-            <button
-              type="button"
-              class="execution-complete-toggle execution-rule-toggle md:col-span-2"
-              :class="{ 'is-on': form.followed_rules }"
-              :aria-pressed="form.followed_rules"
-              @click="form.followed_rules = !form.followed_rules"
-            >
-              <span class="execution-complete-toggle-icon" aria-hidden="true">
-                <Check class="h-3.5 w-3.5" />
-              </span>
-              <span>Rules checklist follows my plan</span>
-            </button>
           </div>
         </section>
 
-        <TradeChecklistPanel
+        <TradeRulesPanel
           mode="mobile"
           :checklist="activeChecklist"
           :required-items="checklistRequiredItems"
           :optional-items="checklistOptionalItems"
           :archived-responses="checklistArchivedResponses"
           :readiness="checklistReadiness"
+          :server-readiness="checklistServerReadiness"
+          :server-readiness-mismatch="checklistServerReadinessMismatch"
+          :server-readiness-reasons="checklistServerReadinessReasons"
+          :execution-snapshot="checklistExecutionSnapshot"
           :loading="checklistLoading"
           :saving="checklistSaving"
           :submit-attempted="checklistSubmitAttempted || submitAttempted"
           :strict-mode="checklistStrictMode"
+          :risk-precheck="precheckResult"
           @update-response="onChecklistResponseChange"
+          @evaluation-change="onChecklistEvaluationChange"
         />
 
         <section class="trade-form-section execution-long-section">
@@ -1791,7 +2295,7 @@ async function loadImage(file: File): Promise<HTMLImageElement> {
             <article class="panel execution-partial-card">
               <div class="execution-partial-head">
                 <p class="text-sm font-semibold">Main Exit</p>
-                <button type="button" class="chip-btn" @click="void runPrecheck()">Recalculate</button>
+                <button type="button" class="chip-btn" @click="void runPrecheck({ force: true })">Recalculate</button>
               </div>
               <div class="grid grid-premium md:grid-cols-2 xl:grid-cols-4">
                 <BaseInput
@@ -1920,6 +2424,7 @@ async function loadImage(file: File): Promise<HTMLImageElement> {
           <p v-if="isRiskEngineUnavailable" class="field-error-text">
             Risk precheck unavailable. Confirm local-only override to save as draft.
           </p>
+          <p v-if="precheckUpdating" class="text-xs muted">Updating risk check...</p>
           <p v-if="isFxPending" class="text-xs muted">Fetching FX quote...</p>
           <p v-if="liveFxConversionError" class="field-error-text">{{ liveFxConversionError }}</p>
           <details v-if="liveFxConversionError && liveFxAttemptedSymbols.length > 0" class="mt-1 text-xs muted">
@@ -1980,6 +2485,7 @@ async function loadImage(file: File): Promise<HTMLImageElement> {
           title="Screenshots (Optional)"
           :existing-images="existingImages"
           :pending-images="pendingImages"
+          :offline-warning="isFallbackMode"
           :max-files="MAX_IMAGE_COUNT"
           :uploading="uploadingImages"
           :upload-progress="uploadProgressByPendingId"
@@ -2062,38 +2568,49 @@ async function loadImage(file: File): Promise<HTMLImageElement> {
           <span v-if="hasAcceptedLocalRiskOverride" class="execution-status-chip is-blocked">
             Risk unverified (local-only)
           </span>
+          <span v-if="showSoftChecklistNotice" class="text-xs muted">
+            Soft mode: rules incomplete, execution allowed.
+          </span>
           <button type="button" class="btn btn-ghost px-4 py-2 text-sm" @click="router.push('/trades')">Cancel</button>
           <button
-            type="submit"
+            type="button"
             class="btn btn-primary px-4 py-2 text-sm"
             :disabled="isSubmittingDisabled"
+            :class="{ 'opacity-60': isChecklistStrictBlocked }"
+            :title="isChecklistStrictBlocked ? 'Strict mode: blocked until server readiness is Ready.' : ''"
+            @click="handleExecuteClick"
           >
             {{
               uploadingImages
                 ? 'Uploading images...'
                 : tradeStore.saving
                   ? 'Saving...'
-                  : isEditMode ? 'Update Execute' : 'Save Execute'
+                  : isChecklistStrictBlocked
+                    ? 'Blocked by Rules'
+                    : isEditMode ? 'Update Execute' : 'Save Execute'
             }}
           </button>
         </div>
-        <p v-if="isChecklistStrictBlocked" class="field-error-text mt-2">
-          Complete required checklist items to proceed.
-        </p>
         </form>
 
-        <TradeChecklistPanel
+        <TradeRulesPanel
           mode="desktop"
           :checklist="activeChecklist"
           :required-items="checklistRequiredItems"
           :optional-items="checklistOptionalItems"
           :archived-responses="checklistArchivedResponses"
           :readiness="checklistReadiness"
+          :server-readiness="checklistServerReadiness"
+          :server-readiness-mismatch="checklistServerReadinessMismatch"
+          :server-readiness-reasons="checklistServerReadinessReasons"
+          :execution-snapshot="checklistExecutionSnapshot"
           :loading="checklistLoading"
           :saving="checklistSaving"
           :submit-attempted="checklistSubmitAttempted || submitAttempted"
           :strict-mode="checklistStrictMode"
+          :risk-precheck="precheckResult"
           @update-response="onChecklistResponseChange"
+          @evaluation-change="onChecklistEvaluationChange"
         />
       </div>
     </GlassPanel>

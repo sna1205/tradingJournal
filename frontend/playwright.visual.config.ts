@@ -44,6 +44,7 @@ export default defineConfig({
     env: {
       VITE_VISUAL_TEST_MODE: '1',
       VITE_ENABLE_VISUAL_ROUTES: '1',
+      VITE_LOCAL_FALLBACK_DEFAULT_ENABLED: '1',
     },
   },
   reporter: 'list',

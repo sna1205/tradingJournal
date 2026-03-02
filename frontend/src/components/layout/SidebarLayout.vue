@@ -21,17 +21,20 @@ import {
   ShieldAlert,
   SwatchBook,
   LogOut,
+  Settings2,
 } from 'lucide-vue-next'
 import { storeToRefs } from 'pinia'
 import { useUiStore, type ThemeMode } from '@/stores/uiStore'
 import { useSyncStatusStore } from '@/stores/syncStatusStore'
 import { useAuthStore } from '@/stores/authStore'
+import { useUserPreferencesStore } from '@/stores/userPreferencesStore'
 
 const route = useRoute()
 const router = useRouter()
 const uiStore = useUiStore()
 const syncStatusStore = useSyncStatusStore()
 const authStore = useAuthStore()
+const userPreferencesStore = useUserPreferencesStore()
 const { theme } = storeToRefs(uiStore)
 const {
   isFallbackMode,
@@ -109,11 +112,11 @@ const navSections: NavSection[] = [
         navHint: 'Targets',
       },
       {
-        label: 'Checklists',
-        to: '/settings/checklists',
+        label: 'Rules',
+        to: '/settings/rules',
         icon: ListChecks,
-        title: 'Pre-Trade Checklists',
-        subtitle: 'Build and enforce custom pre-trade checklists by scope.',
+        title: 'Trading Rules',
+        subtitle: 'Build and enforce clear trading rule sets by scope.',
         navHint: 'Builder',
       },
     ],
@@ -131,16 +134,43 @@ const navSections: NavSection[] = [
       },
     ],
   },
+  {
+    label: 'Settings',
+    items: [
+      {
+        label: 'Settings',
+        to: '/settings/hub',
+        icon: Settings2,
+        title: 'Settings Hub',
+        subtitle: 'Profile, theme, offline mode, security sessions, and governance in one page.',
+        navHint: 'Control center',
+      },
+    ],
+  },
 ]
 
 const navItems = computed(() => navSections.flatMap((section) => section.items))
-const currentItem = computed(() =>
-  navItems.value.find((item) => route.path === item.to || route.path.startsWith(`${item.to}/`)) ?? navItems.value[0]!
-)
+const routePathAndHash = computed(() => `${route.path}${route.hash}`)
+const currentItem = computed(() => {
+  const exactMatch = navItems.value.find((item) => routePathAndHash.value === item.to)
+  if (exactMatch) return exactMatch
+
+  const pathMatch = navItems.value.find((item) => route.path === item.to.split('#')[0])
+  if (pathMatch) return pathMatch
+
+  const prefixMatch = navItems.value
+    .filter((item) => {
+      const itemPath = item.to.split('#')[0]
+      return route.path.startsWith(`${itemPath}/`)
+    })
+    .sort((left, right) => right.to.length - left.to.length)[0]
+
+  return prefixMatch ?? navItems.value[0]!
+})
 const showPageHero = computed(() => currentItem.value.to !== '/dashboard')
 const compactHeroRoutes = new Set(['/trades', '/missed-trades'])
 const useCompactHero = computed(() => compactHeroRoutes.has(route.path))
-const hideGlobalFabOnRoutes = new Set(['trades-new', 'trades-edit', 'tools-pre-trade-check', 'tools-lots-calculate', 'settings-checklists'])
+const hideGlobalFabOnRoutes = new Set(['trades-new', 'trades-edit', 'tools-lots-calculate', 'settings-rules', 'settings'])
 const showGlobalFab = computed(() => !hideGlobalFabOnRoutes.has(String(route.name ?? '')))
 const mobileThemeMenuOpen = ref(false)
 const mobileNavOpen = ref(false)
@@ -171,7 +201,7 @@ function toggleMobileThemeMenu() {
 }
 
 function chooseTheme(mode: ThemeMode) {
-  uiStore.setTheme(mode)
+  void userPreferencesStore.setThemePreference(mode)
   mobileThemeMenuOpen.value = false
 }
 
@@ -225,6 +255,17 @@ function formatConflictPayload(payload: unknown): string {
   }
 }
 
+function isNavItemActive(item: NavItem): boolean {
+  const [itemPath, itemHashPart = ''] = item.to.split('#')
+  const itemHash = itemHashPart ? `#${itemHashPart}` : ''
+
+  if (itemHash !== '') {
+    return route.path === itemPath && route.hash === itemHash
+  }
+
+  return route.path === itemPath || route.path.startsWith(`${itemPath}/`)
+}
+
 onMounted(() => {
   document.addEventListener('click', handleDocumentClick)
   document.addEventListener('keydown', handleEscape)
@@ -273,7 +314,7 @@ watch(
               :key="item.to"
               :to="item.to"
               class="workspace-nav-link"
-              active-class="is-active"
+              :class="{ 'is-active': isNavItemActive(item) }"
             >
               <span class="workspace-nav-icon">
                 <component :is="item.icon" class="h-4 w-4" />
@@ -430,7 +471,7 @@ watch(
               :key="`mobile-drawer-${item.to}`"
               :to="item.to"
               class="mobile-nav-drawer-link"
-              active-class="is-active"
+              :class="{ 'is-active': isNavItemActive(item) }"
               @click="closeMobileNav"
             >
               <span class="mobile-nav-drawer-icon">

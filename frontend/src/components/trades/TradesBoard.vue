@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useRoute, useRouter } from 'vue-router'
 import {
@@ -39,7 +39,20 @@ const route = useRoute()
 const tradeStore = useTradeStore()
 const reportStore = useReportStore()
 const uiStore = useUiStore()
-const { trades, pagination, filters, loading, hasFilters, instruments, strategyModels, setups, killzones, tradeTags, sessionOptions } = storeToRefs(tradeStore)
+const {
+  visibleTrades: storeVisibleTrades,
+  pagination,
+  filters,
+  includeDraftsUnverified,
+  loading,
+  hasFilters,
+  instruments,
+  strategyModels,
+  setups,
+  killzones,
+  tradeTags,
+  sessionOptions,
+} = storeToRefs(tradeStore)
 const { reports } = storeToRefs(reportStore)
 
 const detailsOpen = ref(false)
@@ -50,6 +63,7 @@ const detailsPsychology = ref<TradePsychology | null>(null)
 const detailImageIndex = ref(0)
 const lightboxOpen = ref(false)
 const activeDetailImage = computed(() => detailsImages.value[detailImageIndex.value] ?? null)
+const activeDetailImageSrc = computed(() => resolveImageSrc(activeDetailImage.value))
 const filtersExpanded = ref(false)
 const selectedSavedReportId = ref('')
 type TradeQuickFocus = 'all' | 'needs_review' | 'rule_breaks' | 'losers' | 'no_screenshot'
@@ -109,35 +123,278 @@ const activeFilterPills = computed(() => {
   if (from && to) pills.push(`${from} to ${to}`)
   else if (from) pills.push(`From: ${from}`)
   else if (to) pills.push(`To: ${to}`)
+  if (!includeDraftsUnverified.value) pills.push('Quality: verified + synced')
+  else pills.push('Quality: includes drafts/unverified')
 
   return pills
 })
 
-const needsReviewCount = computed(() => trades.value.filter((trade) => needsReview(trade)).length)
-const ruleBreakCount = computed(() => trades.value.filter((trade) => !trade.followed_rules).length)
-const losersCount = computed(() => trades.value.filter((trade) => Number(trade.profit_loss) < 0).length)
-const noScreenshotCount = computed(() => trades.value.filter((trade) => imageCount(trade) === 0).length)
+const needsReviewCount = computed(() => storeVisibleTrades.value.filter((trade) => needsReview(trade)).length)
+const ruleBreakCount = computed(() => storeVisibleTrades.value.filter((trade) => !trade.followed_rules).length)
+const losersCount = computed(() => storeVisibleTrades.value.filter((trade) => Number(trade.profit_loss) < 0).length)
+const noScreenshotCount = computed(() => storeVisibleTrades.value.filter((trade) => imageCount(trade) === 0).length)
 const averageReviewScore = computed(() => {
-  if (trades.value.length === 0) return 0
-  const total = trades.value.reduce((sum, trade) => sum + reviewQualityScore(trade), 0)
-  return total / trades.value.length
+  if (storeVisibleTrades.value.length === 0) return 0
+  const total = storeVisibleTrades.value.reduce((sum, trade) => sum + reviewQualityScore(trade), 0)
+  return total / storeVisibleTrades.value.length
 })
 
 const visibleTrades = computed(() => {
   if (quickFocus.value === 'needs_review') {
-    return trades.value.filter((trade) => needsReview(trade))
+    return storeVisibleTrades.value.filter((trade) => needsReview(trade))
   }
   if (quickFocus.value === 'rule_breaks') {
-    return trades.value.filter((trade) => !trade.followed_rules)
+    return storeVisibleTrades.value.filter((trade) => !trade.followed_rules)
   }
   if (quickFocus.value === 'losers') {
-    return trades.value.filter((trade) => Number(trade.profit_loss) < 0)
+    return storeVisibleTrades.value.filter((trade) => Number(trade.profit_loss) < 0)
   }
   if (quickFocus.value === 'no_screenshot') {
-    return trades.value.filter((trade) => imageCount(trade) === 0)
+    return storeVisibleTrades.value.filter((trade) => imageCount(trade) === 0)
   }
-  return trades.value
+  return storeVisibleTrades.value
 })
+
+const VIRTUALIZATION_THRESHOLD = 80
+const VIRTUAL_OVERSCAN_ROWS = 2
+const VIRTUAL_MIN_CARD_WIDTH = 320
+const VIRTUAL_GRID_GAP = 16
+const VIRTUAL_DEFAULT_ROW_HEIGHT = 420
+const VIRTUAL_DEFAULT_VIEWPORT_HEIGHT = 680
+const HEAVY_CONTENT_LAZY_THRESHOLD = 60
+const HEAVY_CONTENT_SEED_COUNT = 8
+
+const virtualScrollerRef = ref<HTMLElement | null>(null)
+const virtualScrollTop = ref(0)
+const virtualViewportHeight = ref(VIRTUAL_DEFAULT_VIEWPORT_HEIGHT)
+const virtualColumns = ref(1)
+const virtualRowHeight = ref(VIRTUAL_DEFAULT_ROW_HEIGHT)
+const heavyContentReadyByTradeId = ref<Record<number, true>>({})
+
+let virtualResizeObserver: ResizeObserver | null = null
+let heavyContentObserver: IntersectionObserver | null = null
+const tradeCardElements = new Map<number, Element>()
+
+const shouldVirtualizeTrades = computed(() =>
+  !loading.value && visibleTrades.value.length > VIRTUALIZATION_THRESHOLD
+)
+
+const shouldLazyRenderHeavyContent = computed(() =>
+  visibleTrades.value.length > HEAVY_CONTENT_LAZY_THRESHOLD
+)
+
+const virtualRowCount = computed(() =>
+  Math.ceil(visibleTrades.value.length / Math.max(1, virtualColumns.value))
+)
+
+const virtualTotalHeight = computed(() => virtualRowCount.value * virtualRowHeight.value)
+
+const virtualVisibleRowCount = computed(() =>
+  Math.ceil(virtualViewportHeight.value / virtualRowHeight.value) + VIRTUAL_OVERSCAN_ROWS * 2
+)
+
+const virtualStartRow = computed(() => {
+  if (!shouldVirtualizeTrades.value) return 0
+  return Math.max(0, Math.floor(virtualScrollTop.value / virtualRowHeight.value) - VIRTUAL_OVERSCAN_ROWS)
+})
+
+const virtualEndRow = computed(() => {
+  if (!shouldVirtualizeTrades.value) return virtualRowCount.value
+  return Math.min(virtualRowCount.value, virtualStartRow.value + virtualVisibleRowCount.value)
+})
+
+const virtualSliceStart = computed(() =>
+  virtualStartRow.value * Math.max(1, virtualColumns.value)
+)
+
+const virtualSliceEnd = computed(() =>
+  Math.min(visibleTrades.value.length, virtualEndRow.value * Math.max(1, virtualColumns.value))
+)
+
+const virtualOffsetY = computed(() => virtualStartRow.value * virtualRowHeight.value)
+
+const renderedTrades = computed(() => {
+  if (!shouldVirtualizeTrades.value) return visibleTrades.value
+  return visibleTrades.value.slice(virtualSliceStart.value, virtualSliceEnd.value)
+})
+
+const virtualSpacerStyle = computed(() => {
+  if (!shouldVirtualizeTrades.value) return undefined
+  return {
+    height: `${virtualTotalHeight.value}px`,
+  }
+})
+
+const tradeGridStyle = computed(() => {
+  if (!shouldVirtualizeTrades.value) return undefined
+  return {
+    transform: `translateY(${virtualOffsetY.value}px)`,
+    gridTemplateColumns: `repeat(${virtualColumns.value}, minmax(0, 1fr))`,
+  }
+})
+
+function estimateVirtualColumns(containerWidth: number): number {
+  return Math.max(1, Math.floor((containerWidth + VIRTUAL_GRID_GAP) / (VIRTUAL_MIN_CARD_WIDTH + VIRTUAL_GRID_GAP)))
+}
+
+function estimateVirtualRowHeight(containerWidth: number, columns: number): number {
+  const safeColumns = Math.max(1, columns)
+  const cardWidth = Math.max(
+    220,
+    (containerWidth - (safeColumns - 1) * VIRTUAL_GRID_GAP) / safeColumns
+  )
+  const mediaHeight = cardWidth * (9 / 16)
+  const bodyHeight = cardWidth < 280 ? 224 : 208
+  return Math.round(mediaHeight + bodyHeight + VIRTUAL_GRID_GAP)
+}
+
+function syncVirtualMetrics() {
+  if (!shouldVirtualizeTrades.value) return
+  const container = virtualScrollerRef.value
+  if (!container) return
+
+  const containerWidth = container.clientWidth
+  if (containerWidth <= 0) return
+
+  const nextColumns = estimateVirtualColumns(containerWidth)
+  virtualColumns.value = nextColumns
+  virtualViewportHeight.value = container.clientHeight || VIRTUAL_DEFAULT_VIEWPORT_HEIGHT
+  virtualRowHeight.value = estimateVirtualRowHeight(containerWidth, nextColumns)
+}
+
+function handleVirtualScroll(event: Event) {
+  const target = event.target
+  if (!(target instanceof HTMLElement)) return
+  virtualScrollTop.value = target.scrollTop
+}
+
+function resetVirtualScrollPosition() {
+  const container = virtualScrollerRef.value
+  if (container) {
+    container.scrollTop = 0
+  }
+  virtualScrollTop.value = 0
+}
+
+function disconnectVirtualResizeObserver() {
+  if (!virtualResizeObserver) return
+  virtualResizeObserver.disconnect()
+  virtualResizeObserver = null
+}
+
+function connectVirtualResizeObserver() {
+  disconnectVirtualResizeObserver()
+  if (!shouldVirtualizeTrades.value) return
+  if (typeof window === 'undefined' || typeof window.ResizeObserver === 'undefined') return
+
+  const container = virtualScrollerRef.value
+  if (!container) return
+
+  virtualResizeObserver = new ResizeObserver(() => {
+    syncVirtualMetrics()
+  })
+  virtualResizeObserver.observe(container)
+}
+
+function seedHeavyContentReady(ids: number[]) {
+  const seeded: Record<number, true> = {}
+  for (const tradeId of ids.slice(0, HEAVY_CONTENT_SEED_COUNT)) {
+    seeded[tradeId] = true
+  }
+  for (const tradeId of ids) {
+    if (heavyContentReadyByTradeId.value[tradeId]) {
+      seeded[tradeId] = true
+    }
+  }
+  heavyContentReadyByTradeId.value = seeded
+}
+
+function disconnectHeavyContentObserver() {
+  if (!heavyContentObserver) return
+  heavyContentObserver.disconnect()
+  heavyContentObserver = null
+}
+
+function reconnectHeavyContentObserver() {
+  disconnectHeavyContentObserver()
+  if (!shouldLazyRenderHeavyContent.value) return
+  if (typeof window === 'undefined' || typeof window.IntersectionObserver === 'undefined') return
+
+  heavyContentObserver = new IntersectionObserver(
+    (entries) => {
+      for (const entry of entries) {
+        if (!entry.isIntersecting) continue
+        const element = entry.target as HTMLElement
+        const rawId = element.dataset.tradeId
+        const tradeId = Number(rawId)
+        if (!Number.isInteger(tradeId) || tradeId <= 0) continue
+        if (!heavyContentReadyByTradeId.value[tradeId]) {
+          heavyContentReadyByTradeId.value = {
+            ...heavyContentReadyByTradeId.value,
+            [tradeId]: true,
+          }
+        }
+        heavyContentObserver?.unobserve(element)
+      }
+    },
+    {
+      root: shouldVirtualizeTrades.value ? virtualScrollerRef.value : null,
+      rootMargin: '280px 0px',
+      threshold: 0.01,
+    }
+  )
+
+  for (const [tradeId, element] of tradeCardElements.entries()) {
+    if (heavyContentReadyByTradeId.value[tradeId]) continue
+    heavyContentObserver.observe(element)
+  }
+}
+
+function registerTradeCardElement(tradeId: number, element: Element | null) {
+  const previous = tradeCardElements.get(tradeId)
+  if (previous && previous !== element) {
+    heavyContentObserver?.unobserve(previous)
+  }
+
+  if (!element) {
+    tradeCardElements.delete(tradeId)
+    return
+  }
+
+  const htmlElement = element as HTMLElement
+  htmlElement.dataset.tradeId = String(tradeId)
+  tradeCardElements.set(tradeId, htmlElement)
+
+  if (
+    heavyContentObserver
+    && shouldLazyRenderHeavyContent.value
+    && !heavyContentReadyByTradeId.value[tradeId]
+  ) {
+    heavyContentObserver.observe(htmlElement)
+  }
+}
+
+function setTradeCardRef(tradeId: number) {
+  return (element: Element | { $el?: Element } | null) => {
+    if (element instanceof Element) {
+      registerTradeCardElement(tradeId, element)
+      return
+    }
+
+    if (element && element.$el instanceof Element) {
+      registerTradeCardElement(tradeId, element.$el)
+      return
+    }
+
+    registerTradeCardElement(tradeId, null)
+  }
+}
+
+function shouldRenderHeavyCardContent(tradeId: number, renderedIndex: number): boolean {
+  if (!shouldLazyRenderHeavyContent.value) return true
+  if (heavyContentReadyByTradeId.value[tradeId]) return true
+  return renderedIndex < HEAVY_CONTENT_SEED_COUNT
+}
 
 const detailReviewScore = computed(() => {
   if (!detailsTrade.value) return 0
@@ -272,6 +529,11 @@ function openEditPage(trade: Trade) {
   void router.push(`/trades/${trade.id}/edit`)
 }
 
+async function toggleIncludeDraftsUnverified() {
+  tradeStore.setIncludeDraftsUnverified(!includeDraftsUnverified.value)
+  await tradeStore.fetchTrades(1)
+}
+
 async function openDetails(trade: Trade) {
   detailsOpen.value = true
   detailsLoading.value = true
@@ -287,6 +549,7 @@ async function openDetails(trade: Trade) {
     detailsImages.value = (details.images ?? [])
       .slice()
       .sort((a, b) => a.sort_order - b.sort_order || a.id - b.id)
+      .filter((image) => hasRenderableImage(image))
   } catch {
     detailsOpen.value = false
     uiStore.toast({
@@ -305,7 +568,7 @@ function closeDetails() {
 }
 
 function openImageLightbox() {
-  if (!activeDetailImage.value) return
+  if (!activeDetailImage.value || !activeDetailImageSrc.value) return
   lightboxOpen.value = true
 }
 
@@ -325,7 +588,18 @@ function previousDetailImage() {
 
 function primaryTradeImage(trade: Trade): TradeImage | null {
   const images = trade.images ?? []
-  return images.length > 0 ? images[0]! : null
+  return images.find((image) => hasRenderableImage(image)) ?? null
+}
+
+function resolveImageSrc(image: Pick<TradeImage, 'thumbnail_url' | 'image_url'> | null | undefined): string {
+  if (!image) return ''
+  const thumbnailUrl = image.thumbnail_url.trim()
+  if (thumbnailUrl) return thumbnailUrl
+  return image.image_url.trim()
+}
+
+function hasRenderableImage(image: Pick<TradeImage, 'thumbnail_url' | 'image_url'> | null | undefined): boolean {
+  return resolveImageSrc(image).length > 0
 }
 
 function directionLabel(trade: Trade) {
@@ -551,7 +825,10 @@ async function saveCurrentView() {
     const report = await reportStore.createReport({
       name: name.trim(),
       scope: 'trades',
-      filters_json: { ...filters.value },
+      filters_json: {
+        ...filters.value,
+        include_drafts_unverified: includeDraftsUnverified.value,
+      },
       columns_json: null,
       is_default: false,
     })
@@ -580,20 +857,44 @@ async function applySavedView(reportId: string) {
   filters.value.tag_ids = String(savedFilters.tag_ids ?? '')
   filters.value.date_from = String(savedFilters.date_from ?? '')
   filters.value.date_to = String(savedFilters.date_to ?? '')
+  if (savedFilters.include_drafts_unverified !== undefined) {
+    const next = String(savedFilters.include_drafts_unverified) === 'true' || String(savedFilters.include_drafts_unverified) === '1'
+    tradeStore.setIncludeDraftsUnverified(next)
+  }
   await applyFilters()
 }
 
 function exportCurrentCsv() {
-  reportStore.exportAdHocCsv({
+  if (includeDraftsUnverified.value) {
+    uiStore.toast({
+      type: 'info',
+      title: 'Export includes drafts/unverified',
+      message: 'This CSV includes local drafts and risk-unverified trades.',
+    })
+  }
+  void reportStore.exportAdHocCsv({
     scope: 'trades',
     name: 'trade-log-view',
+    include_drafts_unverified: includeDraftsUnverified.value ? 1 : 0,
+    local_sync_status: includeDraftsUnverified.value ? undefined : 'synced',
+    risk_validation_status: includeDraftsUnverified.value ? undefined : 'verified',
     ...filters.value,
   })
+}
+
+function pruneDetachedTradeCards(activeTradeIds: number[]) {
+  const active = new Set(activeTradeIds)
+  for (const [tradeId, element] of tradeCardElements.entries()) {
+    if (active.has(tradeId)) continue
+    heavyContentObserver?.unobserve(element)
+    tradeCardElements.delete(tradeId)
+  }
 }
 
 onMounted(async () => {
   window.addEventListener('keydown', handleLightboxKeydown)
   try {
+    tradeStore.refreshTradeQualityPreference()
     await Promise.all([
       tradeStore.fetchInstruments(),
       tradeStore.fetchDictionaries(),
@@ -613,6 +914,9 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   window.removeEventListener('keydown', handleLightboxKeydown)
+  disconnectVirtualResizeObserver()
+  disconnectHeavyContentObserver()
+  tradeCardElements.clear()
 })
 
 watch(
@@ -635,10 +939,56 @@ watch(quickFocus, (value) => {
 
   void router.replace({ query })
 })
+
+watch(
+  [() => shouldVirtualizeTrades.value, () => visibleTrades.value.length],
+  async ([virtualized]) => {
+    if (!virtualized) {
+      virtualScrollTop.value = 0
+      disconnectVirtualResizeObserver()
+      return
+    }
+
+    await nextTick()
+    resetVirtualScrollPosition()
+    syncVirtualMetrics()
+    connectVirtualResizeObserver()
+    reconnectHeavyContentObserver()
+  },
+  { immediate: true }
+)
+
+watch(
+  () => renderedTrades.value.map((trade) => trade.id),
+  async (tradeIds) => {
+    seedHeavyContentReady(tradeIds)
+    pruneDetachedTradeCards(tradeIds)
+
+    await nextTick()
+    syncVirtualMetrics()
+    reconnectHeavyContentObserver()
+  },
+  { immediate: true }
+)
+
+watch(
+  () => shouldLazyRenderHeavyContent.value,
+  async (enabled) => {
+    if (!enabled) {
+      disconnectHeavyContentObserver()
+      heavyContentReadyByTradeId.value = {}
+      return
+    }
+
+    await nextTick()
+    reconnectHeavyContentObserver()
+  },
+  { immediate: true }
+)
 </script>
 
 <template>
-  <div class="space-y-5 trade-log-minimal">
+  <div class="space-y-5 trade-log-minimal" data-testid="trade-log-page">
     <GlassPanel class="command-filter-shell">
       <div class="command-filter-bar">
         <div class="command-filter-left">
@@ -659,6 +1009,15 @@ watch(quickFocus, (value) => {
             />
           </div>
           <button class="btn btn-ghost px-3 py-2 text-sm" @click="saveCurrentView">Save View</button>
+          <button
+            type="button"
+            class="btn btn-ghost px-3 py-2 text-sm"
+            data-testid="trade-quality-toggle"
+            :class="{ active: includeDraftsUnverified }"
+            @click="void toggleIncludeDraftsUnverified()"
+          >
+            Include drafts/unverified
+          </button>
           <button class="btn btn-ghost px-3 py-2 text-sm" @click="exportCurrentCsv">Export CSV</button>
           <button class="btn btn-secondary inline-flex items-center gap-2 px-3 py-2 text-sm" @click="openQuickAddPage">
             <Plus class="h-4 w-4" />
@@ -838,20 +1197,37 @@ watch(quickFocus, (value) => {
         @cta="openQuickAddPage"
       />
 
-      <div v-else class="trade-db-grid">
-        <article v-for="trade in visibleTrades" :key="trade.id" class="trade-db-card trade-card-reference">
+      <div
+        v-else
+        ref="virtualScrollerRef"
+        class="trade-db-list-shell"
+        :class="{ 'trade-db-virtual-scroll': shouldVirtualizeTrades }"
+        @scroll.passive="handleVirtualScroll"
+      >
+        <div class="trade-db-virtual-spacer" :style="virtualSpacerStyle">
+          <div
+            class="trade-db-grid"
+            :class="{ 'trade-db-grid-virtual': shouldVirtualizeTrades }"
+            :style="tradeGridStyle"
+          >
+        <article
+          v-for="(trade, tradeIndex) in renderedTrades"
+          :key="trade.id"
+          :ref="setTradeCardRef(trade.id)"
+          class="trade-db-card trade-card-reference"
+        >
           <button type="button" class="trade-db-media trade-card-reference-media" @click="openDetails(trade)">
             <img
-              v-if="primaryTradeImage(trade)"
-              :src="primaryTradeImage(trade)?.thumbnail_url || primaryTradeImage(trade)?.image_url"
+              v-if="shouldRenderHeavyCardContent(trade.id, tradeIndex) && primaryTradeImage(trade)"
+              :src="resolveImageSrc(primaryTradeImage(trade))"
               :alt="`${trade.pair} execution chart`"
               loading="lazy"
               class="trade-db-image"
               @error="setImageFallback($event, primaryTradeImage(trade)?.image_url)"
             />
-            <div v-else class="trade-db-empty-chart trade-card-reference-empty">
+            <div v-else class="trade-db-empty-chart trade-card-reference-empty" :class="{ 'is-loading': !shouldRenderHeavyCardContent(trade.id, tradeIndex) }">
               <ImageOff class="h-6 w-6" />
-              <span>No screenshot</span>
+              <span>{{ shouldRenderHeavyCardContent(trade.id, tradeIndex) ? 'No screenshot' : 'Loading preview...' }}</span>
             </div>
           </button>
 
@@ -860,13 +1236,21 @@ watch(quickFocus, (value) => {
               <div class="trade-card-reference-id">
                 <h3>{{ trade.pair }}</h3>
                 <span :class="directionClass(trade)">{{ directionLabel(trade) }}</span>
-                <span class="trade-card-priority" :class="`is-${reviewPriority(trade)}`">{{ priorityLabel(trade) }}</span>
-                <span v-if="trade.local_sync_status && trade.local_sync_status !== 'synced'" class="trade-card-priority is-medium">
-                  {{ localSyncLabel(trade) }}
+                <span
+                  v-if="shouldRenderHeavyCardContent(trade.id, tradeIndex)"
+                  class="trade-card-priority"
+                  :class="`is-${reviewPriority(trade)}`"
+                >
+                  {{ priorityLabel(trade) }}
                 </span>
-                <span v-if="trade.risk_validation_status === 'unverified'" class="trade-card-priority is-high">
-                  Risk unverified
-                </span>
+                <template v-if="shouldRenderHeavyCardContent(trade.id, tradeIndex)">
+                  <span v-if="trade.local_sync_status && trade.local_sync_status !== 'synced'" class="trade-card-priority is-medium">
+                    {{ localSyncLabel(trade) }}
+                  </span>
+                  <span v-if="trade.risk_validation_status === 'unverified'" class="trade-card-priority is-high">
+                    Risk unverified
+                  </span>
+                </template>
               </div>
               <p class="trade-card-reference-pnl value-display" :class="Number(trade.profit_loss) >= 0 ? 'positive' : 'negative'">
                 {{ asSignedCurrency(trade.profit_loss) }}
@@ -886,9 +1270,14 @@ watch(quickFocus, (value) => {
 
             <div class="trade-card-score-row">
               <span class="section-note">Review Score</span>
-              <span class="trade-card-score-pill value-display" :class="`tier-${reviewTier(reviewQualityScore(trade)).toLowerCase()}`">
+              <span
+                v-if="shouldRenderHeavyCardContent(trade.id, tradeIndex)"
+                class="trade-card-score-pill value-display"
+                :class="`tier-${reviewTier(reviewQualityScore(trade)).toLowerCase()}`"
+              >
                 {{ reviewTier(reviewQualityScore(trade)) }} - {{ reviewQualityScore(trade) }}
               </span>
+              <span v-else class="trade-card-score-pill trade-card-score-pill-loading value-display">Loading...</span>
             </div>
 
             <div class="trade-card-reference-footer">
@@ -916,6 +1305,8 @@ watch(quickFocus, (value) => {
             </div>
           </div>
         </article>
+          </div>
+        </div>
       </div>
 
       <div class="mt-4 flex items-center justify-between text-sm">
@@ -966,7 +1357,7 @@ watch(quickFocus, (value) => {
               <div class="trade-simple-image-shell">
                 <img
                   v-if="activeDetailImage"
-                  :src="activeDetailImage.image_url"
+                  :src="activeDetailImageSrc"
                   alt="Execution screenshot"
                   class="trade-simple-image is-zoomable"
                   @click="openImageLightbox"
@@ -1114,7 +1505,7 @@ watch(quickFocus, (value) => {
         </button>
         <div class="trade-lightbox-content">
           <img
-            :src="activeDetailImage.image_url"
+            :src="activeDetailImageSrc"
             alt="Execution screenshot fullscreen"
             class="trade-lightbox-image"
             @error="setImageFallback($event, activeDetailImage.image_url)"
@@ -1127,3 +1518,38 @@ watch(quickFocus, (value) => {
     </Transition>
   </div>
 </template>
+
+<style scoped>
+.trade-db-list-shell {
+  width: 100%;
+}
+
+.trade-db-virtual-scroll {
+  max-height: min(72vh, 1040px);
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding-right: 0.18rem;
+}
+
+.trade-db-virtual-spacer {
+  position: relative;
+  width: 100%;
+}
+
+.trade-db-grid-virtual {
+  position: absolute;
+  inset: 0 auto auto 0;
+  width: 100%;
+  will-change: transform;
+}
+
+.trade-db-empty-chart.is-loading {
+  border: 1px dashed color-mix(in srgb, var(--border) 54%, transparent 46%);
+  color: var(--muted);
+}
+
+.trade-card-score-pill-loading {
+  border-style: dashed;
+  color: var(--muted);
+}
+</style>

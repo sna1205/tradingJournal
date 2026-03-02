@@ -23,6 +23,7 @@ const props = withDefaults(
     error?: string
     title?: string
     uploadHint?: string
+    offlineWarning?: boolean
   }>(),
   {
     uploading: false,
@@ -32,6 +33,7 @@ const props = withDefaults(
     error: '',
     title: 'Execution Screenshots',
     uploadHint: 'Max 5 images - jpg, jpeg, png, webp, bmp - 5MB each - paste with Ctrl+V',
+    offlineWarning: false,
   }
 )
 
@@ -296,6 +298,9 @@ onBeforeUnmount(() => {
     </div>
 
     <p v-if="error" class="field-error-text">{{ error }}</p>
+    <div v-if="offlineWarning" class="panel p-3 text-sm">
+      Images won’t persist offline until offline storage is enabled.
+    </div>
 
     <div v-if="existingImages.length > 0 || pendingImages.length > 0" class="trade-image-grid">
       <article
@@ -304,11 +309,15 @@ onBeforeUnmount(() => {
         class="trade-image-card"
       >
         <img
+          v-if="image.thumbnail_url || image.image_url"
           :src="image.thumbnail_url || image.image_url"
           alt="Execution screenshot"
           loading="lazy"
           class="trade-image-thumb"
         />
+        <div v-else class="trade-image-thumb flex items-center justify-center text-xs muted">
+          <span>Preview unavailable offline</span>
+        </div>
         <div class="trade-image-card-top">
           <span class="pill">Saved</span>
           <button

@@ -55,10 +55,15 @@ class TradeRiskPolicyService
     public function evaluate(array $input): array
     {
         $accountId = (int) $input['account_id'];
+        $actorRole = strtolower(trim((string) ($input['actor_role'] ?? 'trader')));
         $accountStartingBalance = (float) $input['account_starting_balance'];
         $accountCurrentBalance = (float) $input['account_current_balance'];
         $riskPercent = (float) $input['risk_percent'];
         $monetaryRisk = (float) $input['monetary_risk'];
+        $derivedRiskPercent = $accountCurrentBalance > 0
+            ? ($monetaryRisk / $accountCurrentBalance) * 100
+            : 0.0;
+        $effectiveRiskPercent = max($riskPercent, $derivedRiskPercent);
         $overrideReason = trim((string) ($input['risk_override_reason'] ?? ''));
         $excludeTradeId = isset($input['exclude_trade_id']) ? (int) $input['exclude_trade_id'] : null;
 
@@ -85,16 +90,16 @@ class TradeRiskPolicyService
             'max_risk_per_trade_pct',
             'Risk per trade exceeds account limit.',
             (float) $policy->max_risk_per_trade_pct,
-            $riskPercent,
-            $riskPercent > (float) $policy->max_risk_per_trade_pct
+            $effectiveRiskPercent,
+            $effectiveRiskPercent > (float) $policy->max_risk_per_trade_pct
         );
         $this->appendViolation(
             $violations,
             'max_open_risk_pct',
             'Open risk cap exceeded for this execution.',
             (float) $policy->max_open_risk_pct,
-            $riskPercent,
-            $riskPercent > (float) $policy->max_open_risk_pct
+            $effectiveRiskPercent,
+            $effectiveRiskPercent > (float) $policy->max_open_risk_pct
         );
         $this->appendViolation(
             $violations,
@@ -115,12 +120,13 @@ class TradeRiskPolicyService
 
         $hasViolations = count($violations) > 0;
         $enforced = (bool) $policy->enforce_hard_limits;
-        $canOverride = (bool) $policy->allow_override;
+        $isTraderRole = $actorRole === '' || $actorRole === 'trader';
+        $canOverride = (bool) $policy->allow_override && ! $isTraderRole;
         $hasOverrideReason = $overrideReason !== '';
-        $requiresOverrideReason = $hasViolations && $enforced && $canOverride && !$hasOverrideReason;
+        $requiresOverrideReason = $hasViolations && $enforced && $canOverride && ! $hasOverrideReason;
 
-        $allowed = !$hasViolations
-            || !$enforced
+        $allowed = ! $hasViolations
+            || ! $enforced
             || ($canOverride && $hasOverrideReason);
 
         return [
@@ -133,11 +139,11 @@ class TradeRiskPolicyService
                 'max_total_drawdown_pct' => (float) $policy->max_total_drawdown_pct,
                 'max_open_risk_pct' => (float) $policy->max_open_risk_pct,
                 'enforce_hard_limits' => (bool) $policy->enforce_hard_limits,
-                'allow_override' => (bool) $policy->allow_override,
+                'allow_override' => $canOverride,
             ],
             'violations' => $violations,
             'stats' => [
-                'risk_percent' => round($riskPercent, 4),
+                'risk_percent' => round($effectiveRiskPercent, 4),
                 'monetary_risk' => round($monetaryRisk, 6),
                 'daily_realized_loss' => round($dailyRealizedLoss, 6),
                 'projected_daily_loss' => round($projectedDailyLoss, 6),
@@ -149,7 +155,7 @@ class TradeRiskPolicyService
     }
 
     /**
-     * @param array<int, array{code:string,message:string,limit:float,actual:float}> $violations
+     * @param  array<int, array{code:string,message:string,limit:float,actual:float}>  $violations
      */
     private function appendViolation(
         array &$violations,
@@ -159,7 +165,7 @@ class TradeRiskPolicyService
         float $actual,
         bool $condition
     ): void {
-        if (!$condition) {
+        if (! $condition) {
             return;
         }
 
@@ -183,6 +189,7 @@ class TradeRiskPolicyService
         }
 
         $sum = (float) ($query->sum('profit_loss') ?? 0.0);
+
         return abs($sum);
     }
 
@@ -199,4 +206,3 @@ class TradeRiskPolicyService
         return now();
     }
 }
-

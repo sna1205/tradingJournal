@@ -14,7 +14,20 @@ class FxRateSnapshotSeeder extends Seeder
         $timestamp = now();
 
         FxRate::query()
-            ->select(['from_currency', 'to_currency', 'rate'])
+            ->select([
+                'from_currency',
+                'to_currency',
+                'rate',
+                'rate_updated_at',
+                'provider',
+                'source',
+                'bid',
+                'ask',
+                'mid',
+                'bid_provenance',
+                'ask_provenance',
+                'mid_provenance',
+            ])
             ->get()
             ->each(function (FxRate $rate) use ($today, $timestamp): void {
                 FxRateSnapshot::query()->updateOrCreate(
@@ -25,6 +38,15 @@ class FxRateSnapshotSeeder extends Seeder
                     ],
                     [
                         'rate' => (float) $rate->rate,
+                        'rate_updated_at' => $rate->rate_updated_at ?? $timestamp,
+                        'provider' => $rate->provider,
+                        'source' => $rate->source,
+                        'bid' => $rate->bid,
+                        'ask' => $rate->ask,
+                        'mid' => $rate->mid,
+                        'bid_provenance' => $rate->bid_provenance,
+                        'ask_provenance' => $rate->ask_provenance,
+                        'mid_provenance' => $rate->mid_provenance,
                         'updated_at' => $timestamp,
                         'created_at' => $timestamp,
                     ]

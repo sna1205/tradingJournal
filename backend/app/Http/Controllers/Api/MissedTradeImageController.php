@@ -7,11 +7,13 @@ use App\Models\MissedTrade;
 use App\Models\MissedTradeImage;
 use Illuminate\Http\Request;
 use Illuminate\Http\UploadedFile;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Facades\Validator;
 use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
+use Throwable;
 
 class MissedTradeImageController extends Controller
 {
@@ -39,52 +41,91 @@ class MissedTradeImageController extends Controller
 
         $file = $request->file('image');
         if (!$file instanceof UploadedFile) {
-            return response()->json([
-                'message' => 'Image upload is required.',
-            ], 422);
+            throw ValidationException::withMessages([
+                'image' => ['Image upload is required.'],
+            ]);
         }
-
-        $existingCount = (int) $missedTrade->images()->count();
-        if ($existingCount >= self::MAX_IMAGES_PER_ENTRY) {
-            return response()->json([
-                'message' => 'Maximum 5 images per missed trade allowed.',
-            ], 422);
-        }
-
-        $existingBytes = (int) $missedTrade->images()->sum('file_size');
         $incomingBytes = max(0, (int) $file->getSize());
-        if (($existingBytes + $incomingBytes) > self::MAX_TOTAL_BYTES_PER_ENTRY) {
-            return response()->json([
-                'message' => 'Total image uploads per missed trade cannot exceed 20MB.',
-            ], 422);
-        }
 
         $disk = (string) config('filesystems.trade_images_disk', 'public');
         $extension = $this->normalizedExtension($file);
         $fileName = (string) Str::uuid() . '.' . $extension;
         $originalPath = "missed-trades/{$missedTrade->id}/original/{$fileName}";
         $thumbnailPath = "missed-trades/{$missedTrade->id}/thumbs/{$fileName}";
+        $image = null;
+        $storedOriginal = false;
+        $storedThumbnail = false;
 
-        Storage::disk($disk)->putFileAs(
-            "missed-trades/{$missedTrade->id}/original",
-            $file,
-            $fileName
-        );
+        try {
+            DB::transaction(function () use (
+                $missedTrade,
+                $file,
+                $incomingBytes,
+                $disk,
+                $fileName,
+                $originalPath,
+                $thumbnailPath,
+                $extension,
+                $validated,
+                &$image,
+                &$storedOriginal,
+                &$storedThumbnail
+            ): void {
+                /** @var MissedTrade $lockedMissedTrade */
+                $lockedMissedTrade = MissedTrade::query()
+                    ->whereKey((int) $missedTrade->id)
+                    ->lockForUpdate()
+                    ->firstOrFail();
 
-        $this->generateThumbnail($file, $disk, $originalPath, $thumbnailPath, $extension);
+                $existingCount = (int) $lockedMissedTrade->images()->count();
+                if ($existingCount >= self::MAX_IMAGES_PER_ENTRY) {
+                    throw ValidationException::withMessages([
+                        'image' => ['Maximum 5 images per missed trade allowed.'],
+                    ]);
+                }
 
-        $sortOrder = array_key_exists('sort_order', $validated)
-            ? (int) $validated['sort_order']
-            : ((int) ($missedTrade->images()->max('sort_order') ?? 0) + 1);
+                $existingBytes = (int) $lockedMissedTrade->images()->sum('file_size');
+                if (($existingBytes + $incomingBytes) > self::MAX_TOTAL_BYTES_PER_ENTRY) {
+                    throw ValidationException::withMessages([
+                        'image' => ['Total image uploads per missed trade cannot exceed 20MB.'],
+                    ]);
+                }
 
-        $image = $missedTrade->images()->create([
-            'image_url' => $originalPath,
-            'thumbnail_url' => $thumbnailPath,
-            'file_size' => $incomingBytes,
-            'file_type' => (string) $file->getMimeType(),
-            'sort_order' => $sortOrder,
-        ]);
+                Storage::disk($disk)->putFileAs(
+                    "missed-trades/{$lockedMissedTrade->id}/original",
+                    $file,
+                    $fileName
+                );
+                $storedOriginal = true;
 
+                $this->generateThumbnail($file, $disk, $originalPath, $thumbnailPath, $extension);
+                $storedThumbnail = true;
+
+                $sortOrder = array_key_exists('sort_order', $validated)
+                    ? (int) $validated['sort_order']
+                    : ((int) ($lockedMissedTrade->images()->max('sort_order') ?? 0) + 1);
+
+                $image = $lockedMissedTrade->images()->create([
+                    'image_url' => $originalPath,
+                    'thumbnail_url' => $thumbnailPath,
+                    'file_size' => $incomingBytes,
+                    'file_type' => (string) $file->getMimeType(),
+                    'sort_order' => $sortOrder,
+                ]);
+            });
+        } catch (ValidationException $exception) {
+            if ($storedOriginal || $storedThumbnail) {
+                Storage::disk($disk)->delete([$originalPath, $thumbnailPath]);
+            }
+            throw $exception;
+        } catch (Throwable $throwable) {
+            if ($storedOriginal || $storedThumbnail) {
+                Storage::disk($disk)->delete([$originalPath, $thumbnailPath]);
+            }
+            throw $throwable;
+        }
+
+        abort_if(!$image instanceof MissedTradeImage, 500, 'Image mutation completed without persisted image row.');
         return response()->json($this->serializeMissedTradeImage($image, $disk), 201);
     }
 

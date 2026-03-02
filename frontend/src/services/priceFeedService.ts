@@ -18,6 +18,8 @@ interface PriceFeedServiceOptions {
   cache_ttl_ms?: number
   poll_ms?: number
   fetcher?: (symbols: string[]) => Promise<Record<string, Partial<PriceQuote>>>
+  isHidden?: () => boolean
+  bindVisibilityChange?: (handler: () => void) => (() => void) | null
 }
 
 export class PriceFeedService {
@@ -33,11 +35,21 @@ export class PriceFeedService {
   private pollHandle: ReturnType<typeof setInterval> | null = null
   private refreshInFlight = false
   private readonly fetcher: (symbols: string[]) => Promise<Record<string, Partial<PriceQuote>>>
+  private readonly isHidden: () => boolean
+  private readonly bindVisibilityChange: (handler: () => void) => (() => void) | null
 
   constructor(options: PriceFeedServiceOptions = {}) {
     this.cacheTtlMs = options.cache_ttl_ms ?? 2000
     this.pollMs = options.poll_ms ?? 1000
     this.fetcher = options.fetcher ?? fetchQuotesFromApi
+    this.isHidden = options.isHidden ?? defaultIsHidden
+    this.bindVisibilityChange = options.bindVisibilityChange ?? defaultBindVisibilityChange
+    this.bindVisibilityChange(() => {
+      this.updatePollingState()
+      if (!this.isHidden()) {
+        void this.refreshTrackedSymbols(true)
+      }
+    })
   }
 
   getQuote(symbol: string): PriceQuote {
@@ -160,6 +172,10 @@ export class PriceFeedService {
     if (existing) {
       listener(existing)
     }
+    this.updatePollingState()
+    if (!this.isHidden()) {
+      void this.refreshTrackedSymbols(true)
+    }
 
     return () => {
       const current = this.listeners.get(normalized)
@@ -168,6 +184,7 @@ export class PriceFeedService {
       if (current.size === 0) {
         this.listeners.delete(normalized)
       }
+      this.updatePollingState()
     }
   }
 
@@ -180,8 +197,10 @@ export class PriceFeedService {
     for (const symbol of normalizedSymbols) {
       this.trackedRefCount.set(symbol, (this.trackedRefCount.get(symbol) ?? 0) + 1)
     }
-    this.ensurePolling()
-    void this.refreshTrackedSymbols(true)
+    this.updatePollingState()
+    if (this.canPoll()) {
+      void this.refreshTrackedSymbols(true)
+    }
 
     return () => {
       for (const symbol of normalizedSymbols) {
@@ -192,7 +211,7 @@ export class PriceFeedService {
           this.trackedRefCount.set(symbol, next)
         }
       }
-      this.stopPollingIfIdle()
+      this.updatePollingState()
     }
   }
 
@@ -205,18 +224,44 @@ export class PriceFeedService {
   }
 
   private ensurePolling() {
-    if (this.pollHandle !== null || this.trackedRefCount.size === 0) return
+    if (this.pollHandle !== null) return
+    if (!this.canPoll()) return
     this.pollHandle = globalThis.setInterval(() => {
+      if (!this.canPoll()) {
+        this.updatePollingState()
+        return
+      }
       void this.refreshTrackedSymbols(false)
     }, this.pollMs)
   }
 
-  private stopPollingIfIdle() {
-    if (this.trackedRefCount.size > 0) return
+  private stopPolling() {
     if (this.pollHandle !== null) {
       globalThis.clearInterval(this.pollHandle)
       this.pollHandle = null
     }
+  }
+
+  private updatePollingState() {
+    if (this.canPoll()) {
+      this.ensurePolling()
+      return
+    }
+    this.stopPolling()
+  }
+
+  private canPoll(): boolean {
+    if (this.trackedRefCount.size <= 0) return false
+    if (!this.hasActiveSubscribers()) return false
+    if (this.isHidden()) return false
+    return true
+  }
+
+  private hasActiveSubscribers(): boolean {
+    for (const listeners of this.listeners.values()) {
+      if (listeners.size > 0) return true
+    }
+    return false
   }
 
   private async refreshTrackedSymbols(force: boolean) {
@@ -255,6 +300,21 @@ export class PriceFeedService {
 
 export function normalizeSymbol(symbol: string): string {
   return String(symbol ?? '').trim().toUpperCase()
+}
+
+function defaultIsHidden(): boolean {
+  if (typeof document === 'undefined') return false
+  return document.hidden === true
+}
+
+function defaultBindVisibilityChange(handler: () => void): (() => void) | null {
+  if (typeof document === 'undefined' || typeof document.addEventListener !== 'function') {
+    return null
+  }
+  document.addEventListener('visibilitychange', handler)
+  return () => {
+    document.removeEventListener('visibilitychange', handler)
+  }
 }
 
 function normalizeQuote(symbol: string, quote: Omit<PriceQuote, 'symbol' | 'mid'> & { mid?: number }): PriceQuote | null {

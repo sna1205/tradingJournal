@@ -10,14 +10,17 @@ class InstrumentSeeder extends Seeder
     public function run(): void
     {
         $forex = static function (string $symbol, string $base, string $quote): array {
+            $contractSize = 100000;
+            $tickSize = $quote === 'JPY' ? 0.001 : 0.00001;
+
             return [
                 'symbol' => $symbol,
                 'asset_class' => 'forex',
                 'base_currency' => $base,
                 'quote_currency' => $quote,
-                'contract_size' => 100000,
-                'tick_size' => $quote === 'JPY' ? 0.001 : 0.00001,
-                'tick_value' => 1.0,
+                'contract_size' => $contractSize,
+                'tick_size' => $tickSize,
+                'tick_value' => $contractSize * $tickSize,
                 'pip_size' => $quote === 'JPY' ? 0.01 : 0.0001,
                 'min_lot' => 0.01,
                 'lot_step' => 0.01,
@@ -90,14 +93,17 @@ class InstrumentSeeder extends Seeder
         };
 
         $commodity = static function (string $symbol, string $base, string $quote = 'USD'): array {
+            $contractSize = in_array($base, ['XAU', 'XAG'], true) ? 100 : 1;
+            $tickSize = 0.01;
+
             return [
                 'symbol' => $symbol,
                 'asset_class' => 'commodities',
                 'base_currency' => $base,
                 'quote_currency' => $quote,
-                'contract_size' => in_array($base, ['XAU', 'XAG'], true) ? 100 : 1,
-                'tick_size' => 0.01,
-                'tick_value' => 1.0,
+                'contract_size' => $contractSize,
+                'tick_size' => $tickSize,
+                'tick_value' => $contractSize * $tickSize,
                 'pip_size' => 0.1,
                 'min_lot' => 0.01,
                 'lot_step' => 0.01,
