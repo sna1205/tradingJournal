@@ -13,32 +13,45 @@ class ApiAuthOwnershipTest extends TestCase
 {
     use RefreshDatabase;
 
-    public function test_register_login_and_me_endpoints_issue_and_use_tokens(): void
+    public function test_register_login_and_me_endpoints_use_session_cookie_authentication(): void
     {
+        $headers = $this->statefulSpaHeaders();
+
+        $this->get('/sanctum/csrf-cookie', $headers)->assertNoContent();
+
         $register = $this->postJson('/api/auth/register', [
             'name' => 'Alice Trader',
             'email' => 'alice@example.com',
             'password' => 'password123',
             'password_confirmation' => 'password123',
-        ]);
+        ], $headers);
 
         $register->assertCreated();
-        $token = (string) $register->json('token');
-        $this->assertNotSame('', $token);
+        $register->assertJsonMissingPath('token');
+        $register->assertJsonPath('user.email', 'alice@example.com');
 
-        $this->withHeader('Authorization', "Bearer {$token}")
-            ->getJson('/api/auth/me')
+        $this->getJson('/api/auth/me', $headers)
             ->assertOk()
             ->assertJsonPath('email', 'alice@example.com');
+
+        $logout = $this->postJson('/api/auth/logout', [], $headers);
+        $logout->assertOk();
+        app('auth')->forgetGuards();
+        $this->getJson('/api/auth/me', $headers)->assertUnauthorized();
+
+        $this->get('/sanctum/csrf-cookie', $headers)->assertNoContent();
 
         $login = $this->postJson('/api/auth/login', [
             'email' => 'alice@example.com',
             'password' => 'password123',
-        ]);
+        ], $headers);
 
         $login->assertOk();
-        $secondToken = (string) $login->json('token');
-        $this->assertNotSame('', $secondToken);
+        $login->assertJsonMissingPath('token');
+        $login->assertJsonPath('user.email', 'alice@example.com');
+        $this->getJson('/api/auth/me', $headers)
+            ->assertOk()
+            ->assertJsonPath('email', 'alice@example.com');
     }
 
     public function test_protected_route_requires_authentication(): void
@@ -95,5 +108,17 @@ class ApiAuthOwnershipTest extends TestCase
 
         $response->assertOk();
         $this->assertSame([$checklistA->id], collect($response->json())->pluck('id')->all());
+    }
+
+    /**
+     * @return array<string, string>
+     */
+    private function statefulSpaHeaders(): array
+    {
+        return [
+            'Origin' => 'http://localhost:5173',
+            'Referer' => 'http://localhost:5173/login',
+            'Accept' => 'application/json',
+        ];
     }
 }

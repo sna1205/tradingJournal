@@ -5,6 +5,7 @@ namespace App\Models;
 // use Illuminate\Contracts\Auth\MustVerifyEmail;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\Eloquent\Relations\HasOne;
 use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
 use Laravel\Sanctum\HasApiTokens;
@@ -21,6 +22,7 @@ class User extends Authenticatable
     protected $fillable = [
         'name',
         'email',
+        'role',
         'password',
     ];
 
@@ -44,7 +46,25 @@ class User extends Authenticatable
         return [
             'email_verified_at' => 'datetime',
             'password' => 'hashed',
+            'role' => 'string',
         ];
+    }
+
+    public function roleName(): string
+    {
+        $role = strtolower(trim((string) ($this->role ?? 'trader')));
+
+        return $role !== '' ? $role : 'trader';
+    }
+
+    public function isTrader(): bool
+    {
+        return $this->roleName() === 'trader';
+    }
+
+    public function canManageRiskPolicyMode(): bool
+    {
+        return in_array($this->roleName(), ['admin', 'governance'], true);
     }
 
     public function accounts(): HasMany
@@ -65,5 +85,10 @@ class User extends Authenticatable
     public function missedTrades(): HasMany
     {
         return $this->hasMany(MissedTrade::class);
+    }
+
+    public function preference(): HasOne
+    {
+        return $this->hasOne(UserPreference::class);
     }
 }

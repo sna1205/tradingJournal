@@ -29,9 +29,8 @@ class AccountFactory extends Factory
             'account_type' => fake()->randomElement(['funded', 'personal', 'demo']),
             'starting_balance' => $startingBalance,
             'current_balance' => $startingBalance,
-            'currency' => fake()->randomElement(['USD', 'EUR', 'GBP']),
+            'currency' => 'USD',
             'is_active' => fake()->boolean(85),
         ];
     }
 }
-

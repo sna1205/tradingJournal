@@ -9,6 +9,7 @@ use App\Models\Trade;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\UploadedFile;
+use Illuminate\Support\Str;
 use Illuminate\Support\Facades\Storage;
 use Laravel\Sanctum\Sanctum;
 use Tests\TestCase;
@@ -46,7 +47,7 @@ class AccountArchitectureTest extends TestCase
         $payload = $this->tradePayload(1);
         unset($payload['account_id']);
 
-        $response = $this->postJson('/api/trades', $payload);
+        $response = $this->withTradeIdempotencyKey()->postJson('/api/trades', $payload);
         $response->assertStatus(422);
         $response->assertJsonValidationErrors(['account_id']);
     }
@@ -59,7 +60,7 @@ class AccountArchitectureTest extends TestCase
             'is_active' => true,
         ]);
 
-        $response = $this->postJson('/api/trades', $this->tradePayload((int) $account->id));
+        $response = $this->withTradeIdempotencyKey()->postJson('/api/trades', $this->tradePayload((int) $account->id));
         $response->assertCreated();
 
         $trade = Trade::query()->findOrFail((int) $response->json('id'));
@@ -79,7 +80,7 @@ class AccountArchitectureTest extends TestCase
             'is_active' => true,
         ]);
 
-        $tradeA = $this->postJson('/api/trades', [
+        $tradeA = $this->withTradeIdempotencyKey()->postJson('/api/trades', [
             ...$this->tradePayload((int) $account->id),
             'close_date' => '2026-01-02T10:00:00Z',
             'entry_price' => 1.1000,
@@ -89,7 +90,7 @@ class AccountArchitectureTest extends TestCase
             'position_size' => 0.2,
         ])->assertCreated()->json();
 
-        $tradeB = $this->postJson('/api/trades', [
+        $tradeB = $this->withTradeIdempotencyKey()->postJson('/api/trades', [
             ...$this->tradePayload((int) $account->id),
             'close_date' => '2026-01-03T10:00:00Z',
             'entry_price' => 1.2000,
@@ -99,7 +100,7 @@ class AccountArchitectureTest extends TestCase
             'position_size' => 0.2,
         ])->assertCreated()->json();
 
-        $this->putJson("/api/trades/{$tradeA['id']}", [
+        $this->withHeaders(['If-Match' => '1'])->putJson("/api/trades/{$tradeA['id']}", [
             'actual_exit_price' => 1.1020,
         ])->assertOk();
 
@@ -215,7 +216,7 @@ class AccountArchitectureTest extends TestCase
             'is_active' => true,
         ]);
 
-        $this->postJson('/api/trades', [
+        $this->withTradeIdempotencyKey()->postJson('/api/trades', [
             ...$this->tradePayload((int) $account->id),
             'entry_price' => 1.1000,
             'stop_loss' => 1.0990,
@@ -225,7 +226,7 @@ class AccountArchitectureTest extends TestCase
             'close_date' => '2026-01-02T10:00:00Z',
         ])->assertCreated();
 
-        $this->postJson('/api/trades', [
+        $this->withTradeIdempotencyKey()->postJson('/api/trades', [
             ...$this->tradePayload((int) $account->id),
             'entry_price' => 1.1000,
             'stop_loss' => 1.0990,
@@ -449,6 +450,67 @@ class AccountArchitectureTest extends TestCase
         $this->assertSame(0, count($detailsResponse->json('images')));
     }
 
+    public function test_analytics_date_window_cap_is_enforced_with_standardized_error_contract(): void
+    {
+        $account = $this->createOwnedAccount([
+            'starting_balance' => 10_000,
+            'current_balance' => 10_000,
+            'is_active' => true,
+        ]);
+
+        Trade::factory()->create([
+            'account_id' => $account->id,
+            'instrument_id' => $this->eurusdInstrumentId,
+            'pair' => 'EURUSD',
+            'profit_loss' => 25.0,
+            'date' => '2026-01-10 10:00:00',
+        ]);
+
+        $response = $this->getJson('/api/analytics/equity?' . http_build_query([
+            'account_id' => (int) $account->id,
+            'date_from' => '2020-01-01',
+            'date_to' => '2026-01-01',
+        ]));
+
+        $response->assertStatus(422);
+        $response->assertHeader('X-Error-Contract', 'v2');
+        $response->assertJsonPath('error.code', 'validation_failed');
+        $response->assertJsonPath('error.version', '2026-03-02');
+    }
+
+    public function test_account_equity_supports_cursor_pagination_contract(): void
+    {
+        $account = $this->createOwnedAccount([
+            'starting_balance' => 10_000,
+            'current_balance' => 10_000,
+            'is_active' => true,
+        ]);
+
+        for ($index = 0; $index < 5; $index += 1) {
+            Trade::factory()->create([
+                'account_id' => $account->id,
+                'instrument_id' => $this->eurusdInstrumentId,
+                'pair' => 'EURUSD',
+                'profit_loss' => 10 + $index,
+                'date' => sprintf('2026-01-%02d 10:00:00', 2 + $index),
+            ]);
+        }
+
+        $firstPage = $this->getJson("/api/accounts/{$account->id}/equity?limit=2");
+        $firstPage->assertOk();
+        $firstPage->assertJsonPath('pageInfo.limit', 2);
+        $firstPage->assertJsonPath('pageInfo.hasMore', true);
+        $this->assertCount(2, $firstPage->json('series'));
+
+        $nextCursor = (string) $firstPage->json('pageInfo.nextCursor');
+        $this->assertSame('2', $nextCursor);
+
+        $secondPage = $this->getJson("/api/accounts/{$account->id}/equity?limit=2&cursor={$nextCursor}");
+        $secondPage->assertOk();
+        $secondPage->assertJsonPath('pageInfo.limit', 2);
+        $this->assertCount(2, $secondPage->json('series'));
+    }
+
     /**
      * @return array<string, mixed>
      */
@@ -478,6 +540,13 @@ class AccountArchitectureTest extends TestCase
         return Account::factory()->create([
             'user_id' => $this->user->id,
             ...$attributes,
+        ]);
+    }
+
+    private function withTradeIdempotencyKey(): self
+    {
+        return $this->withHeaders([
+            'Idempotency-Key' => (string) Str::uuid(),
         ]);
     }
 }
