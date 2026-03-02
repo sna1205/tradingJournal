@@ -9,7 +9,7 @@ const MissedTradeFormPage = () => import('@/pages/MissedTradeFormPage.vue')
 const Milestones = () => import('@/pages/Milestones.vue')
 const Accounts = () => import('@/pages/Accounts.vue')
 const LotsCalculatorPage = () => import('@/pages/LotsCalculatorPage.vue')
-const ChecklistBuilderPage = () => import('@/pages/ChecklistBuilderPage.vue')
+const TradingRulesPage = () => import('@/pages/TradingRulesPage.vue')
 const SettingsPage = () => import('@/pages/SettingsPage.vue')
 const LoginPage = () => import('@/pages/LoginPage.vue')
 const UiRegressionPage = () => import('@/pages/UiRegressionPage.vue')
@@ -76,9 +76,9 @@ const router = createRouter({
       component: SettingsPage,
     },
     {
-      path: '/settings/checklists',
-      name: 'settings-checklists',
-      component: ChecklistBuilderPage,
+      path: '/settings/rules',
+      name: 'settings-rules',
+      component: TradingRulesPage,
     },
     {
       path: '/trades/:id/edit',

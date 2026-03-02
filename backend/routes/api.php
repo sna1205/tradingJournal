@@ -61,6 +61,16 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::put('checklist-items/{checklistItem}', [ChecklistItemController::class, 'update']);
     Route::put('checklists/{checklist}/items/reorder', [ChecklistItemController::class, 'reorder']);
     Route::delete('checklist-items/{checklistItem}', [ChecklistItemController::class, 'destroy']);
+    Route::get('rules', [ChecklistController::class, 'index']);
+    Route::post('rules', [ChecklistController::class, 'store']);
+    Route::put('rules/{checklist}', [ChecklistController::class, 'update']);
+    Route::delete('rules/{checklist}', [ChecklistController::class, 'destroy']);
+    Route::post('rules/{checklist}/duplicate', [ChecklistController::class, 'duplicate']);
+    Route::get('rules/{checklist}/items', [ChecklistItemController::class, 'index']);
+    Route::post('rules/{checklist}/items', [ChecklistItemController::class, 'store']);
+    Route::put('rules/{checklist}/items/reorder', [ChecklistItemController::class, 'reorder']);
+    Route::put('rule-items/{checklistItem}', [ChecklistItemController::class, 'update']);
+    Route::delete('rule-items/{checklistItem}', [ChecklistItemController::class, 'destroy']);
     Route::prefix('dictionaries')->group(function () {
         Route::get('strategy-models', [DictionaryController::class, 'strategyModels']);
         Route::get('setups', [DictionaryController::class, 'setups']);
@@ -69,10 +79,13 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('sessions', [DictionaryController::class, 'sessions']);
     });
     Route::get('trade-checklist/resolve', [TradeChecklistResponseController::class, 'resolve']);
+    Route::get('trade-rules/resolve', [TradeChecklistResponseController::class, 'resolve']);
     Route::post('trades/precheck', [TradeController::class, 'precheck'])->middleware('throttle:trades-precheck');
     Route::apiResource('trades', TradeController::class);
     Route::get('trades/{trade}/checklist-responses', [TradeChecklistResponseController::class, 'show']);
     Route::put('trades/{trade}/checklist-responses', [TradeChecklistResponseController::class, 'upsert']);
+    Route::get('trades/{trade}/rule-responses', [TradeChecklistResponseController::class, 'show']);
+    Route::put('trades/{trade}/rule-responses', [TradeChecklistResponseController::class, 'upsert']);
     Route::get('trades/{trade}/legs', [TradeLegController::class, 'index']);
     Route::post('trades/{trade}/legs', [TradeLegController::class, 'store']);
     Route::get('trades/{trade}/psychology', [TradePsychologyController::class, 'show']);

@@ -7,9 +7,9 @@ import type {
   TradeChecklistItemWithResponse,
   TradeChecklistReadiness,
   TradeChecklistResponseRecord,
-} from '@/types/checklist'
+} from '@/types/rules'
 import type { TradePrecheckResult } from '@/stores/tradeStore'
-import TradeChecklistBody from '@/components/checklists/TradeChecklistBody.vue'
+import TradeRulesBody from '@/components/rules/TradeRulesBody.vue'
 
 const props = withDefaults(
   defineProps<{
@@ -51,7 +51,7 @@ const isMobileOnly = computed(() => props.mode === 'mobile')
 
 <template>
   <aside v-if="!isMobileOnly" class="trade-checklist-panel-desktop" :class="{ 'force-desktop': isDesktopOnly }">
-    <TradeChecklistBody
+    <TradeRulesBody
       :checklist="checklist"
       :required-items="requiredItems"
       :optional-items="optionalItems"
@@ -76,7 +76,7 @@ const isMobileOnly = computed(() => props.mode === 'mobile')
       :aria-expanded="mobileOpen"
       @click="mobileOpen = !mobileOpen"
     >
-      <span class="trade-checklist-mobile-trigger-title">Rules Checklist</span>
+      <span class="trade-checklist-mobile-trigger-title">Rules</span>
       <span class="trade-checklist-mobile-trigger-right">
         <strong>{{ summaryCount }}</strong>
         <em>checked</em>
@@ -85,7 +85,7 @@ const isMobileOnly = computed(() => props.mode === 'mobile')
     </button>
 
     <div v-show="mobileOpen" class="trade-checklist-mobile-content">
-      <TradeChecklistBody
+      <TradeRulesBody
         :checklist="checklist"
         :required-items="requiredItems"
         :optional-items="optionalItems"

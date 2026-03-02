@@ -8,18 +8,18 @@ import GlassPanel from '@/components/layout/GlassPanel.vue'
     <header class="section-head">
       <div>
         <h2 class="section-title">Governance Shortcuts</h2>
-        <p class="section-note">Jump directly to checklist and risk policy controls from one hub.</p>
+        <p class="section-note">Jump directly to rules and risk policy controls from one hub.</p>
       </div>
     </header>
 
     <div class="grid gap-3 md:grid-cols-2">
       <article class="panel p-3">
-        <p class="kicker-label">Checklist Scope Governance</p>
+        <p class="kicker-label">Rule Scope Governance</p>
         <p class="mt-1 text-sm text-[var(--muted)]">
-          Keep one active checklist per scope and enforce strict mode only when rule definitions are stable.
+          Keep one active rule set per scope and enforce strict mode only when rule definitions are stable.
         </p>
-        <RouterLink to="/settings/checklists" class="btn btn-ghost mt-3 inline-flex px-3 py-2 text-sm">
-          Checklist Builder
+        <RouterLink to="/settings/rules" class="btn btn-ghost mt-3 inline-flex px-3 py-2 text-sm">
+          Rules Builder
         </RouterLink>
       </article>
       <article class="panel p-3">

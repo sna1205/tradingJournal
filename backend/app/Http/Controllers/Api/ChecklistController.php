@@ -135,19 +135,19 @@ class ChecklistController extends Controller
             $strategyModelId = $request->input('strategy_model_id');
 
             if ($scope === 'account' && !is_numeric($accountId)) {
-                $validator->errors()->add('account_id', 'account_id is required for account scope checklist.');
+                $validator->errors()->add('account_id', 'account_id is required for account scope rule set.');
             }
 
             if ($scope === 'strategy' && !is_numeric($strategyModelId)) {
-                $validator->errors()->add('strategy_model_id', 'strategy_model_id is required for strategy scope checklist.');
+                $validator->errors()->add('strategy_model_id', 'strategy_model_id is required for strategy scope rule set.');
             }
 
             if ($scope !== 'account' && $accountId !== null && $accountId !== '') {
-                $validator->errors()->add('account_id', 'account_id is only allowed for account scope checklist.');
+                $validator->errors()->add('account_id', 'account_id is only allowed for account scope rule set.');
             }
 
             if ($scope !== 'strategy' && $strategyModelId !== null && $strategyModelId !== '') {
-                $validator->errors()->add('strategy_model_id', 'strategy_model_id is only allowed for strategy scope checklist.');
+                $validator->errors()->add('strategy_model_id', 'strategy_model_id is only allowed for strategy scope rule set.');
             }
         });
 

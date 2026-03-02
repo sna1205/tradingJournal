@@ -10,7 +10,7 @@ import BaseSelect from '@/components/form/BaseSelect.vue'
 import BaseDateTime from '@/components/form/BaseDateTime.vue'
 import InstrumentPairSelect from '@/components/form/InstrumentPairSelect.vue'
 import TradeImageUploader from '@/components/trades/TradeImageUploader.vue'
-import TradeChecklistPanel from '@/components/checklists/TradeChecklistPanel.vue'
+import TradeRulesPanel from '@/components/rules/TradeRulesPanel.vue'
 import api from '@/services/api'
 import { createTradeEditLock, type TradeEditLockHandle, type TradeEditLockState } from '@/services/editLockService'
 import {
@@ -27,7 +27,7 @@ import {
   type TradePayload,
   type TradePrecheckResult,
 } from '@/stores/tradeStore'
-import { useTradeChecklistStore } from '@/stores/tradeChecklistStore'
+import { useTradeRulesStore } from '@/stores/tradeRulesStore'
 import { useSyncStatusStore } from '@/stores/syncStatusStore'
 import { useUiStore } from '@/stores/uiStore'
 import type { ImageContextTag, Instrument, Paginated, SessionEnum, Trade, TradeEmotion, TradeImage, TradeLeg, TradePsychology } from '@/types/trade'
@@ -36,7 +36,7 @@ import { asCurrency, asSignedCurrency } from '@/utils/format'
 const router = useRouter()
 const route = useRoute()
 const tradeStore = useTradeStore()
-const tradeChecklistStore = useTradeChecklistStore()
+const tradeChecklistStore = useTradeRulesStore()
 const accountStore = useAccountStore()
 const syncStatusStore = useSyncStatusStore()
 const uiStore = useUiStore()
@@ -385,7 +385,7 @@ const riskStatusClass = computed(() => {
 const blockedSummary = computed(() => {
   if (!submitAttempted.value || (!isSaveBlocked.value && !isChecklistContextMismatch.value)) return ''
   if (isFxPending.value) return 'Fetching FX quote...'
-  if (isChecklistContextMismatch.value) return 'Checklist context is refreshing for the selected account and strategy.'
+  if (isChecklistContextMismatch.value) return 'Rule context is refreshing for the selected account and strategy.'
   if (precheckError.value) return precheckError.value
   if (liveFxConversionError.value) return liveFxConversionError.value
   if (isRiskEngineUnavailable.value && !hasAcceptedLocalRiskOverride.value) {
@@ -1616,8 +1616,8 @@ async function submitForm() {
   if (isChecklistContextMismatch.value) {
     uiStore.toast({
       type: 'info',
-      title: 'Checklist refreshing',
-      message: 'Waiting for checklist context to match selected account and strategy.',
+      title: 'Rules refreshing',
+      message: 'Waiting for rule context to match selected account and strategy.',
     })
     return
   }
@@ -2201,7 +2201,7 @@ async function loadImage(file: File): Promise<HTMLImageElement> {
           </div>
         </section>
 
-        <TradeChecklistPanel
+        <TradeRulesPanel
           mode="mobile"
           :checklist="activeChecklist"
           :required-items="checklistRequiredItems"
@@ -2516,7 +2516,7 @@ async function loadImage(file: File): Promise<HTMLImageElement> {
             Risk unverified (local-only)
           </span>
           <span v-if="showSoftChecklistNotice" class="text-xs muted">
-            Soft mode: checklist incomplete, execution allowed.
+            Soft mode: rules incomplete, execution allowed.
           </span>
           <button type="button" class="btn btn-ghost px-4 py-2 text-sm" @click="router.push('/trades')">Cancel</button>
           <button
@@ -2524,7 +2524,7 @@ async function loadImage(file: File): Promise<HTMLImageElement> {
             class="btn btn-primary px-4 py-2 text-sm"
             :disabled="isSubmittingDisabled"
             :class="{ 'opacity-60': isChecklistStrictBlocked }"
-            :title="isChecklistStrictBlocked ? 'Strict mode: complete all required checklist rules to enable execution.' : ''"
+            :title="isChecklistStrictBlocked ? 'Strict mode: complete all required rules to enable execution.' : ''"
             @click="handleExecuteClick"
           >
             {{
@@ -2533,14 +2533,14 @@ async function loadImage(file: File): Promise<HTMLImageElement> {
                 : tradeStore.saving
                   ? 'Saving...'
                   : isChecklistStrictBlocked
-                    ? 'Blocked by Checklist'
+                    ? 'Blocked by Rules'
                     : isEditMode ? 'Update Execute' : 'Save Execute'
             }}
           </button>
         </div>
         </form>
 
-        <TradeChecklistPanel
+        <TradeRulesPanel
           mode="desktop"
           :checklist="activeChecklist"
           :required-items="checklistRequiredItems"

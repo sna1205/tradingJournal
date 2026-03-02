@@ -38,7 +38,7 @@ const heroTitle = computed(() =>
 )
 const heroSubtext = computed(() =>
   mode.value === 'login'
-    ? 'Authenticate once and continue with isolated account-level analytics, reports, and checklists.'
+    ? 'Authenticate once and continue with isolated account-level analytics, reports, and rules.'
     : 'Create a dedicated user workspace so all trades, accounts, and reports stay scoped to you.'
 )
 

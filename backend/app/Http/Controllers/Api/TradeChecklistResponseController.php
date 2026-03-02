@@ -85,9 +85,9 @@ class TradeChecklistResponseController extends Controller
 
         if ($this->hasFrozenExecutionSnapshot($trade)) {
             return response()->json([
-                'message' => 'Checklist responses are frozen for this trade execution snapshot.',
+                'message' => 'Rule responses are frozen for this trade execution snapshot.',
                 'errors' => [
-                    'checklist' => ['Historical checklist responses are immutable for frozen trades.'],
+                    'checklist' => ['Historical rule responses are immutable for frozen trades.'],
                 ],
             ], 422);
         }

@@ -11,7 +11,7 @@ import type {
   TradeChecklistResolverContext,
   TradeChecklistResponsePayload,
   TradeChecklistResponseRecord,
-} from '@/types/checklist'
+} from '@/types/rules'
 
 interface ResponseWriteRow {
   checklist_item_id: number
@@ -94,7 +94,7 @@ function buildFallbackResolverContext(
   }
 }
 
-export const useTradeChecklistStore = defineStore('tradeChecklist', () => {
+export const useTradeRulesStore = defineStore('tradeRules', () => {
   const requestManager = createRequestManager()
   const loading = ref(false)
   const saving = ref(false)
@@ -197,7 +197,7 @@ export const useTradeChecklistStore = defineStore('tradeChecklist', () => {
         cacheKey: `tradeChecklist:resolve:${fingerprint}`,
         cacheTtlMs: 1_500,
         execute: async ({ signal }) => {
-          const { data } = await api.get<TradeChecklistResponsePayload>('/trade-checklist/resolve', {
+          const { data } = await api.get<TradeChecklistResponsePayload>('/trade-rules/resolve', {
             params: requestParams,
             signal,
           })
@@ -224,7 +224,7 @@ export const useTradeChecklistStore = defineStore('tradeChecklist', () => {
         contextTradeId.value
       )
       executionSnapshot.value = null
-      error.value = 'Failed to load pre-trade checklist.'
+      error.value = 'Failed to load trading rules.'
     } finally {
       if (requestVersion === loadRequestVersion) {
         loading.value = false
@@ -264,7 +264,7 @@ export const useTradeChecklistStore = defineStore('tradeChecklist', () => {
     error.value = null
     try {
       const { data } = await api.put<TradeChecklistResponsePayload>(
-        `/trades/${activeTradeId}/checklist-responses`,
+        `/trades/${activeTradeId}/rule-responses`,
         {
           account_id: contextAccountId.value,
           strategy_model_id: contextStrategyModelId.value,
@@ -273,7 +273,7 @@ export const useTradeChecklistStore = defineStore('tradeChecklist', () => {
       )
       applyPayload(data)
     } catch {
-      error.value = 'Failed to persist checklist responses.'
+      error.value = 'Failed to persist rule responses.'
     } finally {
       saving.value = false
       if (queuedPersist) {

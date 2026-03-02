@@ -120,11 +120,11 @@ const navSections: NavSection[] = [
         navHint: 'Control center',
       },
       {
-        label: 'Checklists',
-        to: '/settings/checklists',
+        label: 'Rules',
+        to: '/settings/rules',
         icon: ListChecks,
-        title: 'Pre-Trade Checklists',
-        subtitle: 'Build and enforce custom pre-trade checklists by scope.',
+        title: 'Trading Rules',
+        subtitle: 'Build and enforce clear trading rule sets by scope.',
         navHint: 'Builder',
       },
     ],
@@ -158,7 +158,7 @@ const currentItem = computed(() => {
 const showPageHero = computed(() => currentItem.value.to !== '/dashboard')
 const compactHeroRoutes = new Set(['/trades', '/missed-trades'])
 const useCompactHero = computed(() => compactHeroRoutes.has(route.path))
-const hideGlobalFabOnRoutes = new Set(['trades-new', 'trades-edit', 'tools-lots-calculate', 'settings-checklists', 'settings'])
+const hideGlobalFabOnRoutes = new Set(['trades-new', 'trades-edit', 'tools-lots-calculate', 'settings-rules', 'settings'])
 const showGlobalFab = computed(() => !hideGlobalFabOnRoutes.has(String(route.name ?? '')))
 const mobileThemeMenuOpen = ref(false)
 const mobileNavOpen = ref(false)
