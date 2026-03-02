@@ -1,7 +1,7 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
-  "installCommand": "echo \"Skipping install; deploying committed frontend/dist\"",
-  "buildCommand": "echo \"Skipping build; deploying committed frontend/dist\"",
+  "installCommand": "cd frontend && npm ci",
+  "buildCommand": "cd frontend && npm run build:vercel",
   "outputDirectory": "frontend/dist",
   "routes": [
     {

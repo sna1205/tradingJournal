@@ -221,3 +221,5 @@ export const useChecklistStore = defineStore('checklists', () => {
     setSelectedChecklist,
   }
 })
+
+export const useRulesStore = useChecklistStore

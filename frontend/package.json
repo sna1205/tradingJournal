@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "vue-tsc -b && vite build",
+    "build:vercel": "vite build",
     "preview": "vite preview",
     "test:unit": "vitest run src/utils/lotSizeEngine.test.ts src/services/fxToUsdService.test.ts",
     "test:visual": "playwright test --config=playwright.visual.config.ts",
