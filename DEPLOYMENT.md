@@ -162,15 +162,26 @@ If these fail, fix backend before touching Vercel.
 1. Import this repository into Vercel.
 2. Root-level `vercel.json` already defines:
 - `installCommand`: `cd frontend && npm ci`
-- `buildCommand`: `cd frontend && npm run build`
+- `buildCommand`: `cd frontend && npm run build:vercel`
 - `outputDirectory`: `frontend/dist`
 3. In Vercel project -> Environment Variables, add:
 
+Option A (direct-to-backend mode):
 ```env
 VITE_API_BASE_URL=https://api.yourdomain.com/api
 VITE_API_WITH_CREDENTIALS=0
 VITE_ENABLE_VISUAL_ROUTES=0
 ```
+
+Option B (`/api` proxy mode):
+```env
+VITE_API_BASE_URL=/api
+API_BASE_URL=https://api.yourdomain.com/api
+VITE_API_WITH_CREDENTIALS=0
+VITE_ENABLE_VISUAL_ROUTES=0
+```
+
+Use only one mode per environment. If `VITE_API_BASE_URL=/api` is selected, `API_BASE_URL` is required.
 
 4. Deploy production in Vercel.
 
