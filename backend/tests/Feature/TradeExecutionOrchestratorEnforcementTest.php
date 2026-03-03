@@ -81,11 +81,33 @@ class TradeExecutionOrchestratorEnforcementTest extends TestCase
         ]);
 
         $response->assertStatus(422);
-        $response->assertJsonPath('code', 'trade_leg_mutation_blocked');
+        $response->assertJsonPath('error.code', 'trade_leg_mutation_blocked');
+        $response->assertJsonPath('error.message', 'Trade leg mutation blocked by enforcement policy.');
 
         $tradeAfter = Trade::query()->findOrFail($tradeId);
         $legAfter = TradeLeg::query()->findOrFail($entryLegId);
 
+        $legBeforeSnapshot = [
+            'trade_id' => (int) $legBefore->trade_id,
+            'leg_type' => (string) $legBefore->leg_type,
+            'price' => (float) $legBefore->price,
+            'quantity_lots' => (float) $legBefore->quantity_lots,
+            'executed_at' => (string) $legBefore->executed_at,
+            'fees' => (float) ($legBefore->fees ?? 0),
+            'notes' => $legBefore->notes,
+        ];
+        $legAfterSnapshot = [
+            'trade_id' => (int) $legAfter->trade_id,
+            'leg_type' => (string) $legAfter->leg_type,
+            'price' => (float) $legAfter->price,
+            'quantity_lots' => (float) $legAfter->quantity_lots,
+            'executed_at' => (string) $legAfter->executed_at,
+            'fees' => (float) ($legAfter->fees ?? 0),
+            'notes' => $legAfter->notes,
+        ];
+
+        $this->assertSame((int) $tradeBefore->revision, (int) $tradeAfter->revision);
+        $this->assertSame($legBeforeSnapshot, $legAfterSnapshot);
         $this->assertEqualsWithDelta((float) $tradeBefore->risk_percent, (float) $tradeAfter->risk_percent, 0.0001);
         $this->assertEqualsWithDelta((float) $legBefore->quantity_lots, (float) $legAfter->quantity_lots, 0.0001);
 
