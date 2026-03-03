@@ -160,11 +160,13 @@ If these fail, fix backend before touching Vercel.
 ## Step 8: Create and configure Vercel project
 
 1. Import this repository into Vercel.
-2. Root-level `vercel.json` already defines:
+2. Set `Root Directory` to `.` (repository root). Do not set it to `frontend`.
+3. Use only one Vercel config file: root-level `vercel.json`.
+4. Root-level `vercel.json` already defines:
 - `installCommand`: `cd frontend && npm ci`
 - `buildCommand`: `cd frontend && npm run build:vercel`
 - `outputDirectory`: `frontend/dist`
-3. In Vercel project -> Environment Variables, add:
+5. In Vercel project -> Environment Variables, add:
 
 Option A (direct-to-backend mode):
 ```env
@@ -183,7 +185,7 @@ VITE_ENABLE_VISUAL_ROUTES=0
 
 Use only one mode per environment. If `VITE_API_BASE_URL=/api` is selected, `API_BASE_URL` is required.
 
-4. Deploy production in Vercel.
+6. Deploy production in Vercel.
 
 CLI option:
 ```bash

@@ -151,6 +151,7 @@ docker compose --env-file .env -f docker-compose.prod.yml up -d --build
 - Frontend API prefix is controlled by `VITE_API_BASE_URL` (default `/api`).
 - For Vercel with proxy mode (`VITE_API_BASE_URL=/api`), set `API_BASE_URL` to your backend API root (example: `https://api.your-domain.com/api`) so `/api/*` is forwarded by `api/[...path].js`.
 - For Vercel direct mode, set `VITE_API_BASE_URL` directly to your backend API root and skip the proxy.
+- Keep Vercel `Root Directory` at repository root (`.`) and use only root `vercel.json` (do not add `frontend/vercel.json`).
 
 ## Railway Deployment
 - Use the repo guide: `docs/railway-deployment.md`
