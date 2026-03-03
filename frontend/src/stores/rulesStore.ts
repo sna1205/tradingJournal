@@ -57,7 +57,7 @@ export const useRulesStore = defineStore('rules', () => {
     loading.value = true
     error.value = null
     try {
-      const { data } = await api.get<Checklist[]>('/rules', {
+      const { data } = await api.get<Checklist[]>('/checklists', {
         params: {
           scope: filter.scope || undefined,
           accountId: filter.accountId ?? undefined,
@@ -80,7 +80,7 @@ export const useRulesStore = defineStore('rules', () => {
 
   async function fetchChecklistItems(checklistId: number) {
     try {
-      const { data } = await api.get<ChecklistItem[]>(`/rules/${checklistId}/items`)
+      const { data } = await api.get<ChecklistItem[]>(`/checklists/${checklistId}/items`)
       itemsByChecklist.value = {
         ...itemsByChecklist.value,
         [checklistId]: Array.isArray(data) ? data : [],
@@ -96,7 +96,7 @@ export const useRulesStore = defineStore('rules', () => {
   async function createChecklist(payload: CreateChecklistPayload) {
     saving.value = true
     try {
-      const { data } = await api.post<Checklist>('/rules', payload)
+      const { data } = await api.post<Checklist>('/checklists', payload)
       checklists.value = [data, ...checklists.value]
       selectedChecklistId.value = data.id
       itemsByChecklist.value[data.id] = []
@@ -113,7 +113,7 @@ export const useRulesStore = defineStore('rules', () => {
   async function duplicateChecklist(checklistId: number) {
     saving.value = true
     try {
-      const { data } = await api.post<Checklist>(`/rules/${checklistId}/duplicate`)
+      const { data } = await api.post<Checklist>(`/checklists/${checklistId}/duplicate`)
       checklists.value = [data, ...checklists.value]
       selectedChecklistId.value = data.id
       await fetchChecklistItems(data.id)
@@ -130,7 +130,7 @@ export const useRulesStore = defineStore('rules', () => {
   async function updateChecklist(checklistId: number, payload: Partial<CreateChecklistPayload>) {
     saving.value = true
     try {
-      const { data } = await api.put<Checklist>(`/rules/${checklistId}`, payload)
+      const { data } = await api.put<Checklist>(`/checklists/${checklistId}`, payload)
       const index = checklists.value.findIndex((item) => item.id === checklistId)
       if (index >= 0) {
         checklists.value[index] = data
@@ -148,7 +148,7 @@ export const useRulesStore = defineStore('rules', () => {
   async function removeChecklist(checklistId: number) {
     saving.value = true
     try {
-      await api.delete(`/rules/${checklistId}`)
+      await api.delete(`/checklists/${checklistId}`)
       checklists.value = checklists.value.filter((item) => item.id !== checklistId)
       if (selectedChecklistId.value === checklistId) {
         selectedChecklistId.value = checklists.value[0]?.id ?? null
@@ -165,7 +165,7 @@ export const useRulesStore = defineStore('rules', () => {
   async function createItem(checklistId: number, payload: CreateChecklistItemPayload) {
     saving.value = true
     try {
-      const { data } = await api.post<ChecklistItem>(`/rules/${checklistId}/items`, payload)
+      const { data } = await api.post<ChecklistItem>(`/checklists/${checklistId}/items`, payload)
       const current = itemsByChecklist.value[checklistId] ?? []
       itemsByChecklist.value[checklistId] = [...current, data]
         .sort((a, b) => a.order_index - b.order_index || a.id - b.id)
@@ -182,7 +182,7 @@ export const useRulesStore = defineStore('rules', () => {
   async function updateItem(itemId: number, payload: Partial<CreateChecklistItemPayload & { order_index: number }>) {
     saving.value = true
     try {
-      const { data } = await api.put<ChecklistItem>(`/rule-items/${itemId}`, payload)
+      const { data } = await api.put<ChecklistItem>(`/checklist-items/${itemId}`, payload)
       const checklistId = data.checklist_id
       const current = itemsByChecklist.value[checklistId] ?? []
       const index = current.findIndex((item) => item.id === data.id)
@@ -203,7 +203,7 @@ export const useRulesStore = defineStore('rules', () => {
   async function removeItem(checklistId: number, itemId: number) {
     saving.value = true
     try {
-      await api.delete(`/rule-items/${itemId}`)
+      await api.delete(`/checklist-items/${itemId}`)
       itemsByChecklist.value[checklistId] = (itemsByChecklist.value[checklistId] ?? [])
         .filter((item) => item.id !== itemId)
     } catch (errorValue) {
@@ -229,7 +229,7 @@ export const useRulesStore = defineStore('rules', () => {
     itemsByChecklist.value[checklistId] = optimistic
 
     try {
-      const { data } = await api.put<{ items: ChecklistItem[] }>(`/rules/${checklistId}/items/reorder`, {
+      const { data } = await api.put<{ items: ChecklistItem[] }>(`/checklists/${checklistId}/items/reorder`, {
         item_ids: orderedItemIds,
       })
       itemsByChecklist.value[checklistId] = data.items

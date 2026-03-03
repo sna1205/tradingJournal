@@ -260,7 +260,7 @@ class TradeChecklistEnforcementTest extends TestCase
         $firstStrategyChecklist->forceFill(['is_active' => false])->save();
         $secondStrategyChecklist = $this->createChecklistWithRequiredRule('strategy', null, $strategyModelId);
 
-        $response = $this->getJson('/api/trade-checklist/resolve?'.http_build_query([
+        $response = $this->getJson('/api/trade-rules/resolve?'.http_build_query([
             'account_id' => (int) $account->id,
             'strategy_model_id' => $strategyModelId,
         ]));

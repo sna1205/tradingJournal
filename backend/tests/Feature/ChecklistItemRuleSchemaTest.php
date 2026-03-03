@@ -25,7 +25,7 @@ class ChecklistItemRuleSchemaTest extends TestCase
             'is_active' => true,
         ]);
 
-        $response = $this->postJson("/api/rules/{$checklist->id}/items", [
+        $response = $this->postJson("/api/checklists/{$checklist->id}/items", [
             'title' => 'Risk cap',
             'type' => 'checkbox',
             'category' => 'Risk',
@@ -63,7 +63,7 @@ class ChecklistItemRuleSchemaTest extends TestCase
             'is_active' => true,
         ]);
 
-        $response = $this->postJson("/api/rules/{$checklist->id}/items", [
+        $response = $this->postJson("/api/checklists/{$checklist->id}/items", [
             'title' => 'Boolean invalid operator',
             'type' => 'checkbox',
             'category' => 'Risk',

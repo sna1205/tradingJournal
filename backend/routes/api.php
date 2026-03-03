@@ -61,16 +61,16 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::put('checklist-items/{checklistItem}', [ChecklistItemController::class, 'update']);
     Route::put('checklists/{checklist}/items/reorder', [ChecklistItemController::class, 'reorder']);
     Route::delete('checklist-items/{checklistItem}', [ChecklistItemController::class, 'destroy']);
-    Route::get('rules', [ChecklistController::class, 'index']);
-    Route::post('rules', [ChecklistController::class, 'store']);
-    Route::put('rules/{checklist}', [ChecklistController::class, 'update']);
-    Route::delete('rules/{checklist}', [ChecklistController::class, 'destroy']);
-    Route::post('rules/{checklist}/duplicate', [ChecklistController::class, 'duplicate']);
-    Route::get('rules/{checklist}/items', [ChecklistItemController::class, 'index']);
-    Route::post('rules/{checklist}/items', [ChecklistItemController::class, 'store']);
-    Route::put('rules/{checklist}/items/reorder', [ChecklistItemController::class, 'reorder']);
-    Route::put('rule-items/{checklistItem}', [ChecklistItemController::class, 'update']);
-    Route::delete('rule-items/{checklistItem}', [ChecklistItemController::class, 'destroy']);
+    Route::get('rules', [ChecklistController::class, 'index'])->middleware('deprecated.alias:/api/checklists');
+    Route::post('rules', [ChecklistController::class, 'store'])->middleware('deprecated.alias:/api/checklists');
+    Route::put('rules/{checklist}', [ChecklistController::class, 'update'])->middleware('deprecated.alias:/api/checklists/{checklist}');
+    Route::delete('rules/{checklist}', [ChecklistController::class, 'destroy'])->middleware('deprecated.alias:/api/checklists/{checklist}');
+    Route::post('rules/{checklist}/duplicate', [ChecklistController::class, 'duplicate'])->middleware('deprecated.alias:/api/checklists/{checklist}/duplicate');
+    Route::get('rules/{checklist}/items', [ChecklistItemController::class, 'index'])->middleware('deprecated.alias:/api/checklists/{checklist}/items');
+    Route::post('rules/{checklist}/items', [ChecklistItemController::class, 'store'])->middleware('deprecated.alias:/api/checklists/{checklist}/items');
+    Route::put('rules/{checklist}/items/reorder', [ChecklistItemController::class, 'reorder'])->middleware('deprecated.alias:/api/checklists/{checklist}/items/reorder');
+    Route::put('rule-items/{checklistItem}', [ChecklistItemController::class, 'update'])->middleware('deprecated.alias:/api/checklist-items/{checklistItem}');
+    Route::delete('rule-items/{checklistItem}', [ChecklistItemController::class, 'destroy'])->middleware('deprecated.alias:/api/checklist-items/{checklistItem}');
     Route::prefix('dictionaries')->group(function () {
         Route::get('strategy-models', [DictionaryController::class, 'strategyModels']);
         Route::get('setups', [DictionaryController::class, 'setups']);
@@ -78,7 +78,7 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('trade-tags', [DictionaryController::class, 'tradeTags']);
         Route::get('sessions', [DictionaryController::class, 'sessions']);
     });
-    Route::get('trade-checklist/resolve', [TradeChecklistResponseController::class, 'resolve']);
+    Route::get('trade-checklist/resolve', [TradeChecklistResponseController::class, 'resolve'])->middleware('deprecated.alias:/api/trade-rules/resolve');
     Route::get('trade-rules/resolve', [TradeChecklistResponseController::class, 'resolve']);
     Route::post('trades/precheck', [TradeController::class, 'precheck'])->middleware('throttle:trades-precheck');
     Route::get('trades', [TradeController::class, 'index']);
@@ -123,7 +123,7 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('rankings', [AnalyticsController::class, 'rankings']);
         Route::get('monthly-heatmap', [AnalyticsController::class, 'monthlyHeatmap']);
         Route::get('risk-status', [AnalyticsController::class, 'riskStatus']);
-        Route::get('risk_status', [AnalyticsController::class, 'riskStatus']);
+        Route::get('risk_status', [AnalyticsController::class, 'riskStatus'])->middleware('deprecated.alias:/api/analytics/risk-status');
         Route::get('accounts', [AnalyticsController::class, 'accounts']);
         Route::get('portfolio', [AnalyticsController::class, 'portfolio']);
     });
