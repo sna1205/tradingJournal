@@ -49,8 +49,11 @@ class IdempotencyMiddleware
 
         $routeSignature = strtoupper($request->method()) . ' ' . ltrim($request->path(), '/');
         $requestHash = $this->buildRequestHash($request);
+        $expiresAt = now()->addMinutes($this->ttlMinutes());
 
-        $reserved = $this->reserveKey($userId, $routeSignature, $idempotencyKey, $requestHash);
+        $this->deleteExpiredReservation($userId, $routeSignature, $idempotencyKey);
+
+        $reserved = $this->reserveKey($userId, $routeSignature, $idempotencyKey, $requestHash, $expiresAt);
         if (! $reserved) {
             $existing = DB::table('idempotency_keys')
                 ->where('user_id', $userId)
@@ -121,7 +124,13 @@ class IdempotencyMiddleware
         }
     }
 
-    private function reserveKey(int $userId, string $routeSignature, string $idempotencyKey, string $requestHash): bool
+    private function reserveKey(
+        int $userId,
+        string $routeSignature,
+        string $idempotencyKey,
+        string $requestHash,
+        \Illuminate\Support\Carbon $expiresAt
+    ): bool
     {
         try {
             DB::table('idempotency_keys')->insert([
@@ -132,6 +141,7 @@ class IdempotencyMiddleware
                 'response_code' => null,
                 'response_body' => null,
                 'created_at' => now(),
+                'expires_at' => $expiresAt,
             ]);
 
             return true;
@@ -152,6 +162,22 @@ class IdempotencyMiddleware
             ->where('key', $idempotencyKey)
             ->whereNull('response_code')
             ->delete();
+    }
+
+    private function deleteExpiredReservation(int $userId, string $routeSignature, string $idempotencyKey): void
+    {
+        DB::table('idempotency_keys')
+            ->where('user_id', $userId)
+            ->where('route', $routeSignature)
+            ->where('key', $idempotencyKey)
+            ->whereNotNull('expires_at')
+            ->where('expires_at', '<', now())
+            ->delete();
+    }
+
+    private function ttlMinutes(): int
+    {
+        return max(1, (int) config('idempotency.ttl_minutes', 1440));
     }
 
     private function isUniqueViolation(QueryException $exception): bool
