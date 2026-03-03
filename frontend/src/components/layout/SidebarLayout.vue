@@ -238,12 +238,12 @@ function runSyncNow() {
   void syncStatusStore.syncQueueNow()
 }
 
-function keepLocalDraft(queueId: string) {
-  syncStatusStore.resolveConflictKeepLocal(queueId)
+function pullLatestServerVersion(queueId: string) {
+  void syncStatusStore.pullLatestServerVersion(queueId)
 }
 
-function acceptServerVersion(queueId: string) {
-  syncStatusStore.resolveConflictAcceptServer(queueId)
+function discardLocalChange(queueId: string) {
+  syncStatusStore.discardLocalChange(queueId)
 }
 
 function formatConflictPayload(payload: unknown): string {
@@ -519,6 +519,9 @@ watch(
               {{ item.entity }} {{ item.operation }} conflict
             </p>
             <p class="section-note mt-1">{{ item.conflict?.message ?? 'Conflict detected.' }}</p>
+            <p class="section-note mt-1">
+              Pull latest server version, then re-apply your intended edits manually if still needed.
+            </p>
 
             <div class="sync-conflict-grid mt-2">
               <div>
@@ -532,11 +535,11 @@ watch(
             </div>
 
             <div class="sync-conflict-actions mt-3">
-              <button type="button" class="btn btn-ghost px-3 py-1.5 text-sm" @click="acceptServerVersion(item.id)">
-                Accept server
+              <button type="button" class="btn btn-ghost px-3 py-1.5 text-sm" @click="pullLatestServerVersion(item.id)">
+                Pull latest server version
               </button>
-              <button type="button" class="btn btn-primary px-3 py-1.5 text-sm" @click="keepLocalDraft(item.id)">
-                Keep local draft
+              <button type="button" class="btn btn-primary px-3 py-1.5 text-sm" @click="discardLocalChange(item.id)">
+                Discard local change
               </button>
             </div>
           </article>

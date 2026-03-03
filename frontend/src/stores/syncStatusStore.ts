@@ -1,8 +1,10 @@
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import {
+  upsertLocalAccountSnapshot,
   deleteLocalAccount,
   deleteLocalTrade,
+  upsertLocalTradeSnapshot,
   setLocalAccountSyncStatus,
   setLocalTradeSyncStatus,
 } from '@/services/localFallback'
@@ -11,11 +13,14 @@ import {
   getSyncQueueSummary,
   readSyncQueue,
   replaySyncQueue,
-  resolveSyncConflictAcceptServer,
+  resolveSyncConflictDiscardLocal,
   resolveSyncConflictKeepLocal,
+  resolveSyncConflictPullLatest,
   type SyncQueueItem,
   type SyncQueueSummary,
 } from '@/services/offlineSyncQueue'
+import type { Account } from '@/types/account'
+import type { Trade } from '@/types/trade'
 
 type SyncMode = 'server' | 'offline_draft'
 
@@ -130,9 +135,29 @@ export const useSyncStatusStore = defineStore('sync-status', () => {
     void syncQueueNow()
   }
 
-  function resolveConflictAcceptServer(queueId: string) {
-    resolveSyncConflictAcceptServer(queueId)
+  async function pullLatestServerVersion(queueId: string) {
+    try {
+      const resolved = await resolveSyncConflictPullLatest(queueId)
+      if (resolved.item?.entity === 'trades' && resolved.server_snapshot) {
+        upsertLocalTradeSnapshot(resolved.server_snapshot as unknown as Trade)
+      }
+      if (resolved.item?.entity === 'accounts' && resolved.server_snapshot) {
+        upsertLocalAccountSnapshot(resolved.server_snapshot as unknown as Account)
+      }
+    } catch {
+      lastSyncError.value = 'Could not pull latest server version for this conflict.'
+    }
+
+    await refreshQueueState()
+  }
+
+  function discardLocalChange(queueId: string) {
+    resolveSyncConflictDiscardLocal(queueId)
     void refreshQueueState()
+  }
+
+  function resolveConflictAcceptServer(queueId: string) {
+    discardLocalChange(queueId)
   }
 
   function applyLocalDraftStatuses(items: SyncQueueItem[]) {
@@ -194,6 +219,8 @@ export const useSyncStatusStore = defineStore('sync-status', () => {
     refreshQueueState,
     syncQueueNow,
     resolveConflictKeepLocal,
+    pullLatestServerVersion,
+    discardLocalChange,
     resolveConflictAcceptServer,
   }
 })

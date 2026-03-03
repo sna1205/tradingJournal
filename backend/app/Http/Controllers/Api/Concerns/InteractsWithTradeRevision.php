@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Api\Concerns;
 
 use App\Models\Trade;
 use App\Support\ApiErrorResponder;
+use App\Support\TradeRevision;
 use Illuminate\Http\Exceptions\HttpResponseException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -12,9 +13,7 @@ trait InteractsWithTradeRevision
 {
     protected function buildTradeEtag(Trade $trade): string
     {
-        $updatedAt = $trade->updated_at?->toISOString() ?? '';
-
-        return sprintf('"%d:%s"', (int) $trade->revision, $updatedAt);
+        return TradeRevision::buildEtag($trade);
     }
 
     protected function assertTradeWritePrecondition(Request $request, Trade $trade): void
@@ -93,27 +92,6 @@ trait InteractsWithTradeRevision
 
     private function extractExpectedRevision(?string $ifMatch): ?int
     {
-        if (! is_string($ifMatch) || trim($ifMatch) === '') {
-            return null;
-        }
-
-        $candidate = trim($ifMatch);
-        if (str_starts_with($candidate, 'W/')) {
-            $candidate = substr($candidate, 2);
-        }
-
-        $candidate = trim($candidate, "\" ");
-        if (str_contains($candidate, ':')) {
-            $candidate = (string) strtok($candidate, ':');
-        }
-
-        if (! is_numeric($candidate)) {
-            return null;
-        }
-
-        $revision = (int) $candidate;
-
-        return $revision > 0 ? $revision : null;
+        return TradeRevision::extractExpectedRevision($ifMatch);
     }
 }
-

@@ -12,6 +12,7 @@ export interface SyncConflictPayload {
   reason: 'server_changed' | 'server_missing' | 'sync_rejected'
   message: string
   server_updated_at: string | null
+  server_revision: number | null
   server_snapshot: Record<string, unknown> | null
   local_snapshot: Record<string, unknown> | null
   detected_at: string
@@ -26,6 +27,7 @@ export interface SyncQueueItem {
   server_id: number | null
   payload: Record<string, unknown> | null
   expected_updated_at: string | null
+  expected_revision: number | null
   context: string
   risk_unverified: boolean
   attempts: number
@@ -69,6 +71,7 @@ interface BaseEnqueueArgs {
   local_id: number
   server_id?: number | null
   expected_updated_at?: string | null
+  expected_revision?: number | null
   context: string
   risk_unverified?: boolean
 }
@@ -151,6 +154,7 @@ export function enqueueSyncCreate(args: EnqueueCreateArgs): SyncQueueItem {
     server_id: normalizeId(args.server_id),
     payload: cleanPayload(args.payload),
     expected_updated_at: normalizeUpdatedAt(args.expected_updated_at),
+    expected_revision: normalizeRevision(args.expected_revision),
     context: args.context,
     risk_unverified: Boolean(args.risk_unverified),
     attempts: 0,
@@ -178,6 +182,9 @@ export function enqueueSyncUpdate(args: EnqueueUpdateArgs): SyncQueueItem {
       }
       latest.updated_at = nowIso()
       latest.last_error = null
+      if (latest.expected_revision === null) {
+        latest.expected_revision = normalizeRevision(args.expected_revision)
+      }
       writeSyncQueue(queue)
       return latest
     }
@@ -192,6 +199,7 @@ export function enqueueSyncUpdate(args: EnqueueUpdateArgs): SyncQueueItem {
     server_id: normalizeId(args.server_id) ?? args.local_id,
     payload,
     expected_updated_at: normalizeUpdatedAt(args.expected_updated_at),
+    expected_revision: normalizeRevision(args.expected_revision),
     context: args.context,
     risk_unverified: Boolean(args.risk_unverified),
     attempts: 0,
@@ -246,6 +254,7 @@ export function enqueueSyncDelete(args: EnqueueDeleteArgs): SyncQueueItem | null
     server_id: normalizeId(args.server_id) ?? args.local_id,
     payload: null,
     expected_updated_at: normalizeUpdatedAt(args.expected_updated_at),
+    expected_revision: normalizeRevision(args.expected_revision),
     context: args.context,
     risk_unverified: false,
     attempts: 0,
@@ -267,6 +276,7 @@ export function resolveSyncConflictKeepLocal(queueId: string): SyncQueueItem | n
 
   const serverSnapshot = item.conflict?.server_snapshot ?? null
   const serverUpdatedAt = item.conflict?.server_updated_at ?? null
+  const serverRevision = item.conflict?.server_revision ?? null
   const serverId = normalizeId(serverSnapshot?.id)
 
   item.status = 'draft_local'
@@ -275,22 +285,71 @@ export function resolveSyncConflictKeepLocal(queueId: string): SyncQueueItem | n
   item.updated_at = nowIso()
   item.server_id = serverId ?? item.server_id
   item.expected_updated_at = serverUpdatedAt ?? item.expected_updated_at
+  item.expected_revision = serverRevision ?? item.expected_revision
   writeSyncQueue(queue)
   return item
 }
 
-export function resolveSyncConflictAcceptServer(queueId: string): SyncQueueItem | null {
+export function resolveSyncConflictDiscardLocal(queueId: string): SyncQueueItem | null {
   const queue = readSyncQueue()
   const item = queue.find((row) => row.id === queueId)
   if (!item || item.status !== 'conflict') return null
 
   item.status = 'synced'
   item.conflict = null
-  item.last_error = 'Accepted server version.'
+  item.last_error = 'Discarded local change.'
   item.updated_at = nowIso()
   item.risk_unverified = false
   writeSyncQueue(queue)
   return item
+}
+
+export function resolveSyncConflictAcceptServer(queueId: string): SyncQueueItem | null {
+  return resolveSyncConflictDiscardLocal(queueId)
+}
+
+export async function resolveSyncConflictPullLatest(queueId: string): Promise<{
+  item: SyncQueueItem | null
+  server_snapshot: Record<string, unknown> | null
+}> {
+  const queue = readSyncQueue()
+  const item = queue.find((row) => row.id === queueId)
+  if (!item || item.status !== 'conflict') {
+    return {
+      item: null,
+      server_snapshot: null,
+    }
+  }
+
+  const targetId = normalizeId(item.server_id) ?? item.local_id
+  const snapshot = await fetchRemoteSnapshot(item.entity, targetId)
+
+  item.status = 'synced'
+  item.conflict = null
+  item.last_error = 'Pulled latest server version.'
+  item.updated_at = nowIso()
+  item.risk_unverified = false
+
+  const serverUpdatedAt = readUpdatedAt(snapshot)
+  if (serverUpdatedAt) {
+    item.expected_updated_at = serverUpdatedAt
+  }
+
+  const serverRevision = readRevision(snapshot)
+  if (serverRevision !== null) {
+    item.expected_revision = serverRevision
+  }
+
+  const serverId = normalizeId(snapshot?.id)
+  if (serverId) {
+    item.server_id = serverId
+  }
+
+  writeSyncQueue(queue)
+  return {
+    item,
+    server_snapshot: snapshot,
+  }
 }
 
 export async function replaySyncQueue(): Promise<ReplaySyncQueueResult> {
@@ -321,13 +380,34 @@ export async function replaySyncQueue(): Promise<ReplaySyncQueueResult> {
       const targetId = normalizeId(item.server_id) ?? item.local_id
       const remoteSnapshot = await fetchRemoteSnapshot(item.entity, targetId)
       const remoteUpdatedAt = readUpdatedAt(remoteSnapshot)
+      const remoteRevision = readRevision(remoteSnapshot)
       const expectedUpdatedAt = item.expected_updated_at
+      const expectedRevision = item.expected_revision
 
       if (expectedUpdatedAt && remoteUpdatedAt && expectedUpdatedAt !== remoteUpdatedAt) {
         markConflict(item, {
           reason: 'server_changed',
           message: 'Server record changed after local draft was created.',
           server_updated_at: remoteUpdatedAt,
+          server_revision: remoteRevision,
+          server_snapshot: remoteSnapshot,
+          local_snapshot: item.payload,
+          detected_at: nowIso(),
+        })
+        conflicts += 1
+        continue
+      }
+
+      if (
+        expectedRevision !== null
+        && remoteRevision !== null
+        && expectedRevision !== remoteRevision
+      ) {
+        markConflict(item, {
+          reason: 'server_changed',
+          message: 'Server revision changed after local draft was created.',
+          server_updated_at: remoteUpdatedAt,
+          server_revision: remoteRevision,
           server_snapshot: remoteSnapshot,
           local_snapshot: item.payload,
           detected_at: nowIso(),
@@ -362,6 +442,7 @@ export async function replaySyncQueue(): Promise<ReplaySyncQueueResult> {
             reason: 'server_missing',
             message: 'Server record no longer exists.',
             server_updated_at: null,
+            server_revision: null,
             server_snapshot: null,
             local_snapshot: item.payload,
             detected_at: nowIso(),
@@ -371,11 +452,20 @@ export async function replaySyncQueue(): Promise<ReplaySyncQueueResult> {
         }
 
         if (status === 409 || status === 412) {
+          const targetId = normalizeId(item.server_id) ?? item.local_id
+          let latestSnapshot: Record<string, unknown> | null = null
+          try {
+            latestSnapshot = await fetchRemoteSnapshot(item.entity, targetId)
+          } catch {
+            latestSnapshot = null
+          }
+
           markConflict(item, {
             reason: 'sync_rejected',
             message: errorMessage(error, 'Server rejected sync due to a version conflict.'),
-            server_updated_at: null,
-            server_snapshot: null,
+            server_updated_at: readUpdatedAt(latestSnapshot),
+            server_revision: readRevision(latestSnapshot),
+            server_snapshot: latestSnapshot,
             local_snapshot: item.payload,
             detected_at: nowIso(),
           })
@@ -442,6 +532,11 @@ function markSynced(item: SyncQueueItem, snapshot: Record<string, unknown> | nul
     item.expected_updated_at = updatedAt
   }
 
+  const revision = readRevision(snapshot)
+  if (revision !== null) {
+    item.expected_revision = revision
+  }
+
   const serverId = normalizeId(snapshot?.id)
   if (serverId) {
     item.server_id = serverId
@@ -463,12 +558,21 @@ async function syncCreate(item: SyncQueueItem): Promise<Record<string, unknown> 
 
 async function syncUpdate(item: SyncQueueItem, targetId: number): Promise<Record<string, unknown> | null> {
   const endpoint = `${endpointForEntity(item.entity)}/${targetId}`
-  const { data } = await api.put(endpoint, item.payload ?? {})
+  const requestConfig = replayIfMatchConfig(item)
+  const { data } = requestConfig
+    ? await api.put(endpoint, item.payload ?? {}, requestConfig)
+    : await api.put(endpoint, item.payload ?? {})
   return extractSnapshot(item.entity, data)
 }
 
 async function syncDelete(item: SyncQueueItem, targetId: number): Promise<void> {
   const endpoint = `${endpointForEntity(item.entity)}/${targetId}`
+  const requestConfig = replayIfMatchConfig(item)
+  if (requestConfig) {
+    await api.delete(endpoint, requestConfig)
+    return
+  }
+
   await api.delete(endpoint)
 }
 
@@ -526,6 +630,7 @@ function normalizeQueueItem(input: unknown): SyncQueueItem | null {
     server_id: normalizeId(input.server_id),
     payload: isRecord(input.payload) ? { ...input.payload } : null,
     expected_updated_at: normalizeUpdatedAt(input.expected_updated_at),
+    expected_revision: normalizeRevision(input.expected_revision),
     context: String(input.context ?? entity),
     risk_unverified: Boolean(input.risk_unverified),
     attempts: Number.isFinite(Number(input.attempts)) ? Math.max(0, Math.trunc(Number(input.attempts))) : 0,
@@ -545,6 +650,7 @@ function normalizeConflictPayload(input: unknown): SyncConflictPayload | null {
     reason,
     message: String(input.message ?? ''),
     server_updated_at: normalizeUpdatedAt(input.server_updated_at),
+    server_revision: normalizeRevision(input.server_revision),
     server_snapshot: isRecord(input.server_snapshot) ? { ...input.server_snapshot } : null,
     local_snapshot: isRecord(input.local_snapshot) ? { ...input.local_snapshot } : null,
     detected_at: String(input.detected_at ?? nowIso()),
@@ -601,6 +707,12 @@ function normalizeUpdatedAt(value: unknown): string | null {
   return trimmed ? trimmed : null
 }
 
+function normalizeRevision(value: unknown): number | null {
+  const parsed = Number(value)
+  if (!Number.isInteger(parsed) || parsed <= 0) return null
+  return parsed
+}
+
 function cleanPayload(payload: Record<string, unknown> | null): Record<string, unknown> | null {
   if (!payload) return null
   return { ...payload }
@@ -609,6 +721,24 @@ function cleanPayload(payload: Record<string, unknown> | null): Record<string, u
 function readUpdatedAt(snapshot: Record<string, unknown> | null): string | null {
   if (!snapshot) return null
   return normalizeUpdatedAt(snapshot.updated_at)
+}
+
+function readRevision(snapshot: Record<string, unknown> | null): number | null {
+  if (!snapshot) return null
+  return normalizeRevision(snapshot.revision)
+}
+
+function replayIfMatchConfig(item: SyncQueueItem): { headers: { 'If-Match': string } } | null {
+  if (item.entity !== 'trades') return null
+
+  const revision = normalizeRevision(item.expected_revision)
+  if (revision === null) return null
+
+  return {
+    headers: {
+      'If-Match': String(revision),
+    },
+  }
 }
 
 function errorMessage(error: unknown, fallback: string): string {

@@ -763,6 +763,7 @@ export const useTradeStore = defineStore('trades', () => {
           local_id: data.id,
           server_id: id,
           expected_updated_at: current?.updated_at ?? null,
+          expected_revision: current?.revision ?? null,
           payload: pruneUndefined(payload),
           context: 'trades',
           risk_unverified: data.risk_validation_status !== 'verified',
@@ -828,6 +829,7 @@ export const useTradeStore = defineStore('trades', () => {
           local_id: id,
           server_id: id,
           expected_updated_at: previous?.updated_at ?? null,
+          expected_revision: previous?.revision ?? null,
           context: 'trades',
         })
         void syncStatusStore.refreshQueueState()

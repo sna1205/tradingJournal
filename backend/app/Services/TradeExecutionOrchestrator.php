@@ -9,6 +9,7 @@ use App\Models\Checklist;
 use App\Models\Trade;
 use App\Models\TradeLeg;
 use App\Models\User;
+use App\Support\TradeRevision;
 use Carbon\CarbonImmutable;
 use Illuminate\Http\Exceptions\HttpResponseException;
 use Illuminate\Support\Facades\DB;
@@ -277,34 +278,12 @@ class TradeExecutionOrchestrator
 
     private function extractExpectedRevision(?string $ifMatch): ?int
     {
-        if (! is_string($ifMatch) || trim($ifMatch) === '') {
-            return null;
-        }
-
-        $candidate = trim($ifMatch);
-        if (str_starts_with($candidate, 'W/')) {
-            $candidate = substr($candidate, 2);
-        }
-
-        $candidate = trim($candidate, "\" ");
-        if (str_contains($candidate, ':')) {
-            $candidate = (string) strtok($candidate, ':');
-        }
-
-        if (! is_numeric($candidate)) {
-            return null;
-        }
-
-        $revision = (int) $candidate;
-
-        return $revision > 0 ? $revision : null;
+        return TradeRevision::extractExpectedRevision($ifMatch);
     }
 
     public function buildTradeEtag(Trade $trade): string
     {
-        $updatedAt = $trade->updated_at?->toISOString() ?? '';
-
-        return sprintf('"%d:%s"', (int) $trade->revision, $updatedAt);
+        return TradeRevision::buildEtag($trade);
     }
 
     /**
