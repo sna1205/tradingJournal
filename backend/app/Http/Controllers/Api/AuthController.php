@@ -25,6 +25,16 @@ class AuthController extends Controller
     /**
      * @throws ValidationException
      */
+    public function config()
+    {
+        return response()->json([
+            'allow_self_register' => (bool) config('auth.allow_self_register', true),
+        ]);
+    }
+
+    /**
+     * @throws ValidationException
+     */
     public function register(Request $request)
     {
         $payload = Validator::make($request->all(), [

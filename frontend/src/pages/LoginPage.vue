@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { isAxiosError } from 'axios'
 import { useRoute, useRouter } from 'vue-router'
 import { Eye, EyeOff, LineChart, ShieldCheck, Sparkles, UserRound } from 'lucide-vue-next'
@@ -22,6 +22,7 @@ const revealPassword = ref(false)
 const revealPasswordConfirmation = ref(false)
 const errorMessage = ref<string | null>(null)
 
+const allowSelfRegister = computed(() => authStore.allowSelfRegister)
 const submitting = computed(() => authStore.loading)
 const submitLabel = computed(() => (mode.value === 'login' ? 'Sign In' : 'Create Account'))
 const passwordMismatch = computed(() =>
@@ -75,6 +76,10 @@ async function submit() {
     if (mode.value === 'login') {
       await authStore.login(email.value, password.value)
     } else {
+      if (!allowSelfRegister.value) {
+        errorMessage.value = 'Self-registration is currently disabled.'
+        return
+      }
       await authStore.register(name.value, email.value, password.value, passwordConfirmation.value)
     }
     await userPreferencesStore.initialize(true)
@@ -107,6 +112,7 @@ async function submit() {
 }
 
 function switchMode(nextMode: AuthMode) {
+  if (nextMode === 'register' && !allowSelfRegister.value) return
   if (mode.value === nextMode) return
   mode.value = nextMode
   password.value = ''
@@ -115,6 +121,16 @@ function switchMode(nextMode: AuthMode) {
   revealPasswordConfirmation.value = false
   errorMessage.value = null
 }
+
+watch(allowSelfRegister, (enabled) => {
+  if (enabled || mode.value !== 'register') return
+  mode.value = 'login'
+  password.value = ''
+  passwordConfirmation.value = ''
+  revealPassword.value = false
+  revealPasswordConfirmation.value = false
+  errorMessage.value = null
+}, { immediate: true })
 </script>
 
 <template>
@@ -150,9 +166,9 @@ function switchMode(nextMode: AuthMode) {
       <section class="auth-panel">
         <header class="auth-panel-head">
           <p class="auth-kicker">Authentication</p>
-          <h2 class="auth-title">{{ mode === 'login' ? 'Sign In' : 'Create Account' }}</h2>
+          <h2 class="auth-title">{{ mode === 'login' || !allowSelfRegister ? 'Sign In' : 'Create Account' }}</h2>
           <p class="auth-subtitle">
-            {{ mode === 'login' ? 'Use your credentials to continue.' : 'Register a secure profile to begin.' }}
+            {{ mode === 'login' || !allowSelfRegister ? 'Use your credentials to continue.' : 'Register a secure profile to begin.' }}
           </p>
         </header>
 
@@ -168,6 +184,7 @@ function switchMode(nextMode: AuthMode) {
             Login
           </button>
           <button
+            v-if="allowSelfRegister"
             type="button"
             class="auth-mode-btn"
             :class="{ active: mode === 'register' }"

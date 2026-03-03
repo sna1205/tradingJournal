@@ -31,6 +31,7 @@ return Application::configure(basePath: dirname(__DIR__))
         $middleware->alias([
             'idempotency' => \App\Http\Middleware\IdempotencyMiddleware::class,
             'deprecated.alias' => \App\Http\Middleware\DeprecatedApiAliasMiddleware::class,
+            'allow.register' => \App\Http\Middleware\EnsureSelfRegistrationAllowed::class,
         ]);
     })
     ->withExceptions(function (Exceptions $exceptions) {

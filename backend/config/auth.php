@@ -20,6 +20,17 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Self Registration
+    |--------------------------------------------------------------------------
+    |
+    | Toggle whether unauthenticated users are allowed to create accounts via
+    | the public registration endpoint.
+    |
+    */
+    'allow_self_register' => env('ALLOW_SELF_REGISTER', true),
+
+    /*
+    |--------------------------------------------------------------------------
     | Authentication Guards
     |--------------------------------------------------------------------------
     |

@@ -27,7 +27,8 @@ Route::get('health', fn () => response()->json([
 ]));
 
 Route::prefix('auth')->middleware('web')->group(function () {
-    Route::post('register', [AuthController::class, 'register'])->middleware('throttle:auth-register');
+    Route::get('config', [AuthController::class, 'config']);
+    Route::post('register', [AuthController::class, 'register'])->middleware(['allow.register', 'throttle:auth-register']);
     Route::post('login', [AuthController::class, 'login'])->middleware('throttle:auth-login');
 });
 

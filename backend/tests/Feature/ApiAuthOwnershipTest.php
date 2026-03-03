@@ -54,6 +54,35 @@ class ApiAuthOwnershipTest extends TestCase
             ->assertJsonPath('email', 'alice@example.com');
     }
 
+    public function test_auth_config_exposes_self_register_flag(): void
+    {
+        config(['auth.allow_self_register' => false]);
+
+        $this->getJson('/api/auth/config', $this->statefulSpaHeaders())
+            ->assertOk()
+            ->assertJsonPath('allow_self_register', false);
+    }
+
+    public function test_registration_returns_not_found_when_self_register_disabled(): void
+    {
+        config(['auth.allow_self_register' => false]);
+
+        $headers = $this->statefulSpaHeaders();
+        $this->get('/sanctum/csrf-cookie', $headers)->assertNoContent();
+
+        $response = $this->postJson('/api/auth/register', [
+            'name' => 'Blocked User',
+            'email' => 'blocked@example.com',
+            'password' => 'password123',
+            'password_confirmation' => 'password123',
+        ], $headers);
+
+        $response->assertNotFound();
+        $this->assertDatabaseMissing('users', [
+            'email' => 'blocked@example.com',
+        ]);
+    }
+
     public function test_protected_route_requires_authentication(): void
     {
         $this->getJson('/api/accounts')->assertUnauthorized();

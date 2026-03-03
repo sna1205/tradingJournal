@@ -19,6 +19,10 @@ interface AuthResponse {
   user: AuthUser
 }
 
+interface AuthConfigResponse {
+  allow_self_register?: boolean
+}
+
 interface LogoutAllResponse {
   message: string
   revoked_sessions: number
@@ -31,6 +35,7 @@ export const useAuthStore = defineStore('auth', () => {
   const user = ref<AuthUser | null>(null)
   const initialized = ref(false)
   const loading = ref(false)
+  const allowSelfRegister = ref(true)
 
   const isAuthenticated = computed(() => Boolean(user.value))
 
@@ -65,6 +70,7 @@ export const useAuthStore = defineStore('auth', () => {
 
     loading.value = true
     try {
+      await fetchAuthConfig()
       await fetchMe()
     } catch {
       await clearSession()
@@ -79,6 +85,17 @@ export const useAuthStore = defineStore('auth', () => {
     user.value = data
     await setUserScope(data)
     return data
+  }
+
+  async function fetchAuthConfig() {
+    try {
+      const { data } = await api.get<AuthConfigResponse>('/auth/config')
+      allowSelfRegister.value = Boolean(data?.allow_self_register)
+    } catch {
+      allowSelfRegister.value = true
+    }
+
+    return allowSelfRegister.value
   }
 
   async function login(email: string, password: string) {
@@ -96,6 +113,10 @@ export const useAuthStore = defineStore('auth', () => {
   }
 
   async function register(name: string, email: string, password: string, passwordConfirmation: string) {
+    if (!allowSelfRegister.value) {
+      throw new Error('Self-registration is disabled.')
+    }
+
     loading.value = true
     try {
       await ensureCsrfCookie()
@@ -144,8 +165,10 @@ export const useAuthStore = defineStore('auth', () => {
     user,
     initialized,
     loading,
+    allowSelfRegister,
     isAuthenticated,
     initialize,
+    fetchAuthConfig,
     fetchMe,
     login,
     register,
