@@ -232,6 +232,11 @@ const imageUploadError = ref('')
 const uploadingImages = ref(false)
 const deletingImageIds = ref<number[]>([])
 const uploadProgressByPendingId = ref<Record<string, number>>({})
+const postSaveQueue = reactive({
+  pendingPsychology: false,
+  pendingImages: false,
+  lastSavedTradeId: null as number | null,
+})
 const editLockState = ref<TradeEditLockState | null>(null)
 const staleWriteWarning = ref<{
   fingerprint: string
@@ -258,6 +263,10 @@ const totalImageSize = computed(() => {
   const pendingTotal = pendingImages.value.reduce((sum, image) => sum + image.file.size, 0)
   return existingTotal + pendingTotal
 })
+const hasPendingPostSave = computed(() =>
+  postSaveQueue.lastSavedTradeId !== null
+  && (postSaveQueue.pendingPsychology || postSaveQueue.pendingImages)
+)
 const selectedInstrument = computed<Instrument | null>(() => {
   const id = Number(form.instrument_id)
   if (!Number.isInteger(id) || id <= 0) return null
@@ -1337,7 +1346,7 @@ async function onSelectImageFiles(files: File[]) {
   pendingImages.value = [...pendingImages.value, ...queued]
 }
 
-async function uploadPendingImages(trade: Trade) {
+async function uploadPendingImages(tradeId: number) {
   if (pendingImages.value.length === 0) return
 
   uploadingImages.value = true
@@ -1355,7 +1364,7 @@ async function uploadPendingImages(trade: Trade) {
       }
 
       const uploaded = await tradeStore.uploadTradeImage(
-        trade.id,
+        tradeId,
         image.file,
         baseSort + index,
         {
@@ -1396,6 +1405,60 @@ function buildPsychologyPayload() {
     fomo_flag: psychology.fomo_flag,
     revenge_flag: psychology.revenge_flag,
     notes: psychology.notes.trim() ? psychology.notes.trim() : null,
+  }
+}
+
+function clearPostSaveQueue() {
+  postSaveQueue.pendingPsychology = false
+  postSaveQueue.pendingImages = false
+  postSaveQueue.lastSavedTradeId = null
+}
+
+function markPostSaveQueuePending() {
+  postSaveQueue.pendingPsychology = true
+  postSaveQueue.pendingImages = pendingImages.value.length > 0
+}
+
+async function runPostSaveStages(tradeId: number) {
+  if (postSaveQueue.pendingPsychology) {
+    await tradeStore.upsertTradePsychology(tradeId, buildPsychologyPayload())
+    postSaveQueue.pendingPsychology = false
+  }
+
+  if (postSaveQueue.pendingImages) {
+    if (pendingImages.value.length === 0) {
+      postSaveQueue.pendingImages = false
+      return
+    }
+
+    await uploadPendingImages(tradeId)
+    postSaveQueue.pendingImages = false
+  }
+}
+
+async function retryPostSave() {
+  const tradeIdToResume = postSaveQueue.lastSavedTradeId
+  if (tradeIdToResume === null || !hasPendingPostSave.value) return
+
+  try {
+    await runPostSaveStages(tradeIdToResume)
+    clearPostSaveQueue()
+    serverFieldErrors.value = {}
+    uiStore.toast({
+      type: 'success',
+      title: 'Post-save sync completed',
+      message: 'Psychology and image uploads have been completed.',
+    })
+    tradeChecklistStore.clearSubmitAttempted()
+    void router.push('/trades')
+  } catch (error) {
+    const normalized = normalizeApiError(error)
+    applyServerFieldErrors(normalized)
+    uiStore.toast({
+      type: 'info',
+      title: 'Trade saved partially',
+      message: `Trade #${tradeIdToResume} is already saved. Retry post-save to finish psychology/images.`,
+    })
   }
 }
 
@@ -1663,18 +1726,32 @@ async function submitForm() {
     }
 
     const hadPendingImages = pendingImages.value.length > 0
-    let savedTrade: Trade
+    let savedTradeId: number
+    let savedTradeUpdatedAt: string | null = null
 
     if (isEditMode.value && tradeId.value !== null) {
-      savedTrade = await tradeStore.updateTrade(tradeId.value, payload)
+      const savedTrade = await tradeStore.updateTrade(tradeId.value, payload)
+      savedTradeId = savedTrade.id
+      savedTradeUpdatedAt = normalizeUpdatedAt(savedTrade.updated_at)
+      markPostSaveQueuePending()
     } else {
-      savedTrade = await tradeStore.addTrade(payload)
+      if (postSaveQueue.lastSavedTradeId !== null) {
+        savedTradeId = postSaveQueue.lastSavedTradeId
+      } else {
+        const savedTrade = await tradeStore.addTrade(payload)
+        savedTradeId = savedTrade.id
+        savedTradeUpdatedAt = normalizeUpdatedAt(savedTrade.updated_at)
+        postSaveQueue.lastSavedTradeId = savedTradeId
+      }
+      markPostSaveQueuePending()
     }
 
-    await tradeStore.upsertTradePsychology(savedTrade.id, buildPsychologyPayload())
+    await runPostSaveStages(savedTradeId)
 
-    await uploadPendingImages(savedTrade)
-    loadedTradeUpdatedAt.value = normalizeUpdatedAt(savedTrade.updated_at)
+    if (savedTradeUpdatedAt !== null) {
+      loadedTradeUpdatedAt.value = savedTradeUpdatedAt
+    }
+    clearPostSaveQueue()
     clearStaleWriteWarning()
     serverFieldErrors.value = {}
 
@@ -1691,6 +1768,15 @@ async function submitForm() {
   } catch (error) {
     const normalized = normalizeApiError(error)
     applyServerFieldErrors(normalized)
+
+    if (!isEditMode.value && postSaveQueue.lastSavedTradeId !== null && hasPendingPostSave.value) {
+      uiStore.toast({
+        type: 'info',
+        title: 'Trade saved partially',
+        message: `Trade #${postSaveQueue.lastSavedTradeId} is saved. Retry post-save to finish psychology/images.`,
+      })
+      return
+    }
 
     if (isTradeRevisionConflict(error) && isEditMode.value && tradeId.value !== null) {
       clearPendingImages()
@@ -1720,6 +1806,10 @@ async function submitForm() {
 
 function handleExecuteClick() {
   if (isSubmittingDisabled.value) return
+  if (!isEditMode.value && hasPendingPostSave.value) {
+    void retryPostSave()
+    return
+  }
   void submitForm()
 }
 
@@ -1732,6 +1822,7 @@ async function loadTradeIfNeeded() {
     form.date = nowLocalDateTime()
     ensureDefaultExitLeg()
     setPsychologyFromPayload(null)
+    clearPostSaveQueue()
     return
   }
 
@@ -1743,6 +1834,7 @@ async function loadTradeIfNeeded() {
     clearStaleWriteWarning()
     serverFieldErrors.value = {}
     setFormFromTrade(data.trade, data.legs ?? [], data.psychology ?? null)
+    clearPostSaveQueue()
     existingImages.value = (data.images ?? [])
       .slice()
       .sort((a, b) => a.sort_order - b.sort_order || a.id - b.id)
@@ -2564,6 +2656,14 @@ async function loadImage(file: File): Promise<HTMLImageElement> {
         </section>
 
         <div class="execution-sticky-bar">
+          <span
+            v-if="hasPendingPostSave && postSaveQueue.lastSavedTradeId !== null"
+            class="text-xs text-amber-300"
+          >
+            Partial saved: Trade #{{ postSaveQueue.lastSavedTradeId }}.
+            <span v-if="postSaveQueue.pendingPsychology"> Psychology pending.</span>
+            <span v-if="postSaveQueue.pendingImages"> Images pending.</span>
+          </span>
           <span class="execution-status-chip" :class="riskStatusClass">{{ riskStatusLabel }}</span>
           <span v-if="hasAcceptedLocalRiskOverride" class="execution-status-chip is-blocked">
             Risk unverified (local-only)
@@ -2572,6 +2672,15 @@ async function loadImage(file: File): Promise<HTMLImageElement> {
             Soft mode: rules incomplete, execution allowed.
           </span>
           <button type="button" class="btn btn-ghost px-4 py-2 text-sm" @click="router.push('/trades')">Cancel</button>
+          <button
+            v-if="!isEditMode && hasPendingPostSave"
+            type="button"
+            class="btn btn-ghost px-4 py-2 text-sm"
+            :disabled="tradeStore.saving || uploadingImages"
+            @click="retryPostSave"
+          >
+            Retry Post-Save
+          </button>
           <button
             type="button"
             class="btn btn-primary px-4 py-2 text-sm"

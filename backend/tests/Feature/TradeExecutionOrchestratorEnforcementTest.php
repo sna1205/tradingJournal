@@ -200,6 +200,7 @@ class TradeExecutionOrchestratorEnforcementTest extends TestCase
         ])->postJson('/api/trades', $payload);
         $second->assertCreated();
         $second->assertHeader('X-Idempotent-Replay', 'true');
+        $second->assertStatus($first->getStatusCode());
 
         $this->assertSame((int) $first->json('id'), (int) $second->json('id'));
         $this->assertDatabaseCount('trades', 1);
