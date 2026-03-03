@@ -2,6 +2,7 @@ import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
 import api from '@/services/api'
 import { createRequestManager, isAbortError, stableSerialize } from '@/services/requestManager'
+import { useTradeStore } from '@/stores/tradeStore'
 import { normalizeApiError } from '@/utils/apiError'
 import type {
   Checklist,
@@ -100,6 +101,7 @@ type ServerReadinessReason = NonNullable<TradeChecklistResponsePayload['failing_
 
 export const useTradeRulesStore = defineStore('tradeRules', () => {
   const requestManager = createRequestManager()
+  const tradeStore = useTradeStore()
   const loading = ref(false)
   const saving = ref(false)
   const error = ref<string | null>(null)
@@ -323,15 +325,18 @@ export const useTradeRulesStore = defineStore('tradeRules', () => {
     saving.value = true
     error.value = null
     try {
-      const { data } = await api.put<TradeChecklistResponsePayload>(
+      const requestConfig = tradeStore.getIfMatchHeaders(activeTradeId)
+      const { data, headers } = await api.put<TradeChecklistResponsePayload>(
         `/trades/${activeTradeId}/rule-responses`,
         {
           account_id: contextAccountId.value,
           strategy_model_id: contextStrategyModelId.value,
           responses: buildWritePayload(),
-        }
+        },
+        requestConfig
       )
       applyPayload(data)
+      tradeStore.captureRevisionFromResponseHeaders(activeTradeId, headers)
     } catch (err) {
       error.value = normalizeApiError(err).message
     } finally {

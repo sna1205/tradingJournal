@@ -377,7 +377,7 @@ class TradeChecklistEnforcementTest extends TestCase
             'emotion' => 'calm',
         ]);
 
-        $response = $this->putJson("/api/trades/{$trade->id}/checklist-responses", [
+        $response = $this->withHeaders(['If-Match' => '1'])->putJson("/api/trades/{$trade->id}/checklist-responses", [
             'account_id' => (int) $accountB->id,
             'responses' => [
                 [

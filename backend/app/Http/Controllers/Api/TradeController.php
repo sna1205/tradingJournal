@@ -231,12 +231,14 @@ class TradeController extends Controller
         )->values();
         $trade->unsetRelation('images');
 
-        return response()->json([
-            'trade' => $trade,
-            'legs' => $trade->legs->values(),
-            'psychology' => $trade->psychology,
-            'images' => $images,
-        ]);
+        return response()
+            ->json([
+                'trade' => $trade,
+                'legs' => $trade->legs->values(),
+                'psychology' => $trade->psychology,
+                'images' => $images,
+            ])
+            ->header('ETag', $this->tradeExecutionOrchestrator->buildTradeEtag($trade));
     }
 
     public function update(Request $request, Trade $trade)

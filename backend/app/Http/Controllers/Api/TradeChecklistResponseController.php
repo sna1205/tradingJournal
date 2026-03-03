@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Api;
 
+use App\Http\Controllers\Api\Concerns\InteractsWithTradeRevision;
 use App\Http\Controllers\Controller;
 use App\Models\Account;
 use App\Models\Checklist;
@@ -9,12 +10,16 @@ use App\Models\Trade;
 use App\Services\ChecklistService;
 use App\Services\TradeChecklistService;
 use App\Support\ApiErrorResponder;
+use Illuminate\Http\Exceptions\HttpResponseException;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Validator;
 use Illuminate\Validation\ValidationException;
 
 class TradeChecklistResponseController extends Controller
 {
+    use InteractsWithTradeRevision;
+
     public function __construct(
         private readonly ChecklistService $checklistService,
         private readonly TradeChecklistService $tradeChecklistService
@@ -66,14 +71,16 @@ class TradeChecklistResponseController extends Controller
             false
         );
 
-        return response()->json(
-            $this->buildChecklistResponseForContext(
-                $userId,
-                $trade,
-                $requestedContext['account_id'],
-                $requestedContext['strategy_model_id']
+        return response()
+            ->json(
+                $this->buildChecklistResponseForContext(
+                    $userId,
+                    $trade,
+                    $requestedContext['account_id'],
+                    $requestedContext['strategy_model_id']
+                )
             )
-        );
+            ->header('ETag', $this->buildTradeEtag($trade));
     }
 
     /**
@@ -84,22 +91,6 @@ class TradeChecklistResponseController extends Controller
         $this->authorize('update', $trade);
         $userId = (int) $request->user()->id;
 
-        if ($this->hasFrozenExecutionSnapshot($trade)) {
-            return ApiErrorResponder::errorV2(
-                request: $request,
-                status: 422,
-                code: 'trade_checklist_snapshot_frozen',
-                message: 'Rule responses are frozen for this trade execution snapshot.',
-                details: [[
-                    'field' => 'checklist',
-                    'message' => 'Historical rule responses are immutable for frozen trades.',
-                ]],
-                legacyErrors: [
-                    'checklist' => ['Historical rule responses are immutable for frozen trades.'],
-                ]
-            );
-        }
-
         $validator = Validator::make($request->all(), [
             'account_id' => ['sometimes', 'nullable', 'integer', 'exists:accounts,id'],
             'strategy_model_id' => ['sometimes', 'nullable', 'integer', 'exists:strategy_models,id'],
@@ -109,48 +100,90 @@ class TradeChecklistResponseController extends Controller
         ]);
 
         $payload = $validator->validate();
+        $responsePayload = [];
+        $updatedTrade = null;
 
-        $requestedContext = $this->resolveRequestedContext(
+        DB::transaction(function () use (
             $request,
-            $userId,
             $trade,
-            true
-        );
-
-        $resolved = $this->checklistService->resolveApplicableChecklistWithContext(
             $userId,
-            $requestedContext['account_id'],
-            $requestedContext['strategy_model_id']
-        );
-        $checklist = $resolved['checklist'];
+            $payload,
+            &$responsePayload,
+            &$updatedTrade
+        ): void {
+            $lockedTrade = Trade::query()
+                ->whereKey((int) $trade->id)
+                ->lockForUpdate()
+                ->firstOrFail();
 
-        if ($checklist === null) {
-            $this->checklistService->syncChecklistIncompleteFlag($trade, false);
+            $this->assertTradeWritePrecondition($request, $lockedTrade);
 
-            return response()->json(
-                $this->blankResponsePayload(
+            if ($this->hasFrozenExecutionSnapshot($lockedTrade)) {
+                throw new HttpResponseException(
+                    ApiErrorResponder::errorV2(
+                        request: $request,
+                        status: 422,
+                        code: 'trade_checklist_snapshot_frozen',
+                        message: 'Rule responses are frozen for this trade execution snapshot.',
+                        details: [[
+                            'field' => 'checklist',
+                            'message' => 'Historical rule responses are immutable for frozen trades.',
+                        ]],
+                        legacyErrors: [
+                            'checklist' => ['Historical rule responses are immutable for frozen trades.'],
+                        ]
+                    )
+                );
+            }
+
+            $requestedContext = $this->resolveRequestedContext(
+                $request,
+                $userId,
+                $lockedTrade,
+                true
+            );
+
+            $resolved = $this->checklistService->resolveApplicableChecklistWithContext(
+                $userId,
+                $requestedContext['account_id'],
+                $requestedContext['strategy_model_id']
+            );
+            $checklist = $resolved['checklist'];
+
+            if ($checklist === null) {
+                $this->checklistService->syncChecklistIncompleteFlag($lockedTrade, false);
+                $responsePayload = $this->blankResponsePayload(
                     $requestedContext['account_id'],
                     $requestedContext['strategy_model_id'],
-                    (int) $trade->id
-                )
-            );
-        }
+                    (int) $lockedTrade->id
+                );
+                $updatedTrade = $this->bumpTradeRevision($lockedTrade);
+                return;
+            }
 
-        $result = $this->tradeChecklistService->upsertResponses($trade, $checklist, $payload['responses']);
-        $this->checklistService->syncChecklistIncompleteFlag($trade, ! $result['readiness']['ready']);
+            $result = $this->tradeChecklistService->upsertResponses($lockedTrade, $checklist, $payload['responses']);
+            $this->checklistService->syncChecklistIncompleteFlag($lockedTrade, ! $result['readiness']['ready']);
 
-        return response()->json([
-            ...$result,
-            'context' => $this->buildContextPayload(
-                $requestedContext['account_id'],
-                $requestedContext['strategy_model_id'],
-                $resolved['resolved_scope'],
-                (int) $checklist->id,
-                $resolved['resolved_account_id'],
-                $resolved['resolved_strategy_model_id'],
-                (int) $trade->id
-            ),
-        ]);
+            $responsePayload = [
+                ...$result,
+                'context' => $this->buildContextPayload(
+                    $requestedContext['account_id'],
+                    $requestedContext['strategy_model_id'],
+                    $resolved['resolved_scope'],
+                    (int) $checklist->id,
+                    $resolved['resolved_account_id'],
+                    $resolved['resolved_strategy_model_id'],
+                    (int) $lockedTrade->id
+                ),
+            ];
+            $updatedTrade = $this->bumpTradeRevision($lockedTrade);
+        });
+
+        abort_if(! $updatedTrade instanceof Trade, 500, 'Checklist write completed without refreshed trade revision.');
+
+        return response()
+            ->json($responsePayload)
+            ->header('ETag', $this->buildTradeEtag($updatedTrade));
     }
 
     private function buildChecklistResponseForContext(

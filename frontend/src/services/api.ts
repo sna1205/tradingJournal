@@ -57,6 +57,8 @@ api.interceptors.request.use(async (config: InternalAxiosRequestConfig) => {
     config.headers = headers
   }
 
+  attachIfMatchHeader(config)
+
   return config
 })
 
@@ -92,6 +94,46 @@ function requiresIdempotencyKey(config: InternalAxiosRequestConfig): boolean {
   return path === '/trades'
     || /^\/trades\/\d+\/legs$/.test(path)
     || /^\/trades\/\d+\/images$/.test(path)
+}
+
+function attachIfMatchHeader(config: InternalAxiosRequestConfig): void {
+  if (!requiresIfMatch(config)) {
+    return
+  }
+
+  const headers = AxiosHeaders.from(config.headers ?? {})
+  if (headers.has('If-Match')) {
+    config.headers = headers
+    return
+  }
+
+  const revisionRaw = headers.get('X-Trade-Revision')
+  const revisionText = typeof revisionRaw === 'string' ? revisionRaw.trim() : ''
+  const revision = Number.parseInt(revisionText, 10)
+  if (Number.isInteger(revision) && revision > 0) {
+    headers.set('If-Match', String(revision))
+  }
+  headers.delete('X-Trade-Revision')
+  config.headers = headers
+}
+
+function requiresIfMatch(config: InternalAxiosRequestConfig): boolean {
+  const method = String(config.method ?? 'get').toLowerCase()
+  const path = normalizeRequestPath(config.url)
+
+  if (method === 'put' && /^\/trades\/\d+\/(psychology|checklist-responses|rule-responses)$/.test(path)) {
+    return true
+  }
+
+  if (method === 'post' && /^\/trades\/\d+\/images$/.test(path)) {
+    return true
+  }
+
+  if ((method === 'put' || method === 'delete') && /^\/trade-images\/\d+$/.test(path)) {
+    return true
+  }
+
+  return false
 }
 
 function normalizeRequestPath(rawUrl?: string): string {

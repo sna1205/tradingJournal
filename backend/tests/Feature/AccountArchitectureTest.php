@@ -398,7 +398,7 @@ class AccountArchitectureTest extends TestCase
 
         $file = UploadedFile::fake()->create('chart.jpg', 250, 'image/jpeg');
 
-        $uploadResponse = $this->postJson("/api/trades/{$trade->id}/images", [
+        $uploadResponse = $this->withHeaders(['If-Match' => '1'])->postJson("/api/trades/{$trade->id}/images", [
             'image' => $file,
         ]);
         $uploadResponse->assertCreated();
@@ -438,12 +438,12 @@ class AccountArchitectureTest extends TestCase
             'account_id' => $account->id,
         ]);
 
-        $uploadResponse = $this->postJson("/api/trades/{$trade->id}/images", [
+        $uploadResponse = $this->withHeaders(['If-Match' => '1'])->postJson("/api/trades/{$trade->id}/images", [
             'image' => UploadedFile::fake()->create('delete-me.png', 220, 'image/png'),
         ])->assertCreated();
 
         $imageId = (int) $uploadResponse->json('id');
-        $this->deleteJson("/api/trade-images/{$imageId}")->assertNoContent();
+        $this->withHeaders(['If-Match' => '2'])->deleteJson("/api/trade-images/{$imageId}")->assertNoContent();
 
         $detailsResponse = $this->getJson("/api/trades/{$trade->id}");
         $detailsResponse->assertOk();

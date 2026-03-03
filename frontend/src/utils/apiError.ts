@@ -92,7 +92,7 @@ export function normalizeApiError(error: unknown): NormalizedError {
     meta,
     requestId: toText(errorEnvelope?.requestId),
     isValidation: status === 422,
-    isConflict: status === 409,
+    isConflict: status === 409 || status === 412,
     isNetwork: false,
     failingRuleIds: normalizeFailingRuleIds(data),
   }
@@ -233,6 +233,7 @@ function firstText(...values: Array<string | null | undefined>): string {
 function defaultCodeByStatus(status: number | null): string {
   if (status === 422) return 'validation_failed'
   if (status === 409) return 'conflict'
+  if (status === 412) return 'precondition_failed'
   if (status === 401) return 'unauthorized'
   return 'request_failed'
 }
@@ -240,6 +241,7 @@ function defaultCodeByStatus(status: number | null): string {
 function defaultMessageByStatus(status: number | null): string {
   if (status === 422) return 'Validation failed.'
   if (status === 409) return 'Request conflict.'
+  if (status === 412) return 'Precondition failed.'
   if (status === 401) return 'Unauthorized.'
   return 'Request failed.'
 }

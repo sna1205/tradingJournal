@@ -1268,7 +1268,7 @@ async function removeExistingImage(imageId: number) {
 
   deletingImageIds.value = [...deletingImageIds.value, imageId]
   try {
-    await tradeStore.deleteTradeImage(imageId)
+    await tradeStore.deleteTradeImage(imageId, { tradeId: tradeId.value ?? undefined })
     existingImages.value = existingImages.value.filter((image) => image.id !== imageId)
   } catch (error) {
     uiStore.toast({

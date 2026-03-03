@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Api;
 
+use App\Http\Controllers\Api\Concerns\InteractsWithTradeRevision;
 use App\Http\Controllers\Controller;
 use App\Models\Trade;
 use App\Models\TradeImage;
@@ -16,6 +17,8 @@ use Throwable;
 
 class TradeImageController extends Controller
 {
+    use InteractsWithTradeRevision;
+
     private const CONTEXT_TAGS = [
         'pre_entry',
         'entry',
@@ -57,11 +60,13 @@ class TradeImageController extends Controller
         $originalPath = "trades/{$trade->id}/original/{$fileName}";
         $thumbnailPath = "trades/{$trade->id}/thumbs/{$fileName}";
         $image = null;
+        $updatedTrade = null;
         $storedOriginal = false;
         $storedThumbnail = false;
 
         try {
             DB::transaction(function () use (
+                $request,
                 $trade,
                 $file,
                 $incomingBytes,
@@ -72,6 +77,7 @@ class TradeImageController extends Controller
                 $extension,
                 $validated,
                 &$image,
+                &$updatedTrade,
                 &$storedOriginal,
                 &$storedThumbnail
             ): void {
@@ -80,6 +86,7 @@ class TradeImageController extends Controller
                     ->whereKey((int) $trade->id)
                     ->lockForUpdate()
                     ->firstOrFail();
+                $this->assertTradeWritePrecondition($request, $lockedTrade);
 
                 $existingCount = (int) $lockedTrade->images()->count();
                 if ($existingCount >= self::MAX_IMAGES_PER_TRADE) {
@@ -119,6 +126,8 @@ class TradeImageController extends Controller
                     'timeframe' => $validated['timeframe'] ?? null,
                     'annotation_notes' => $validated['annotation_notes'] ?? null,
                 ]);
+
+                $updatedTrade = $this->bumpTradeRevision($lockedTrade);
             });
         } catch (ValidationException $exception) {
             if ($storedOriginal || $storedThumbnail) {
@@ -133,7 +142,10 @@ class TradeImageController extends Controller
         }
 
         abort_if(!$image instanceof TradeImage, 500, 'Image mutation completed without persisted image row.');
-        return response()->json($this->serializeTradeImage($image, $disk), 201);
+        abort_if(! $updatedTrade instanceof Trade, 500, 'Image mutation completed without refreshed trade revision.');
+        return response()
+            ->json($this->serializeTradeImage($image, $disk), 201)
+            ->header('ETag', $this->buildTradeEtag($updatedTrade));
     }
 
     /**
@@ -151,37 +163,80 @@ class TradeImageController extends Controller
             'sort_order' => ['nullable', 'integer', 'min:0'],
         ])->validate();
 
-        $tradeImage->fill([
-            'context_tag' => $validated['context_tag'] ?? $tradeImage->context_tag,
-            'timeframe' => $validated['timeframe'] ?? $tradeImage->timeframe,
-            'annotation_notes' => array_key_exists('annotation_notes', $validated)
-                ? $validated['annotation_notes']
-                : $tradeImage->annotation_notes,
-            'sort_order' => array_key_exists('sort_order', $validated)
-                ? (int) $validated['sort_order']
-                : (int) $tradeImage->sort_order,
-        ]);
-        $tradeImage->save();
+        $updatedImage = null;
+        $updatedTrade = null;
 
+        DB::transaction(function () use ($request, $tradeImage, $validated, &$updatedImage, &$updatedTrade): void {
+            $lockedImage = TradeImage::query()
+                ->whereKey((int) $tradeImage->id)
+                ->lockForUpdate()
+                ->firstOrFail();
+            $lockedTrade = Trade::query()
+                ->whereKey((int) $lockedImage->trade_id)
+                ->lockForUpdate()
+                ->firstOrFail();
+
+            $this->assertTradeWritePrecondition($request, $lockedTrade);
+
+            $lockedImage->fill([
+                'context_tag' => $validated['context_tag'] ?? $lockedImage->context_tag,
+                'timeframe' => $validated['timeframe'] ?? $lockedImage->timeframe,
+                'annotation_notes' => array_key_exists('annotation_notes', $validated)
+                    ? $validated['annotation_notes']
+                    : $lockedImage->annotation_notes,
+                'sort_order' => array_key_exists('sort_order', $validated)
+                    ? (int) $validated['sort_order']
+                    : (int) $lockedImage->sort_order,
+            ]);
+            $lockedImage->save();
+
+            $updatedImage = $lockedImage->fresh();
+            $updatedTrade = $this->bumpTradeRevision($lockedTrade);
+        });
+
+        abort_if(! $updatedImage instanceof TradeImage, 500, 'Image update completed without persisted image row.');
+        abort_if(! $updatedTrade instanceof Trade, 500, 'Image update completed without refreshed trade revision.');
         $disk = (string) config('filesystems.trade_images_disk', 'public');
-        return response()->json($this->serializeTradeImage($tradeImage, $disk));
+        return response()
+            ->json($this->serializeTradeImage($updatedImage, $disk))
+            ->header('ETag', $this->buildTradeEtag($updatedTrade));
     }
 
-    public function destroy(TradeImage $tradeImage)
+    public function destroy(Request $request, TradeImage $tradeImage)
     {
         $trade = $tradeImage->trade()->firstOrFail();
         $this->authorize('delete', $trade);
 
         $disk = (string) config('filesystems.trade_images_disk', 'public');
+        $pathsToDelete = [];
+        $updatedTrade = null;
 
-        Storage::disk($disk)->delete([
-            $tradeImage->image_url,
-            $tradeImage->thumbnail_url,
-        ]);
+        DB::transaction(function () use ($request, $tradeImage, &$pathsToDelete, &$updatedTrade): void {
+            $lockedImage = TradeImage::query()
+                ->whereKey((int) $tradeImage->id)
+                ->lockForUpdate()
+                ->firstOrFail();
+            $lockedTrade = Trade::query()
+                ->whereKey((int) $lockedImage->trade_id)
+                ->lockForUpdate()
+                ->firstOrFail();
 
-        $tradeImage->delete();
+            $this->assertTradeWritePrecondition($request, $lockedTrade);
 
-        return response()->noContent();
+            $pathsToDelete = [
+                $lockedImage->image_url,
+                $lockedImage->thumbnail_url,
+            ];
+            $lockedImage->delete();
+            $updatedTrade = $this->bumpTradeRevision($lockedTrade);
+        });
+
+        Storage::disk($disk)->delete($pathsToDelete);
+
+        abort_if(! $updatedTrade instanceof Trade, 500, 'Image delete completed without refreshed trade revision.');
+        return response()
+            ->noContent()
+            ->header('ETag', $this->buildTradeEtag($updatedTrade));
     }
 
     private function normalizedExtension(UploadedFile $file): string

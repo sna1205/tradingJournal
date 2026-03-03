@@ -221,6 +221,7 @@ export const useTradeStore = defineStore('trades', () => {
   const includeDraftsUnverified = ref(readTradeQualityPreference())
   const tradeRevisionById = ref<Record<number, number>>({})
   const tradeIdByLegId = ref<Record<number, number>>({})
+  const tradeIdByImageId = ref<Record<number, number>>({})
   const requestManager = createRequestManager()
   let fetchTradesRequestVersion = 0
 
@@ -252,6 +253,10 @@ export const useTradeStore = defineStore('trades', () => {
       if (mappedTradeId !== normalizedTradeId) continue
       delete tradeIdByLegId.value[Number(legId)]
     }
+    for (const [imageId, mappedTradeId] of Object.entries(tradeIdByImageId.value)) {
+      if (mappedTradeId !== normalizedTradeId) continue
+      delete tradeIdByImageId.value[Number(imageId)]
+    }
   }
 
   function indexTradeLegs(tradeId: number, legs?: TradeLeg[] | null): void {
@@ -267,15 +272,30 @@ export const useTradeStore = defineStore('trades', () => {
     }
   }
 
+  function indexTradeImages(tradeId: number, images?: TradeImage[] | null): void {
+    const normalizedTradeId = readPositiveInt(tradeId)
+    if (normalizedTradeId === null || !Array.isArray(images)) {
+      return
+    }
+
+    for (const image of images) {
+      const imageId = readPositiveInt(image?.id)
+      if (imageId === null) continue
+      tradeIdByImageId.value[imageId] = normalizedTradeId
+    }
+  }
+
   function captureTradeConcurrencyState(trade: Trade | null | undefined): void {
     if (!trade) return
     setTradeRevision(trade.id, trade.revision)
     indexTradeLegs(trade.id, trade.legs)
+    indexTradeImages(trade.id, trade.images)
   }
 
   function captureTradeDetailsConcurrencyState(payload: TradeDetailsResponse): void {
     captureTradeConcurrencyState(payload.trade)
     indexTradeLegs(payload.trade.id, payload.legs ?? payload.trade.legs ?? [])
+    indexTradeImages(payload.trade.id, payload.images ?? payload.trade.images ?? [])
   }
 
   function resolveTradeIdForLeg(legId: number): number | null {
@@ -293,6 +313,28 @@ export const useTradeStore = defineStore('trades', () => {
       if (!Array.isArray(trade.legs)) continue
       if (trade.legs.some((leg) => readPositiveInt(leg.id) === normalizedLegId)) {
         tradeIdByLegId.value[normalizedLegId] = trade.id
+        return trade.id
+      }
+    }
+
+    return null
+  }
+
+  function resolveTradeIdForImage(imageId: number): number | null {
+    const normalizedImageId = readPositiveInt(imageId)
+    if (normalizedImageId === null) {
+      return null
+    }
+
+    const mapped = readPositiveInt(tradeIdByImageId.value[normalizedImageId])
+    if (mapped !== null) {
+      return mapped
+    }
+
+    for (const trade of trades.value) {
+      if (!Array.isArray(trade.images)) continue
+      if (trade.images.some((image) => readPositiveInt(image.id) === normalizedImageId)) {
+        tradeIdByImageId.value[normalizedImageId] = trade.id
         return trade.id
       }
     }
@@ -985,8 +1027,9 @@ export const useTradeStore = defineStore('trades', () => {
 
   async function fetchTradePsychology(tradeId: number): Promise<TradePsychology> {
     try {
-      const { data } = await api.get<TradePsychology>(`/trades/${tradeId}/psychology`)
+      const { data, headers } = await api.get<TradePsychology>(`/trades/${tradeId}/psychology`)
       syncStatusStore.markServerHealthy()
+      captureRevisionFromResponseHeaders(tradeId, headers)
       return data
     } catch (error) {
       throw normalizeApiError(error)
@@ -995,11 +1038,19 @@ export const useTradeStore = defineStore('trades', () => {
 
   async function upsertTradePsychology(tradeId: number, payload: Partial<TradePsychology>): Promise<TradePsychology> {
     try {
-      const { data } = await api.put<TradePsychology>(`/trades/${tradeId}/psychology`, payload)
+      const { data, headers } = await api.put<TradePsychology>(
+        `/trades/${tradeId}/psychology`,
+        payload,
+        getIfMatchHeaders(tradeId)
+      )
       syncStatusStore.markServerHealthy()
+      captureRevisionFromResponseHeaders(tradeId, headers)
       void analyticsStore.fetchAnalytics().catch(() => undefined)
       return data
     } catch (error) {
+      if (isTradeConflictError(error)) {
+        await refreshTradeAfterConflict(tradeId)
+      }
       throw normalizeApiError(error)
     }
   }
@@ -1115,8 +1166,11 @@ export const useTradeStore = defineStore('trades', () => {
     }
 
     try {
-      const { data } = await api.post<TradeImage>(`/trades/${tradeId}/images`, formData, {
+      const requestConfig = getIfMatchHeaders(tradeId)
+      const { data, headers } = await api.post<TradeImage>(`/trades/${tradeId}/images`, formData, {
+        ...requestConfig,
         headers: {
+          ...requestConfig.headers,
           'Content-Type': 'multipart/form-data',
         },
         onUploadProgress: (progressEvent) => {
@@ -1128,9 +1182,15 @@ export const useTradeStore = defineStore('trades', () => {
         },
       })
       syncStatusStore.markServerHealthy()
+      captureRevisionFromResponseHeaders(tradeId, headers)
+      indexTradeImages(tradeId, [data])
 
       return data
     } catch (error) {
+      if (isTradeConflictError(error)) {
+        await refreshTradeAfterConflict(tradeId)
+        throw normalizeApiError(error)
+      }
       if (!shouldUseLocalFallback(error)) {
         throw normalizeApiError(error)
       }
@@ -1141,11 +1201,22 @@ export const useTradeStore = defineStore('trades', () => {
     }
   }
 
-  async function deleteTradeImage(imageId: number) {
+  async function deleteTradeImage(imageId: number, options?: { tradeId?: number }) {
+    const tradeId = readPositiveInt(options?.tradeId) ?? resolveTradeIdForImage(imageId)
+    if (tradeId === null) {
+      throw new Error('Trade context unavailable for this image. Reload latest trade data and try again.')
+    }
+
     try {
-      await api.delete(`/trade-images/${imageId}`)
+      const { headers } = await api.delete(`/trade-images/${imageId}`, getIfMatchHeaders(tradeId))
       syncStatusStore.markServerHealthy()
+      delete tradeIdByImageId.value[imageId]
+      captureRevisionFromResponseHeaders(tradeId, headers)
     } catch (error) {
+      if (isTradeConflictError(error)) {
+        await refreshTradeAfterConflict(tradeId)
+        throw normalizeApiError(error)
+      }
       if (!shouldUseLocalFallback(error)) {
         throw normalizeApiError(error)
       }
@@ -1161,13 +1232,28 @@ export const useTradeStore = defineStore('trades', () => {
       timeframe?: string | null
       annotation_notes?: string | null
       sort_order?: number
-    }
+    },
+    options?: { tradeId?: number }
   ): Promise<TradeImage> {
+    const tradeId = readPositiveInt(options?.tradeId) ?? resolveTradeIdForImage(imageId)
+    if (tradeId === null) {
+      throw new Error('Trade context unavailable for this image. Reload latest trade data and try again.')
+    }
+
     try {
-      const { data } = await api.put<TradeImage>(`/trade-images/${imageId}`, payload)
+      const { data, headers } = await api.put<TradeImage>(
+        `/trade-images/${imageId}`,
+        payload,
+        getIfMatchHeaders(tradeId)
+      )
       syncStatusStore.markServerHealthy()
+      captureRevisionFromResponseHeaders(tradeId, headers)
+      indexTradeImages(tradeId, [data])
       return data
     } catch (error) {
+      if (isTradeConflictError(error)) {
+        await refreshTradeAfterConflict(tradeId)
+      }
       throw normalizeApiError(error)
     }
   }
@@ -1194,6 +1280,8 @@ export const useTradeStore = defineStore('trades', () => {
     saving,
     error,
     hasFilters,
+    getIfMatchHeaders,
+    captureRevisionFromResponseHeaders,
     isSynced,
     isVerified,
     isTradeQualityIncluded,
