@@ -12,6 +12,7 @@ import type {
 const ACCOUNTS_KEY = 'tj_local_accounts_v1'
 const TRADES_KEY = 'tj_local_trades_v1'
 const MISSED_TRADES_KEY = 'tj_local_missed_trades_v1'
+const OFFLINE_MODE_KEY = 'tj_offline_mode_sensitive_persistence_v1'
 
 export interface AccountPayloadLike {
   name: string
@@ -49,6 +50,28 @@ export interface MissedTradePayloadLike {
 
 export function shouldUseLocalFallback(error: unknown): boolean {
   return isConnectivityFailure(error)
+}
+
+export function isOfflineModeEnabled(): boolean {
+  try {
+    return localStorage.getItem(OFFLINE_MODE_KEY) === '1'
+  } catch {
+    return false
+  }
+}
+
+export async function setOfflineModeEnabled(enabled: boolean): Promise<boolean> {
+  const next = Boolean(enabled)
+  try {
+    if (next) {
+      localStorage.setItem(OFFLINE_MODE_KEY, '1')
+    } else {
+      localStorage.removeItem(OFFLINE_MODE_KEY)
+    }
+  } catch {
+    // Ignore local storage write failures.
+  }
+  return next
 }
 
 export function fetchLocalAccounts(params?: { is_active?: boolean }): Account[] {

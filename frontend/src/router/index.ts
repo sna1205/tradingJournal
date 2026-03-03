@@ -10,6 +10,8 @@ const Milestones = () => import('@/pages/Milestones.vue')
 const Accounts = () => import('@/pages/Accounts.vue')
 const PreTradeCheckPage = () => import('@/pages/PreTradeCheckPage.vue')
 const LotsCalculatorPage = () => import('@/pages/LotsCalculatorPage.vue')
+const SettingsPage = () => import('@/pages/SettingsPage.vue')
+const TradingRulesPage = () => import('@/pages/TradingRulesPage.vue')
 const ChecklistBuilderPage = () => import('@/pages/ChecklistBuilderPage.vue')
 const LoginPage = () => import('@/pages/LoginPage.vue')
 const UiRegressionPage = () => import('@/pages/UiRegressionPage.vue')
@@ -73,6 +75,16 @@ const router = createRouter({
       path: '/tools/lots-calculate',
       name: 'tools-lots-calculate',
       component: LotsCalculatorPage,
+    },
+    {
+      path: '/settings',
+      name: 'settings',
+      component: SettingsPage,
+    },
+    {
+      path: '/settings/rules',
+      name: 'settings-rules',
+      component: TradingRulesPage,
     },
     {
       path: '/settings/checklists',
