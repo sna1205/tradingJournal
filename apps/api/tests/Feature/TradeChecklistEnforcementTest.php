@@ -253,6 +253,55 @@ class TradeChecklistEnforcementTest extends TestCase
         $response->assertJsonPath('context.resolved_checklist_id', (int) $secondStrategyChecklist->id);
     }
 
+    public function test_trade_rules_preview_evaluates_draft_responses_and_precheck_metrics(): void
+    {
+        $account = $this->createOwnedAccount();
+        $checklist = $this->createChecklistWithRequiredRule(
+            'account',
+            (int) $account->id,
+            null,
+            'strict',
+            'number',
+            [
+                'auto_metric' => 'risk_percent',
+                'comparator' => '<=',
+                'threshold' => 1.0,
+            ]
+        );
+        $requiredItem = $checklist->items()->firstOrFail();
+
+        $passResponse = $this->postJson('/api/trade-rules/preview', [
+            'account_id' => (int) $account->id,
+            'responses' => [[
+                'checklist_item_id' => (int) $requiredItem->id,
+                'value' => null,
+            ]],
+            'precheck_metrics' => [
+                'risk_percent' => 0.8,
+            ],
+        ]);
+
+        $passResponse->assertOk();
+        $passResponse->assertJsonPath('readiness.ready', true);
+        $passResponse->assertJsonPath('failing_rules', []);
+
+        $failResponse = $this->postJson('/api/trade-rules/preview', [
+            'account_id' => (int) $account->id,
+            'responses' => [[
+                'checklist_item_id' => (int) $requiredItem->id,
+                'value' => null,
+            ]],
+            'precheck_metrics' => [],
+        ]);
+
+        $failResponse->assertOk();
+        $failResponse->assertJsonPath('readiness.ready', false);
+        $this->assertStringContainsString(
+            'Missing auto metric "risk_percent"',
+            (string) $failResponse->json('failing_rules.0.reason')
+        );
+    }
+
     public function test_strict_auto_metric_rule_failure_returns_422_and_does_not_create_trade(): void
     {
         $account = $this->createOwnedAccount();

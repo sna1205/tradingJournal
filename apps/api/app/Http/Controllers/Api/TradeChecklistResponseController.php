@@ -59,6 +59,58 @@ class TradeChecklistResponseController extends Controller
         );
     }
 
+    public function preview(Request $request)
+    {
+        $userId = (int) $request->user()->id;
+
+        $validator = Validator::make($request->all(), [
+            'trade_id' => ['sometimes', 'nullable', 'integer', 'exists:trades,id'],
+            'account_id' => ['sometimes', 'nullable', 'integer', 'exists:accounts,id'],
+            'strategy_model_id' => ['sometimes', 'nullable', 'integer', 'exists:strategy_models,id'],
+            'responses' => ['sometimes', 'array'],
+            'responses.*.checklist_item_id' => ['required_with:responses', 'integer', 'exists:checklist_items,id'],
+            'responses.*.value' => ['nullable'],
+            'precheck_metrics' => ['sometimes', 'array'],
+        ]);
+        $payload = $validator->validate();
+
+        $trade = null;
+        if (array_key_exists('trade_id', $payload) && $payload['trade_id'] !== null) {
+            $trade = Trade::query()->findOrFail((int) $payload['trade_id']);
+            $this->authorize('view', $trade);
+        }
+
+        $requestedContext = $this->resolveRequestedContext(
+            $request,
+            $userId,
+            $trade,
+            true
+        );
+
+        $responses = collect($payload['responses'] ?? [])
+            ->map(fn (array $row): array => [
+                'checklist_item_id' => (int) ($row['checklist_item_id'] ?? 0),
+                'value' => $row['value'] ?? null,
+            ])
+            ->filter(fn (array $row): bool => $row['checklist_item_id'] > 0)
+            ->values()
+            ->all();
+        $precheckMetrics = is_array($payload['precheck_metrics'] ?? null)
+            ? $payload['precheck_metrics']
+            : [];
+
+        return response()->json(
+            $this->buildChecklistPreviewResponseForContext(
+                $userId,
+                $trade,
+                $requestedContext['account_id'],
+                $requestedContext['strategy_model_id'],
+                $responses,
+                $precheckMetrics
+            )
+        );
+    }
+
     public function show(Request $request, Trade $trade)
     {
         $this->authorize('view', $trade);
@@ -211,6 +263,60 @@ class TradeChecklistResponseController extends Controller
         $state = $trade !== null
             ? $this->tradeChecklistService->buildTradeChecklistState($trade, $checklist, true)
             : $this->tradeChecklistService->buildDraftChecklistState($checklist, [], true);
+
+        return [
+            ...$state,
+            'context' => $this->buildContextPayload(
+                $accountId,
+                $strategyModelId,
+                $resolved['resolved_scope'],
+                (int) $checklist->id,
+                $resolved['resolved_account_id'],
+                $resolved['resolved_strategy_model_id'],
+                $tradeId
+            ),
+            'execution_snapshot' => $this->buildExecutionSnapshotPayload(
+                frozen: false,
+                legacyUnfrozen: $trade !== null,
+                trade: $trade
+            ),
+        ];
+    }
+
+    /**
+     * @param array<int,array{checklist_item_id:int,value:mixed}> $responses
+     * @param array<string,mixed> $precheckMetrics
+     */
+    private function buildChecklistPreviewResponseForContext(
+        int $userId,
+        ?Trade $trade,
+        ?int $accountId,
+        ?int $strategyModelId,
+        array $responses,
+        array $precheckMetrics
+    ): array {
+        if ($trade !== null && $this->hasFrozenExecutionSnapshot($trade)) {
+            return $this->buildFrozenTradeChecklistResponse($trade, $accountId, $strategyModelId);
+        }
+
+        $resolved = $this->checklistService->resolveApplicableChecklistWithContext(
+            $userId,
+            $accountId,
+            $strategyModelId
+        );
+        $checklist = $resolved['checklist'];
+        $tradeId = $trade !== null ? (int) $trade->id : null;
+
+        if ($checklist === null) {
+            return $this->blankResponsePayload($accountId, $strategyModelId, $tradeId, $trade !== null);
+        }
+
+        $state = $this->tradeChecklistService->buildDraftChecklistState(
+            $checklist,
+            $responses,
+            true,
+            $precheckMetrics
+        );
 
         return [
             ...$state,

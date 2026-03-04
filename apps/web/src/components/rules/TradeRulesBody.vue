@@ -71,10 +71,15 @@ const allItems = computed(() =>
 
 const checkedCount = computed(() => allItems.value.filter((item) => item.response.is_completed).length)
 const totalCount = computed(() => allItems.value.length)
-const resolvedServerReadiness = computed(() => props.serverReadiness ?? props.readiness)
+const resolvedServerReadiness = computed(() => props.readiness)
 const serverStatusLabel = computed(() => resolvedServerReadiness.value.ready ? 'Ready' : 'Not Ready')
 const serverBlockingReasons = computed(() =>
-  (props.serverReadinessReasons ?? []).filter((entry) => entry.reason || entry.title)
+  props.readiness.missing_required.map((entry) => ({
+    checklist_item_id: entry.checklist_item_id,
+    title: entry.title,
+    category: entry.category,
+    reason: entry.reason ?? 'Rule requirement not met.',
+  }))
 )
 const mismatchReasons = computed(() => serverBlockingReasons.value)
 const snapshotFailedRows = computed(() => {
@@ -122,6 +127,85 @@ function dropdownOptions(item: TradeChecklistItemWithResponse): string[] {
   return config.options.map((entry) => String(entry)).filter((entry) => entry.trim().length > 0)
 }
 
+function toFiniteNumber(value: unknown): number | null {
+  if (typeof value === 'number' && Number.isFinite(value)) return value
+  if (typeof value === 'string' && value.trim() !== '') {
+    const parsed = Number(value)
+    return Number.isFinite(parsed) ? parsed : null
+  }
+  return null
+}
+
+function clampNumber(value: number, min: number | null, max: number | null): number {
+  let next = value
+  if (min !== null && next < min) next = min
+  if (max !== null && next > max) next = max
+  return next
+}
+
+function numericStepFor(item: TradeChecklistItemWithResponse): number {
+  const config = item.config as { step?: unknown }
+  const parsed = toFiniteNumber(config.step)
+  if (parsed !== null && parsed > 0) return parsed
+  return item.type === 'scale' ? 1 : 0.1
+}
+
+function defaultNumericToggleValue(item: TradeChecklistItemWithResponse): number {
+  const config = item.config as Record<string, unknown>
+  const min = toFiniteNumber(config.min)
+  const max = toFiniteNumber(config.max)
+  const step = numericStepFor(item)
+  const explicitRule = typeof config.rule === 'object' && config.rule !== null
+    ? (config.rule as Record<string, unknown>)
+    : null
+
+  let comparator = ''
+  let threshold: unknown = null
+  let thresholdMin: unknown = null
+  let thresholdMax: unknown = null
+
+  if (explicitRule) {
+    comparator = String(explicitRule.operator ?? '').trim()
+    threshold = explicitRule.threshold
+  } else {
+    comparator = String(config.comparator ?? '').trim()
+    threshold = config.threshold
+    thresholdMin = config.threshold_min
+    thresholdMax = config.threshold_max
+  }
+
+  const numericThreshold = toFiniteNumber(threshold)
+  const numericThresholdMin = toFiniteNumber(thresholdMin)
+  const numericThresholdMax = toFiniteNumber(thresholdMax)
+
+  let candidate: number | null = null
+  if (comparator === '>=' || comparator === '<=' || comparator === 'equals' || comparator === '==' || comparator === '=') {
+    candidate = numericThreshold
+  } else if (comparator === '>') {
+    candidate = numericThreshold !== null ? numericThreshold + step : null
+  } else if (comparator === '<') {
+    candidate = numericThreshold !== null ? numericThreshold - step : null
+  } else if (comparator === 'between') {
+    if (numericThresholdMin !== null && numericThresholdMax !== null) {
+      candidate = (numericThresholdMin + numericThresholdMax) / 2
+    } else {
+      candidate = numericThresholdMin ?? numericThresholdMax
+    }
+  }
+
+  if (candidate === null) {
+    if (min !== null) {
+      candidate = min
+    } else if (numericThreshold !== null) {
+      candidate = numericThreshold
+    } else {
+      candidate = item.type === 'scale' ? 1 : step
+    }
+  }
+
+  return clampNumber(candidate, min, max)
+}
+
 function toggleItem(item: TradeChecklistItemWithResponse) {
   if (item.type === 'checkbox') {
     emit('update-response', item.id, !Boolean(item.response.value))
@@ -129,9 +213,8 @@ function toggleItem(item: TradeChecklistItemWithResponse) {
   }
 
   if (item.type === 'number' || item.type === 'scale') {
-    const config = item.config as { min?: unknown }
-    const min = typeof config.min === 'number' ? config.min : 1
-    emit('update-response', item.id, item.response.is_completed ? null : min)
+    const nextValue = defaultNumericToggleValue(item)
+    emit('update-response', item.id, item.response.is_completed ? null : nextValue)
     return
   }
 
@@ -169,7 +252,7 @@ function toggleItem(item: TradeChecklistItemWithResponse) {
       <div v-show="cardOpen && !loading && checklist" class="rules-card-body">
         <section class="rules-server-status">
           <p class="rules-server-line">
-            <strong>Server says:</strong>
+            <strong>Rules status:</strong>
             <span :class="resolvedServerReadiness.ready ? 'is-ready' : 'is-not-ready'">{{ serverStatusLabel }}</span>
           </p>
           <div

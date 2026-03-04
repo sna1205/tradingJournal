@@ -20,6 +20,8 @@ interface ResponseWriteRow {
   value: unknown
 }
 
+type PrecheckMetrics = Record<string, unknown>
+
 function emptyReadiness(): TradeChecklistReadiness {
   return {
     status: 'ready',
@@ -46,6 +48,103 @@ function isCompleted(item: ChecklistItem, value: unknown): boolean {
   }
 
   return typeof value === 'string' && value.trim().length > 0
+}
+
+function toFiniteNumber(value: unknown): number | null {
+  if (typeof value === 'number' && Number.isFinite(value)) return value
+  if (typeof value === 'string' && value.trim() !== '') {
+    const parsed = Number(value)
+    return Number.isFinite(parsed) ? parsed : null
+  }
+  return null
+}
+
+function clampNumber(value: number, min: number | null, max: number | null): number {
+  let next = value
+  if (min !== null && next < min) next = min
+  if (max !== null && next > max) next = max
+  return next
+}
+
+function numericStepFor(item: ChecklistItem): number {
+  const config = item.config as { step?: unknown }
+  const parsed = toFiniteNumber(config.step)
+  if (parsed !== null && parsed > 0) return parsed
+  return item.type === 'scale' ? 1 : 0.1
+}
+
+function defaultNumericPassingValue(item: ChecklistItem): number {
+  const config = item.config as Record<string, unknown>
+  const min = toFiniteNumber(config.min)
+  const max = toFiniteNumber(config.max)
+  const step = numericStepFor(item)
+  const explicitRule = typeof config.rule === 'object' && config.rule !== null
+    ? (config.rule as Record<string, unknown>)
+    : null
+
+  let comparator = ''
+  let threshold: unknown = null
+  let thresholdMin: unknown = null
+  let thresholdMax: unknown = null
+
+  if (explicitRule) {
+    comparator = String(explicitRule.operator ?? '').trim()
+    threshold = explicitRule.threshold
+  } else {
+    comparator = String(config.comparator ?? '').trim()
+    threshold = config.threshold
+    thresholdMin = config.threshold_min
+    thresholdMax = config.threshold_max
+  }
+
+  const numericThreshold = toFiniteNumber(threshold)
+  const numericThresholdMin = toFiniteNumber(thresholdMin)
+  const numericThresholdMax = toFiniteNumber(thresholdMax)
+
+  let candidate: number | null = null
+  if (comparator === '>=' || comparator === '<=' || comparator === 'equals' || comparator === '==' || comparator === '=') {
+    candidate = numericThreshold
+  } else if (comparator === '>') {
+    candidate = numericThreshold !== null ? numericThreshold + step : null
+  } else if (comparator === '<') {
+    candidate = numericThreshold !== null ? numericThreshold - step : null
+  } else if (comparator === 'between') {
+    if (numericThresholdMin !== null && numericThresholdMax !== null) {
+      candidate = (numericThresholdMin + numericThresholdMax) / 2
+    } else {
+      candidate = numericThresholdMin ?? numericThresholdMax
+    }
+  }
+
+  if (candidate === null) {
+    if (min !== null) {
+      candidate = min
+    } else if (numericThreshold !== null) {
+      candidate = numericThreshold
+    } else {
+      candidate = item.type === 'scale' ? 1 : step
+    }
+  }
+
+  return clampNumber(candidate, min, max)
+}
+
+function defaultPassingValue(item: ChecklistItem): unknown {
+  if (item.type === 'checkbox') return true
+  if (item.type === 'number' || item.type === 'scale') {
+    return defaultNumericPassingValue(item)
+  }
+  if (item.type === 'dropdown') {
+    const config = item.config as { options?: unknown }
+    if (Array.isArray(config.options)) {
+      const first = config.options
+        .map((entry) => String(entry).trim())
+        .find((entry) => entry.length > 0)
+      if (first) return first
+    }
+    return 'done'
+  }
+  return 'Done'
 }
 
 function buildReadiness(items: TradeChecklistItemWithResponse[]): TradeChecklistReadiness {
@@ -133,12 +232,14 @@ export const useTradeRulesStore = defineStore('tradeRules', () => {
   const strictSubmitBlocked = computed(() =>
     isStrict.value
       && hasChecklist.value
-      && !serverReadiness.value.ready
+      && !readiness.value.ready
   )
   const serverReadinessMismatch = computed(() =>
-    readiness.value.ready !== serverReadiness.value.ready
+    submitAttempted.value && (
+      readiness.value.ready !== serverReadiness.value.ready
       || readiness.value.completed_required !== serverReadiness.value.completed_required
       || readiness.value.total_required !== serverReadiness.value.total_required
+    )
   )
   const serverReadinessReasons = computed(() => {
     if (serverFailingRules.value.length > 0) {
@@ -313,6 +414,105 @@ export const useTradeRulesStore = defineStore('tradeRules', () => {
     }))
   }
 
+  async function previewServerReadiness(precheckMetrics: PrecheckMetrics = {}) {
+    if (!checklist.value) return
+    if (executionSnapshot.value?.frozen) return
+
+    const contextSnapshot = {
+      trade_id: contextTradeId.value ?? undefined,
+      account_id: contextAccountId.value ?? undefined,
+      strategy_model_id: contextStrategyModelId.value ?? undefined,
+    }
+    const requestBody = {
+      ...contextSnapshot,
+      responses: buildWritePayload(),
+      precheck_metrics: precheckMetrics,
+    }
+    const fingerprint = stableSerialize(requestBody)
+
+    try {
+      const response = await requestManager.run({
+        key: 'previewServerReadiness',
+        fingerprint,
+        execute: async ({ signal }) => {
+          const { data } = await api.post<TradeChecklistResponsePayload>(
+            '/trade-rules/preview',
+            requestBody,
+            { signal }
+          )
+          return data
+        },
+      })
+      if (response.stale) return
+      if (
+        contextSnapshot.trade_id !== (contextTradeId.value ?? undefined)
+        || contextSnapshot.account_id !== (contextAccountId.value ?? undefined)
+        || contextSnapshot.strategy_model_id !== (contextStrategyModelId.value ?? undefined)
+      ) {
+        return
+      }
+
+      const previewItems = response.value.responses?.items ?? []
+      if (previewItems.length > 0) {
+        const previewById = new Map(previewItems.map((entry) => [entry.id, entry.response]))
+        items.value = items.value.map((item) => {
+          const previewResponse = previewById.get(item.id)
+          if (!previewResponse) return item
+          return {
+            ...item,
+            response: {
+              ...item.response,
+              ...previewResponse,
+              archived: false,
+            },
+          }
+        })
+        rebuildReadinessLocal()
+      }
+
+      applyServerReadinessPreview({
+        readiness: response.value.readiness,
+        failing_rules: response.value.failing_rules ?? [],
+      })
+    } catch (err) {
+      if (isAbortError(err)) return
+    }
+  }
+
+  function hydratePassingDefaults() {
+    if (!checklist.value) return false
+    if (executionSnapshot.value?.frozen) return false
+    if (contextTradeId.value !== null) return false
+
+    let changed = false
+    items.value = items.value.map((item) => {
+      if (!item.required || !item.is_active) return item
+      if (item.response.is_completed) return item
+      const nextRaw = defaultPassingValue(item)
+      const value = normalizeValue(item, nextRaw)
+      const completed = isCompleted(item, value)
+      changed = true
+      return {
+        ...item,
+        response: {
+          ...item.response,
+          value,
+          is_completed: completed,
+          completed_at: completed ? new Date().toISOString() : null,
+          archived: false,
+        },
+      }
+    })
+    if (changed) {
+      rebuildReadinessLocal()
+      serverReadiness.value = {
+        ...readiness.value,
+      }
+      serverFailingRules.value = []
+    }
+    return changed
+  }
+
   async function persistNow(tradeIdOverride?: number) {
     const activeTradeId = normalizeNullableId(tradeIdOverride) ?? contextTradeId.value
     if (!activeTradeId || !checklist.value) return
@@ -424,6 +624,8 @@ export const useTradeRulesStore = defineStore('tradeRules', () => {
     loadForContext,
     loadForCreate,
     loadForTrade,
+    previewServerReadiness,
+    hydratePassingDefaults,
     applyServerReadinessPreview,
     updateResponse,
     markSubmitAttempted,

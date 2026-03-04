@@ -81,6 +81,8 @@ Route::middleware('auth:sanctum')->group(function () {
     });
     Route::get('trade-checklist/resolve', [TradeChecklistResponseController::class, 'resolve'])->middleware('deprecated.alias:/api/trade-rules/resolve');
     Route::get('trade-rules/resolve', [TradeChecklistResponseController::class, 'resolve']);
+    Route::post('trade-checklist/preview', [TradeChecklistResponseController::class, 'preview'])->middleware('deprecated.alias:/api/trade-rules/preview');
+    Route::post('trade-rules/preview', [TradeChecklistResponseController::class, 'preview']);
     Route::get('trades', [TradeController::class, 'index']);
     Route::post('trades', [TradeController::class, 'store'])->middleware(['throttle:trade-writes', 'idempotency:required']);
     Route::get('trades/{trade}', [TradeController::class, 'show']);

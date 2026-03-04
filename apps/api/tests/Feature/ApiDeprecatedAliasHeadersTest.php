@@ -56,6 +56,28 @@ class ApiDeprecatedAliasHeadersTest extends TestCase
         $this->assertStringContainsString('/api/trade-rules/resolve', (string) $response->headers->get('Link'));
     }
 
+    public function test_trade_checklist_preview_alias_returns_deprecation_headers(): void
+    {
+        $user = User::factory()->create();
+        Sanctum::actingAs($user);
+
+        $account = Account::factory()->create([
+            'user_id' => (int) $user->id,
+            'is_active' => true,
+        ]);
+
+        $response = $this->postJson('/api/trade-checklist/preview', [
+            'account_id' => (int) $account->id,
+            'responses' => [],
+            'precheck_metrics' => [],
+        ]);
+
+        $response->assertOk();
+        $response->assertHeader('Deprecation', 'true');
+        $this->assertSunsetWindow($response);
+        $this->assertStringContainsString('/api/trade-rules/preview', (string) $response->headers->get('Link'));
+    }
+
     public function test_analytics_risk_status_alias_returns_deprecation_headers(): void
     {
         $user = User::factory()->create();
@@ -87,4 +109,3 @@ class ApiDeprecatedAliasHeadersTest extends TestCase
         );
     }
 }
-

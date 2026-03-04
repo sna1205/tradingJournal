@@ -57,7 +57,6 @@ const {
   submitAttempted: checklistSubmitAttempted,
   isStrict: checklistStrictMode,
   checklistIncomplete,
-  strictSubmitBlocked: checklistStrictSubmitBlocked,
   serverReadinessMismatch: checklistServerReadinessMismatch,
   serverReadinessReasons: checklistServerReadinessReasons,
   hasChecklist,
@@ -302,10 +301,16 @@ const selectedSetup = computed(() => {
 })
 const instrumentSymbol = computed(() => selectedInstrument.value?.symbol ?? form.symbol.trim().toUpperCase())
 const failedRequiredRuleIds = ref<number[]>([])
+let checklistPreviewTimer: ReturnType<typeof setTimeout> | null = null
 const selectedChecklistAccountId = computed(() => {
   const id = Number(form.account_id)
   if (!Number.isInteger(id) || id <= 0) return null
   return accounts.value.some((account) => account.id === id) ? id : null
+})
+const selectedChecklistAccount = computed(() => {
+  const id = selectedChecklistAccountId.value
+  if (id === null) return null
+  return accounts.value.find((account) => account.id === id) ?? null
 })
 const selectedChecklistStrategyModelId = computed(() => {
   const id = Number(form.strategy_model_id)
@@ -329,7 +334,9 @@ const isSaveBlocked = computed(() =>
   || Boolean(liveFxConversionError.value)
 )
 const isChecklistStrictBlocked = computed(() =>
-  checklistStrictSubmitBlocked.value
+  checklistStrictMode.value
+  && hasChecklist.value
+  && checklistIncomplete.value
 )
 const checklistGateIncomplete = computed(() =>
   hasChecklist.value && (checklistIncomplete.value || failedRequiredRuleIds.value.length > 0)
@@ -362,8 +369,8 @@ const blockedSummary = computed(() => {
   if (isFxPending.value) return 'Fetching FX quote...'
   if (isChecklistContextMismatch.value) return 'Rule context is refreshing for the selected account and strategy.'
   if (isChecklistStrictBlocked.value) {
-    const firstReason = checklistServerReadinessReasons.value[0]?.reason?.trim()
-    return firstReason || 'Strict mode is blocked by server checklist readiness.'
+    const firstReason = checklistReadiness.value.missing_required[0]?.reason?.trim()
+    return firstReason || 'Strict mode is blocked by checklist readiness.'
   }
   if (liveFxConversionError.value) return liveFxConversionError.value
   return 'Resolve errors before saving this execution.'
@@ -1132,8 +1139,98 @@ function getFxMaterialSignature(value: FxQuoteToUsdResolution | null): string {
   return `${value.method}|${value.mode}|${value.symbolUsed ?? 'identity'}|${value.rate.toFixed(8)}`
 }
 
+function clearChecklistPreviewTimer() {
+  if (!checklistPreviewTimer) return
+  clearTimeout(checklistPreviewTimer)
+  checklistPreviewTimer = null
+}
+
+function resolveEstimatedRiskPercent(): number | null {
+  const accountBalance = Number(selectedChecklistAccount.value?.current_balance ?? 0)
+  if (!(accountBalance > 0)) return null
+
+  const instrument = selectedInstrument.value
+  if (!instrument) return null
+
+  const entry = toNumber(form.entry_price)
+  const stopLoss = toNumber(form.stop_loss)
+  const lotSize = toNumber(form.position_size)
+  if (!(entry > 0) || !(stopLoss > 0) || !(lotSize > 0)) return null
+
+  const stopDistance = Math.abs(entry - stopLoss)
+  if (!(stopDistance > 0)) return null
+
+  const tickSize = Number(instrument.tick_size ?? 0)
+  const tickValue = Number(instrument.tick_value ?? 0)
+  const contractSize = Number(instrument.contract_size ?? 0)
+  let riskInQuote = 0
+
+  if (tickSize > 0 && tickValue > 0) {
+    riskInQuote = (stopDistance / tickSize) * tickValue * lotSize
+  } else if (contractSize > 0) {
+    riskInQuote = stopDistance * contractSize * lotSize
+  } else {
+    riskInQuote = stopDistance * lotSize
+  }
+  if (!(riskInQuote > 0)) return null
+
+  const quoteCurrency = String(instrument.quote_currency ?? '').toUpperCase()
+  const accountCurrency = String(selectedChecklistAccount.value?.currency ?? 'USD').toUpperCase()
+  let riskInAccountCurrency = riskInQuote
+  if (quoteCurrency !== '' && accountCurrency === 'USD' && quoteCurrency !== 'USD') {
+    const rate = Number(liveFxConversion.value?.rate ?? 0)
+    if (rate > 0) {
+      riskInAccountCurrency = riskInQuote * rate
+    } else {
+      return null
+    }
+  }
+
+  if (!(riskInAccountCurrency > 0)) return null
+  const percent = (riskInAccountCurrency / accountBalance) * 100
+  return Number.isFinite(percent) ? Number(percent.toFixed(4)) : null
+}
+
+function resolveEstimatedTargetRMultiple(): number | null {
+  const entry = toNumber(form.entry_price)
+  const stopLoss = toNumber(form.stop_loss)
+  const takeProfit = toNumber(form.take_profit)
+  const risk = Math.abs(entry - stopLoss)
+  if (!(entry > 0) || !(takeProfit > 0) || !(risk > 0)) return null
+  const reward = Math.abs(takeProfit - entry)
+  const rMultiple = reward / risk
+  if (!Number.isFinite(rMultiple) || rMultiple <= 0) return null
+  return Number(rMultiple.toFixed(4))
+}
+
+function buildChecklistPrecheckMetrics(): Record<string, unknown> {
+  const metrics: Record<string, unknown> = {
+    risk_percent: 0,
+    r_multiple: 1,
+    target_r_multiple: 1,
+  }
+  const riskPercent = resolveEstimatedRiskPercent()
+  if (riskPercent !== null) {
+    metrics.risk_percent = riskPercent
+  }
+  const targetRMultiple = resolveEstimatedTargetRMultiple()
+  if (targetRMultiple !== null) {
+    metrics.r_multiple = targetRMultiple
+    metrics.target_r_multiple = targetRMultiple
+  }
+  return metrics
+}
+
 function refreshDerivedState() {
-  // Kept as a no-op to avoid unnecessary watcher churn edits.
+  clearChecklistPreviewTimer()
+  if (!hasChecklist.value) return
+  if (checklistLoading.value) return
+  if (isChecklistContextMismatch.value) return
+  if (checklistExecutionSnapshot.value?.frozen) return
+
+  checklistPreviewTimer = setTimeout(() => {
+    void tradeChecklistStore.previewServerReadiness(buildChecklistPrecheckMetrics())
+  }, 180)
 }
 
 function clearPendingImages() {
@@ -1592,8 +1689,8 @@ async function submitForm() {
     uiStore.toast({
       type: 'error',
       title: 'Blocked by strict rules',
-      message: checklistServerReadinessReasons.value[0]?.reason
-        || 'Server checklist readiness is not ready yet.',
+      message: checklistReadiness.value.missing_required[0]?.reason
+        || 'Checklist is not ready yet.',
     })
     return
   }
@@ -1737,10 +1834,15 @@ async function loadChecklistState() {
     selectedChecklistStrategyModelId.value,
     selectedChecklistTradeId.value
   )
+  if (!isEditMode.value) {
+    tradeChecklistStore.hydratePassingDefaults()
+  }
+  refreshDerivedState()
 }
 
 function onChecklistResponseChange(itemId: number, value: unknown) {
   tradeChecklistStore.updateResponse(itemId, value, false)
+  refreshDerivedState()
 }
 
 function onChecklistEvaluationChange(payload: { failedRequiredIds: number[]; firstFailingId: number | null }) {
@@ -1928,6 +2030,7 @@ watch(
 onBeforeUnmount(() => {
   window.removeEventListener('keydown', handleGlobalHotkeys)
   teardownEditLock()
+  clearChecklistPreviewTimer()
   clearPendingImages()
   tradeChecklistStore.resetState()
   for (const unsubscribe of unsubscribeFxListeners) {
