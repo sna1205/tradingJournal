@@ -146,7 +146,7 @@ docker compose --env-file .env -f docker-compose.prod.yml up -d --build
 ```
 
 ## Notes
-- No authentication is included by design.
+- Authentication is cookie-based Sanctum SPA auth (session + CSRF). Bearer tokens are not used in the default flow.
 - Vite proxies `/api` using `VITE_PROXY_TARGET` in dev.
 - Frontend API prefix is controlled by `VITE_API_BASE_URL` (default `/api`).
 - Vercel deployments require `API_BASE_URL` set to your backend API root (example: `https://api.your-domain.com/api`) so `/api/*` can be proxied by `api/[...path].js`.

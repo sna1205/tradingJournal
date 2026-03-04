@@ -159,6 +159,27 @@ class TradeRevisionPreconditionTest extends TestCase
         $this->assertSame(3, (int) $trade->revision);
     }
 
+    public function test_trade_delete_requires_if_match_and_rejects_stale_revision(): void
+    {
+        $account = $this->createOwnedAccount();
+        $trade = $this->createTrade((int) $account->id);
+
+        $missingHeader = $this->deleteJson("/api/trades/{$trade->id}");
+        $missingHeader->assertStatus(428);
+        $missingHeader->assertJsonPath('error.code', 'trade_if_match_required');
+
+        $stale = $this->withHeaders(['If-Match' => '99'])->deleteJson("/api/trades/{$trade->id}");
+        $stale->assertStatus(412);
+        $stale->assertJsonPath('error.code', 'trade_precondition_failed');
+
+        $fresh = $this->withHeaders(['If-Match' => '1'])->deleteJson("/api/trades/{$trade->id}");
+        $fresh->assertNoContent();
+
+        $this->assertSoftDeleted('trades', [
+            'id' => (int) $trade->id,
+        ]);
+    }
+
     private function createOwnedAccount(): Account
     {
         return Account::factory()->create([

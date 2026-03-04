@@ -174,11 +174,18 @@ describe('trade store If-Match headers', () => {
 
     await store.updateTrade(11, {
       notes: 'updated notes',
+      fx_rate_quote_to_usd: 1.25,
+      fx_symbol_used: 'EURUSD',
+      fx_rate_timestamp: '2026-03-04T00:00:00Z',
     })
 
     expect(mocks.put).toHaveBeenCalledWith(
       '/trades/11',
-      expect.any(Object),
+      expect.not.objectContaining({
+        fx_rate_quote_to_usd: expect.anything(),
+        fx_symbol_used: expect.anything(),
+        fx_rate_timestamp: expect.anything(),
+      }),
       expect.objectContaining({
         headers: expect.objectContaining({
           'If-Match': '3',
@@ -215,6 +222,23 @@ describe('trade store If-Match headers', () => {
       expect.objectContaining({
         headers: expect.objectContaining({
           'If-Match': '7',
+        }),
+      })
+    )
+  })
+
+  it('trade_store_delete_trade_sends_if_match_header', async () => {
+    const store = useTradeStore()
+    store.trades = [buildTrade(33, 5)]
+    mocks.delete.mockResolvedValue({ status: 204, headers: {} })
+
+    await store.deleteTrade(33)
+
+    expect(mocks.delete).toHaveBeenCalledWith(
+      '/trades/33',
+      expect.objectContaining({
+        headers: expect.objectContaining({
+          'If-Match': '5',
         }),
       })
     )

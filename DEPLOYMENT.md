@@ -8,8 +8,8 @@ Target architecture:
 - Database: Railway MySQL service
 
 Default auth mode in this repo:
-- Bearer token mode (`Authorization: Bearer <token>`)
-- Cookie/Sanctum SPA mode is optional and documented at the end
+- Cookie/Sanctum SPA mode (session cookie + CSRF)
+- Bearer token mode is not part of the default frontend/backend contract
 
 ## Step 0: What you need before starting
 
@@ -111,8 +111,12 @@ TRADE_IMAGES_DISK=public
 
 CORS_ALLOWED_ORIGINS=https://app.yourdomain.com,https://your-project.vercel.app
 CORS_ALLOWED_ORIGIN_PATTERNS=^https://your-project-.*\.vercel\.app$
-CORS_SUPPORTS_CREDENTIALS=false
-SANCTUM_STATEFUL_API=false
+CORS_SUPPORTS_CREDENTIALS=true
+SANCTUM_STATEFUL_API=true
+SANCTUM_STATEFUL_DOMAINS=app.yourdomain.com,your-project.vercel.app,your-project-git-main-yourteam.vercel.app,localhost,localhost:5173,127.0.0.1,127.0.0.1:5173
+SESSION_DOMAIN=.yourdomain.com
+SESSION_SECURE_COOKIE=true
+SESSION_SAME_SITE=lax
 ```
 
 Important rules:
@@ -168,7 +172,6 @@ If these fail, fix backend before touching Vercel.
 
 ```env
 VITE_API_BASE_URL=https://api.yourdomain.com/api
-VITE_API_WITH_CREDENTIALS=0
 VITE_ENABLE_VISUAL_ROUTES=0
 ```
 
@@ -301,31 +304,18 @@ If the latest release is broken:
 - Verify `VITE_API_BASE_URL` is exactly `https://api.yourdomain.com/api`.
 - Verify backend CORS allows `https://app.yourdomain.com`.
 
-## Step 14: Optional cookie-based Sanctum mode
-
-Only enable this if you intentionally want cookie auth instead of bearer tokens.
-
-Backend vars:
-
-```env
-CORS_SUPPORTS_CREDENTIALS=true
-SANCTUM_STATEFUL_DOMAINS=app.yourdomain.com,your-project.vercel.app,your-project-git-main-yourteam.vercel.app,localhost,localhost:5173,127.0.0.1,127.0.0.1:5173
-SANCTUM_STATEFUL_API=true
-SESSION_DOMAIN=.yourdomain.com
-SESSION_SECURE_COOKIE=true
-SESSION_SAME_SITE=lax
-```
-
-Frontend var:
-
-```env
-VITE_API_WITH_CREDENTIALS=1
-```
+## Step 14: Cookie/Sanctum request contract
 
 Login flow must request CSRF cookie first:
 
 ```ts
 await axios.get('https://api.yourdomain.com/sanctum/csrf-cookie', { withCredentials: true })
+```
+
+Authenticated API calls must include credentials:
+
+```ts
+await axios.get('https://api.yourdomain.com/api/auth/me', { withCredentials: true })
 ```
 
 ---

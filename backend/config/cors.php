@@ -42,6 +42,8 @@ return [
         'X-Requested-With',
         'X-CSRF-TOKEN',
         'X-XSRF-TOKEN',
+        'If-Match',
+        'Idempotency-Key',
     ],
 
     'exposed_headers' => [],

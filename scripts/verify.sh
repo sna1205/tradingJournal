@@ -1,36 +1,48 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# 1) Backend schema + seed integrity
+# Optional tools check (rg may not exist in CI)
+HAS_RG=0
+command -v rg >/dev/null 2>&1 && HAS_RG=1
+
+# 1) Backend schema + tests
 cd backend
 php artisan migrate:fresh --seed
-
-# 2) Backend full test suite
 php artisan test
-
-# 3) Backend smoke subset for critical flows
 php artisan test --filter='ApiAuthOwnershipTest|AccountArchitectureTest|TradeValidationTest|MissedTradeImageQuotaTest'
 
-# 4) Route reachability sanity
 php artisan route:list --path=api > /tmp/api-routes.txt
-rg -n "api/auth/login|api/trades|api/analytics/dashboard-summary|api/trades/\{trade\}/images" /tmp/api-routes.txt
-
-# 5) Frontend build + tests
-cd ../frontend
-if ! npm ci; then
-  echo "npm ci failed (likely local file lock); falling back to npm install"
-  npm install
+if [ "$HAS_RG" -eq 1 ]; then
+  rg -n "api/auth/login|api/trades|api/analytics/dashboard-summary|api/trades/\{trade\}/images" /tmp/api-routes.txt
 fi
-npm run build
 
-# CI-default test command
+# 2) Frontend build + tests
+cd ../frontend
+
+# CI should NEVER fall back; local can.
+if [ "${CI:-}" = "true" ]; then
+  npm ci
+else
+  if ! npm ci; then
+    echo "npm ci failed (likely local file lock); falling back to npm install"
+    npm install
+  fi
+fi
+
+npm run build
 npm run test
 
-# Existing unit fallback
-npm run test:unit
+# Optional targeted checks (don’t fail if missing)
+if npx --yes vitest --version >/dev/null 2>&1; then
+  if [ -f "src/stores/tradeStore.idempotency.test.ts" ]; then
+    npx vitest run \
+      src/stores/tradeStore.idempotency.test.ts \
+      src/stores/tradeStore.ifMatch.test.ts \
+      src/services/editLockService.test.ts
+  fi
+fi
 
-# 6) Optional targeted vitest checks already present in repo
-npx vitest run src/stores/tradeStore.idempotency.test.ts src/stores/tradeStore.ifMatch.test.ts src/services/editLockService.test.ts
-
-# 7) Dead-code proof check (after deletions)
-rg -n "InsightPanel|MonthlyHeatmap|BreakdownBarChart|DailyPnlBarChart|EquityCurveChart|EquityCurveLineChart|RadarPerformanceChart|PerformanceSnapshot|SummaryCards|StatCard|OptionalSection|RuleProgressHeader" src || true
+# Dead-code proof check (after deletions)
+if [ "$HAS_RG" -eq 1 ]; then
+  rg -n "InsightPanel|MonthlyHeatmap|BreakdownBarChart|DailyPnlBarChart|EquityCurveChart|EquityCurveLineChart|RadarPerformanceChart|PerformanceSnapshot|SummaryCards|StatCard|OptionalSection|RuleProgressHeader" src || true
+fi

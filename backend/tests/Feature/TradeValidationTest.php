@@ -260,6 +260,29 @@ class TradeValidationTest extends TestCase
         $response->assertJsonValidationErrors(['lot_size']);
     }
 
+    public function test_trade_creation_rejects_client_supplied_fx_derived_fields(): void
+    {
+        $account = $this->createOwnedAccount([
+            'starting_balance' => 10_000,
+            'current_balance' => 10_000,
+            'is_active' => true,
+        ]);
+
+        $response = $this->withTradeIdempotencyKey()->postJson('/api/trades', [
+            ...$this->tradePayload((int) $account->id),
+            'fx_rate_quote_to_usd' => 1.2345,
+            'fx_symbol_used' => 'EURUSD',
+            'fx_rate_timestamp' => now()->toIso8601String(),
+        ]);
+
+        $response->assertStatus(422);
+        $response->assertJsonValidationErrors([
+            'fx_rate_quote_to_usd',
+            'fx_symbol_used',
+            'fx_rate_timestamp',
+        ]);
+    }
+
     public function test_trade_creation_converts_quote_risk_into_account_currency_when_rate_exists(): void
     {
         FxRate::query()->create([

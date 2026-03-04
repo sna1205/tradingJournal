@@ -24,4 +24,12 @@ class CorsConfigurationTest extends TestCase
         $this->assertIsArray($allowedOrigins);
         $this->assertNotContains('*', $allowedOrigins);
     }
+
+    public function test_cors_configuration_allows_trade_concurrency_and_idempotency_headers(): void
+    {
+        $allowedHeaders = config('cors.allowed_headers', []);
+
+        $this->assertContains('If-Match', $allowedHeaders);
+        $this->assertContains('Idempotency-Key', $allowedHeaders);
+    }
 }

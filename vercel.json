@@ -8,6 +8,10 @@
       "handle": "filesystem"
     },
     {
+      "src": "/storage(?:/(.*))?",
+      "dest": "/api/storage/$1"
+    },
+    {
       "src": "/(.*)",
       "dest": "/index.html"
     }

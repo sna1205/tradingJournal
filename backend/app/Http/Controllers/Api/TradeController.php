@@ -6,6 +6,7 @@ use App\Domain\TradeExecution\TradeRuleGateService;
 use App\Domain\Instruments\InstrumentMath;
 use App\Domain\Instruments\InstrumentSpec;
 use App\Exceptions\TradeConcurrencyException;
+use App\Http\Controllers\Api\Concerns\InteractsWithTradeRevision;
 use App\Http\Controllers\Controller;
 use App\Models\Checklist;
 use App\Models\Trade;
@@ -30,6 +31,8 @@ use Illuminate\Validation\ValidationException;
 
 class TradeController extends Controller
 {
+    use InteractsWithTradeRevision;
+
     private const SESSION_ENUM_VALUES = [
         'asia',
         'london',
@@ -282,12 +285,18 @@ class TradeController extends Controller
             ->header('ETag', $this->tradeExecutionOrchestrator->buildTradeEtag($updatedTrade));
     }
 
-    public function destroy(Trade $trade)
+    public function destroy(Request $request, Trade $trade)
     {
         $this->authorize('delete', $trade);
         $accountId = (int) $trade->account_id;
-        DB::transaction(function () use ($trade, $accountId): void {
-            $trade->delete();
+        DB::transaction(function () use ($request, $trade, $accountId): void {
+            /** @var Trade $lockedTrade */
+            $lockedTrade = Trade::query()
+                ->whereKey((int) $trade->id)
+                ->lockForUpdate()
+                ->firstOrFail();
+            $this->assertTradeWritePrecondition($request, $lockedTrade);
+            $lockedTrade->delete();
             $this->accountBalanceService->rebuildAccountState($accountId);
         });
         $this->touchAnalyticsCacheVersion();

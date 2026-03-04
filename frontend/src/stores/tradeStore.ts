@@ -180,6 +180,12 @@ interface TradePrecheckOptions {
   signal?: AbortSignal
 }
 
+const PROHIBITED_TRADE_FX_FIELDS = [
+  'fx_rate_quote_to_usd',
+  'fx_symbol_used',
+  'fx_rate_timestamp',
+] as const
+
 const TRADE_PREFS_NAMESPACE = 'trade-preferences'
 const TRADE_PREFS_INCLUDE_DRAFTS_KEY = 'include_drafts_unverified'
 
@@ -583,6 +589,7 @@ export const useTradeStore = defineStore('trades', () => {
 
   async function createTrade(payload: TradePayload): Promise<Trade> {
     saving.value = true
+    const sanitizedPayload = sanitizeTradePayload(payload)
 
     const shouldOptimisticallyInsert = pagination.value.current_page === 1 && !hasActiveFilters.value
     const previousTrades = trades.value.slice()
@@ -596,13 +603,13 @@ export const useTradeStore = defineStore('trades', () => {
     }
 
     if (shouldOptimisticallyInsert) {
-      const optimistic = toOptimisticTrade(payload, tempId)
+      const optimistic = toOptimisticTrade(sanitizedPayload, tempId)
       trades.value = filterTradesByQuality([optimistic, ...trades.value]).slice(0, pagination.value.per_page)
       pagination.value.total += 1
     }
 
     try {
-      const { data } = await api.post<Trade>('/trades', payload, createTradeRequestConfig)
+      const { data } = await api.post<Trade>('/trades', sanitizedPayload, createTradeRequestConfig)
       syncStatusStore.markServerHealthy()
       captureTradeConcurrencyState(data)
       invalidateTradeLoadCaches()
@@ -630,12 +637,12 @@ export const useTradeStore = defineStore('trades', () => {
       if (shouldUseLocalFallback(err)) {
         syncStatusStore.markLocalFallback('trades')
         invalidateTradeLoadCaches()
-        const local = createLocalTrade(payload)
+        const local = createLocalTrade(sanitizedPayload)
         captureTradeConcurrencyState(local)
         enqueueSyncCreate({
           entity: 'trades',
           local_id: local.id,
-          payload: pruneUndefined(payload),
+          payload: pruneUndefined(sanitizedPayload),
           context: 'trades',
           risk_unverified: true,
         })
@@ -673,6 +680,7 @@ export const useTradeStore = defineStore('trades', () => {
 
   async function updateTrade(id: number, payload: Partial<TradePayload>): Promise<Trade> {
     saving.value = true
+    const sanitizedPayload = sanitizeTradePayload(payload)
 
     const index = trades.value.findIndex((trade) => trade.id === id)
     const current = index >= 0 ? trades.value[index] : undefined
@@ -681,32 +689,32 @@ export const useTradeStore = defineStore('trades', () => {
     if (current && index >= 0) {
       trades.value[index] = {
         ...current,
-        account_id: payload.account_id ?? current.account_id,
-        instrument_id: payload.instrument_id ?? current.instrument_id,
-        strategy_model_id: payload.strategy_model_id ?? current.strategy_model_id,
-        setup_id: payload.setup_id ?? current.setup_id,
-        killzone_id: payload.killzone_id ?? current.killzone_id,
-        session_enum: payload.session_enum ?? current.session_enum,
-        tag_ids: payload.tag_ids ?? current.tag_ids,
-        pair: payload.symbol ? payload.symbol.toUpperCase() : current.pair,
-        direction: payload.direction ?? current.direction,
-        entry_price: payload.entry_price !== undefined ? String(payload.entry_price) : current.entry_price,
-        stop_loss: payload.stop_loss !== undefined ? String(payload.stop_loss) : current.stop_loss,
-        take_profit: payload.take_profit !== undefined ? String(payload.take_profit) : current.take_profit,
-        actual_exit_price: payload.actual_exit_price !== undefined
-          ? String(payload.actual_exit_price)
+        account_id: sanitizedPayload.account_id ?? current.account_id,
+        instrument_id: sanitizedPayload.instrument_id ?? current.instrument_id,
+        strategy_model_id: sanitizedPayload.strategy_model_id ?? current.strategy_model_id,
+        setup_id: sanitizedPayload.setup_id ?? current.setup_id,
+        killzone_id: sanitizedPayload.killzone_id ?? current.killzone_id,
+        session_enum: sanitizedPayload.session_enum ?? current.session_enum,
+        tag_ids: sanitizedPayload.tag_ids ?? current.tag_ids,
+        pair: sanitizedPayload.symbol ? sanitizedPayload.symbol.toUpperCase() : current.pair,
+        direction: sanitizedPayload.direction ?? current.direction,
+        entry_price: sanitizedPayload.entry_price !== undefined ? String(sanitizedPayload.entry_price) : current.entry_price,
+        stop_loss: sanitizedPayload.stop_loss !== undefined ? String(sanitizedPayload.stop_loss) : current.stop_loss,
+        take_profit: sanitizedPayload.take_profit !== undefined ? String(sanitizedPayload.take_profit) : current.take_profit,
+        actual_exit_price: sanitizedPayload.actual_exit_price !== undefined
+          ? String(sanitizedPayload.actual_exit_price)
           : current.actual_exit_price,
-        avg_exit_price: payload.actual_exit_price !== undefined
-          ? String(payload.actual_exit_price)
+        avg_exit_price: sanitizedPayload.actual_exit_price !== undefined
+          ? String(sanitizedPayload.actual_exit_price)
           : current.avg_exit_price,
-        lot_size: payload.position_size !== undefined ? String(payload.position_size) : current.lot_size,
-        avg_entry_price: payload.entry_price !== undefined ? String(payload.entry_price) : current.avg_entry_price,
-        commission: payload.commission !== undefined ? String(payload.commission) : current.commission,
-        swap: payload.swap !== undefined ? String(payload.swap) : current.swap,
-        spread_cost: payload.spread_cost !== undefined ? String(payload.spread_cost) : current.spread_cost,
-        slippage_cost: payload.slippage_cost !== undefined ? String(payload.slippage_cost) : current.slippage_cost,
-        legs: payload.legs !== undefined
-          ? payload.legs.map((leg) => ({
+        lot_size: sanitizedPayload.position_size !== undefined ? String(sanitizedPayload.position_size) : current.lot_size,
+        avg_entry_price: sanitizedPayload.entry_price !== undefined ? String(sanitizedPayload.entry_price) : current.avg_entry_price,
+        commission: sanitizedPayload.commission !== undefined ? String(sanitizedPayload.commission) : current.commission,
+        swap: sanitizedPayload.swap !== undefined ? String(sanitizedPayload.swap) : current.swap,
+        spread_cost: sanitizedPayload.spread_cost !== undefined ? String(sanitizedPayload.spread_cost) : current.spread_cost,
+        slippage_cost: sanitizedPayload.slippage_cost !== undefined ? String(sanitizedPayload.slippage_cost) : current.slippage_cost,
+        legs: sanitizedPayload.legs !== undefined
+          ? sanitizedPayload.legs.map((leg) => ({
             leg_type: leg.leg_type,
             price: String(leg.price),
             quantity_lots: String(leg.quantity_lots),
@@ -715,22 +723,22 @@ export const useTradeStore = defineStore('trades', () => {
             notes: leg.notes ?? null,
           }))
           : current.legs,
-        risk_override_reason: payload.risk_override_reason !== undefined
-          ? payload.risk_override_reason
+        risk_override_reason: sanitizedPayload.risk_override_reason !== undefined
+          ? sanitizedPayload.risk_override_reason
           : current.risk_override_reason,
-        followed_rules: payload.followed_rules ?? current.followed_rules,
-        checklist_incomplete: payload.checklist_incomplete ?? current.checklist_incomplete,
-        emotion: payload.emotion ?? current.emotion,
-        session: payload.session ?? current.session,
-        model: payload.strategy_model ?? current.model,
-        date: payload.close_date ?? current.date,
-        notes: payload.notes !== undefined ? payload.notes : current.notes,
+        followed_rules: sanitizedPayload.followed_rules ?? current.followed_rules,
+        checklist_incomplete: sanitizedPayload.checklist_incomplete ?? current.checklist_incomplete,
+        emotion: sanitizedPayload.emotion ?? current.emotion,
+        session: sanitizedPayload.session ?? current.session,
+        model: sanitizedPayload.strategy_model ?? current.model,
+        date: sanitizedPayload.close_date ?? current.date,
+        notes: sanitizedPayload.notes !== undefined ? sanitizedPayload.notes : current.notes,
       }
     }
 
     try {
       const requestConfig = getIfMatchHeaders(id)
-      const { data } = await api.put<Trade>(`/trades/${id}`, payload, requestConfig)
+      const { data } = await api.put<Trade>(`/trades/${id}`, sanitizedPayload, requestConfig)
       syncStatusStore.markServerHealthy()
       captureTradeConcurrencyState(data)
       invalidateTradeLoadCaches()
@@ -756,7 +764,7 @@ export const useTradeStore = defineStore('trades', () => {
         if (current) {
           upsertLocalTradeSnapshot(current)
         }
-        const data = updateLocalTrade(id, payload)
+        const data = updateLocalTrade(id, sanitizedPayload)
         captureTradeConcurrencyState(data)
         enqueueSyncUpdate({
           entity: 'trades',
@@ -764,7 +772,7 @@ export const useTradeStore = defineStore('trades', () => {
           server_id: id,
           expected_updated_at: current?.updated_at ?? null,
           expected_revision: current?.revision ?? null,
-          payload: pruneUndefined(payload),
+          payload: pruneUndefined(sanitizedPayload),
           context: 'trades',
           risk_unverified: data.risk_validation_status !== 'verified',
         })
@@ -794,6 +802,7 @@ export const useTradeStore = defineStore('trades', () => {
   }
 
   async function deleteTrade(id: number) {
+    const requestConfig = getIfMatchHeaders(id)
     const index = trades.value.findIndex((trade) => trade.id === id)
     const previous = index >= 0 ? trades.value[index] : null
 
@@ -803,7 +812,7 @@ export const useTradeStore = defineStore('trades', () => {
     }
 
     try {
-      await api.delete(`/trades/${id}`)
+      await api.delete(`/trades/${id}`, requestConfig)
       syncStatusStore.markServerHealthy()
       invalidateTradeLoadCaches()
       deleteLocalTrade(id)
@@ -842,6 +851,9 @@ export const useTradeStore = defineStore('trades', () => {
       if (index >= 0 && previous) {
         trades.value.splice(index, 0, previous)
         pagination.value.total += 1
+      }
+      if (isTradeConflictError(err)) {
+        await refreshTradeAfterConflict(id)
       }
       throw normalizeApiError(err)
     }
@@ -1059,9 +1071,9 @@ export const useTradeStore = defineStore('trades', () => {
 
   async function precheckTrade(payload: TradePayload, tradeId?: number, options?: TradePrecheckOptions): Promise<TradePrecheckResult> {
     try {
-      const body: Record<string, unknown> = {
+      const body: Record<string, unknown> = sanitizeTradePayload({
         ...payload,
-      }
+      })
       if (typeof tradeId === 'number' && tradeId > 0) {
         body.trade_id = tradeId
       }
@@ -1586,4 +1598,12 @@ function pruneUndefined<T extends object>(payload: T): Record<string, unknown> {
   return Object.fromEntries(
     Object.entries(payload as Record<string, unknown>).filter(([, value]) => value !== undefined)
   )
+}
+
+function sanitizeTradePayload<T extends object>(input: T): T {
+  const payload = { ...(input as Record<string, unknown>) }
+  for (const key of PROHIBITED_TRADE_FX_FIELDS) {
+    delete payload[key]
+  }
+  return payload as T
 }
