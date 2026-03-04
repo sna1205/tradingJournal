@@ -1,0 +1,66 @@
+services:
+  php:
+    build:
+      context: ../../..
+      dockerfile: infra/docker/images/php-fpm.dev.Dockerfile
+    container_name: trading-journal-php
+    restart: unless-stopped
+    working_dir: /var/www/html
+    volumes:
+      - ../../../apps/api:/var/www/html
+      - composer_cache:/tmp/composer-cache
+    environment:
+      APP_ENV: local
+      APP_DEBUG: "true"
+      DB_CONNECTION: sqlite
+      DB_DATABASE: /var/www/html/database/database.sqlite
+      SESSION_DRIVER: file
+      CACHE_STORE: file
+      QUEUE_CONNECTION: sync
+      COMPOSER_CACHE_DIR: /tmp/composer-cache
+    healthcheck:
+      test: ["CMD-SHELL", "pidof php-fpm >/dev/null || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    command: >
+      sh -lc "
+      if [ ! -f vendor/autoload.php ]; then
+        composer install --no-interaction --prefer-dist --ignore-platform-req=ext-curl;
+      fi &&
+      php artisan migrate --force --no-interaction &&
+      php-fpm
+      "
+
+  node:
+    image: node:20-alpine
+    container_name: trading-journal-node
+    restart: unless-stopped
+    working_dir: /app
+    environment:
+      VITE_PROXY_TARGET: http://nginx
+    volumes:
+      - ../../../apps/web:/app
+      - node_modules:/app/node_modules
+    ports:
+      - "5173:5173"
+    command: sh -lc "npm install && npm run dev -- --host 0.0.0.0 --port 5173"
+
+  nginx:
+    image: nginx:1.25-alpine
+    container_name: trading-journal-nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    volumes:
+      - ../../../apps/api:/var/www/html:ro
+      - ../../../infra/docker/nginx/dev.default.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      php:
+        condition: service_healthy
+      node:
+        condition: service_started
+
+volumes:
+  node_modules:
+  composer_cache:

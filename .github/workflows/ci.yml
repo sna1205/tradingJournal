@@ -1,0 +1,65 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  guard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Root Clutter Guard
+        run: bash scripts/ci/check-root-clutter.sh
+
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.2'
+      - name: Install API dependencies
+        run: |
+          cd apps/api
+          composer install --no-interaction --prefer-dist
+      - name: Verify
+        run: bash scripts/ci/verify.sh
+
+  web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install
+        run: npm --prefix apps/web ci
+      - name: Build
+        run: npm --prefix apps/web run build
+      - name: Test
+        run: npm --prefix apps/web run test
+
+  api:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.2'
+      - name: Install
+        run: |
+          cd apps/api
+          composer install --no-interaction --prefer-dist
+      - name: Prepare env
+        run: |
+          cd apps/api
+          cp .env.example .env
+          php artisan key:generate --force --no-interaction
+      - name: Test
+        run: |
+          cd apps/api
+          php artisan test
