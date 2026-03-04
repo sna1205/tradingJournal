@@ -4,6 +4,7 @@ namespace Database\Seeders;
 
 use App\Models\Checklist;
 use App\Models\ChecklistItem;
+use App\Models\User;
 use Illuminate\Database\Seeder;
 use Illuminate\Support\Facades\DB;
 
@@ -15,8 +16,11 @@ class ChecklistSeeder extends Seeder
         DB::table('checklist_items')->delete();
         DB::table('checklists')->delete();
 
+        $demoEmail = strtolower(trim((string) env('LOCAL_DEMO_EMAIL', 'demo@tradingjournal.local')));
+        $demoUserId = User::query()->where('email', $demoEmail)->value('id');
+
         $checklist = Checklist::query()->create([
-            'user_id' => null,
+            'user_id' => $demoUserId !== null ? (int) $demoUserId : null,
             'account_id' => null,
             'name' => 'Default Trading Rule Set',
             'scope' => 'global',

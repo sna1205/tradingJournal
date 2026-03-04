@@ -8,7 +8,6 @@ import type {
   TradeChecklistReadiness,
   TradeChecklistResponseRecord,
 } from '@/types/rules'
-import type { TradePrecheckResult } from '@/stores/tradeStore'
 import { resolveChecklistLane, type ChecklistLaneKey } from '@/utils/rulesLanes'
 
 interface RuleLane {
@@ -43,7 +42,6 @@ const props = withDefaults(
     submitAttempted?: boolean
     strictMode?: boolean
     showHeader?: boolean
-    riskPrecheck?: TradePrecheckResult | null
   }>(),
   {
     loading: false,
@@ -51,7 +49,6 @@ const props = withDefaults(
     submitAttempted: false,
     strictMode: false,
     showHeader: true,
-    riskPrecheck: null,
     executionSnapshot: null,
     serverReadiness: undefined,
     serverReadinessMismatch: false,

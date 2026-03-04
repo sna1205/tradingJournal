@@ -131,7 +131,7 @@ class TradeChecklistServiceEvaluatorTest extends TestCase
         $this->assertSame([(int) $item->id], $result['failed_required_rule_ids'] ?? []);
     }
 
-    public function test_auto_metric_rules_use_precheck_metrics(): void
+    public function test_auto_metric_rules_use_context_metrics(): void
     {
         $item = $this->createItemWithConfig('number', [
             'comparator' => '<=',

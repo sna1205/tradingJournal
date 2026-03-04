@@ -24,7 +24,6 @@ class TradeExecutionOrchestrator
     public function __construct(
         private readonly TradeCalculationEngine $calculationEngine,
         private readonly AccountBalanceService $accountBalanceService,
-        private readonly TradeRiskPolicyService $tradeRiskPolicyService,
         private readonly ChecklistService $checklistService,
         private readonly TradeChecklistService $tradeChecklistService,
         private readonly TradeRuleGateService $tradeRuleGateService,
@@ -45,8 +44,7 @@ class TradeExecutionOrchestrator
             $account = $this->resolveAccountForWrite((int) $dto['account_id'], $userId);
             $instrument = $this->resolveInstrumentForRead((int) $dto['instrument_id']);
             $payloadWithMetrics = $this->buildPayloadWithCalculatedFields($dto, $account, $instrument);
-            $riskEvaluation = $this->evaluateRiskPolicy($payloadWithMetrics, $account, null, $user);
-            $this->throwIfRiskPolicyBlocked($riskEvaluation);
+            $riskEvaluation = $this->emptyRiskEvaluation();
 
             $checklistGate = $this->tradeRuleGateService->evaluateChecklistGateForPayload(
                 $userId,
@@ -109,8 +107,7 @@ class TradeExecutionOrchestrator
             $account = $this->resolveAccountForWrite((int) $effectivePayload['account_id'], $userId);
             $instrument = $this->resolveInstrumentForRead((int) $effectivePayload['instrument_id']);
             $payloadWithMetrics = $this->buildPayloadWithCalculatedFields($effectivePayload, $account, $instrument);
-            $riskEvaluation = $this->evaluateRiskPolicy($payloadWithMetrics, $account, (int) $trade->id, $user);
-            $this->throwIfRiskPolicyBlocked($riskEvaluation);
+            $riskEvaluation = $this->emptyRiskEvaluation();
 
             $checklistGate = $this->tradeRuleGateService->evaluateChecklistGateForPayload(
                 $userId,
@@ -197,8 +194,7 @@ class TradeExecutionOrchestrator
             $account = $this->resolveAccountForWrite((int) $effectivePayload['account_id'], $userId);
             $instrument = $this->resolveInstrumentForRead((int) $effectivePayload['instrument_id']);
             $payloadWithMetrics = $this->buildPayloadWithCalculatedFields($effectivePayload, $account, $instrument);
-            $riskEvaluation = $this->evaluateRiskPolicy($payloadWithMetrics, $account, (int) $trade->id, $user);
-            $this->throwIfRiskPolicyBlocked($riskEvaluation);
+            $riskEvaluation = $this->emptyRiskEvaluation();
 
             $checklistGate = $this->tradeRuleGateService->evaluateChecklistGateForPayload(
                 $userId,
@@ -545,8 +541,6 @@ class TradeExecutionOrchestrator
     }
 
     /**
-     * @param  array<string,mixed>  $payloadWithMetrics
-     * @param  object{id:int,starting_balance:numeric-string|int|float,current_balance:numeric-string|int|float}  $account
      * @return array{
      *   allowed:bool,
      *   requires_override_reason:bool,
@@ -555,58 +549,15 @@ class TradeExecutionOrchestrator
      *   stats:array<string,float>
      * }
      */
-    private function evaluateRiskPolicy(array $payloadWithMetrics, object $account, ?int $excludeTradeId, User $user): array
+    private function emptyRiskEvaluation(): array
     {
-        return $this->tradeRiskPolicyService->evaluate([
-            'account_id' => (int) $account->id,
-            'account_starting_balance' => (float) $account->starting_balance,
-            'account_current_balance' => (float) $account->current_balance,
-            'risk_percent' => (float) $payloadWithMetrics['risk_percent'],
-            'monetary_risk' => (float) $payloadWithMetrics['monetary_risk'],
-            'risk_override_reason' => $payloadWithMetrics['risk_override_reason'] ?? null,
-            'trade_date' => (string) ($payloadWithMetrics['date'] ?? CarbonImmutable::now()->toIso8601String()),
-            'exclude_trade_id' => $excludeTradeId,
-            'actor_role' => method_exists($user, 'roleName')
-                ? $user->roleName()
-                : (string) ($user->role ?? 'trader'),
-        ]);
-    }
-
-    /**
-     * @param array{
-     *   allowed:bool,
-     *   requires_override_reason:bool,
-     *   violations:array<int,array{code:string,message:string,limit:float,actual:float}>
-     * } $evaluation
-     */
-    private function throwIfRiskPolicyBlocked(array $evaluation): void
-    {
-        if ((bool) $evaluation['allowed']) {
-            return;
-        }
-
-        Log::warning('Trade rejected by risk policy.', [
-            'requires_override_reason' => (bool) ($evaluation['requires_override_reason'] ?? false),
-            'violations' => $evaluation['violations'] ?? [],
-            'policy' => $evaluation['policy'] ?? [],
-            'stats' => $evaluation['stats'] ?? [],
-        ]);
-
-        $messages = collect($evaluation['violations'] ?? [])
-            ->map(fn (array $violation): string => (string) ($violation['message'] ?? 'Risk policy violation.'))
-            ->values()
-            ->all();
-
-        if ((bool) ($evaluation['requires_override_reason'] ?? false)) {
-            throw ValidationException::withMessages([
-                'risk_override_reason' => ['Override reason is required to bypass account risk policy.'],
-                'risk_policy' => $messages,
-            ]);
-        }
-
-        throw ValidationException::withMessages([
-            'risk_policy' => $messages,
-        ]);
+        return [
+            'allowed' => true,
+            'requires_override_reason' => false,
+            'policy' => [],
+            'violations' => [],
+            'stats' => [],
+        ];
     }
 
     /**
@@ -1076,7 +1027,6 @@ class TradeExecutionOrchestrator
                 'tag_ids',
                 'checklist_responses',
                 'checklist_evaluation',
-                'precheck_snapshot',
                 'instrument_tick_size',
                 'instrument_tick_value',
                 'instrument_contract_size',

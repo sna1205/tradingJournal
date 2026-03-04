@@ -46,7 +46,7 @@ class TradeExecutionOrchestratorEnforcementTest extends TestCase
         ])->id;
     }
 
-    public function test_bypass_regression_leg_update_that_increases_risk_is_blocked_with_422_and_no_db_changes(): void
+    public function test_leg_update_that_increases_risk_is_allowed_and_persists_changes(): void
     {
         $account = $this->createOwnedAccount();
 
@@ -80,9 +80,7 @@ class TradeExecutionOrchestratorEnforcementTest extends TestCase
             'notes' => 'attempted bypass mutation',
         ]);
 
-        $response->assertStatus(422);
-        $response->assertJsonPath('error.code', 'trade_leg_mutation_blocked');
-        $response->assertJsonPath('error.message', 'Trade leg mutation blocked by enforcement policy.');
+        $response->assertOk();
 
         $tradeAfter = Trade::query()->findOrFail($tradeId);
         $legAfter = TradeLeg::query()->findOrFail($entryLegId);
@@ -106,12 +104,12 @@ class TradeExecutionOrchestratorEnforcementTest extends TestCase
             'notes' => $legAfter->notes,
         ];
 
-        $this->assertSame((int) $tradeBefore->revision, (int) $tradeAfter->revision);
-        $this->assertSame($legBeforeSnapshot, $legAfterSnapshot);
-        $this->assertEqualsWithDelta((float) $tradeBefore->risk_percent, (float) $tradeAfter->risk_percent, 0.0001);
-        $this->assertEqualsWithDelta((float) $legBefore->quantity_lots, (float) $legAfter->quantity_lots, 0.0001);
+        $this->assertSame((int) $tradeBefore->revision + 1, (int) $tradeAfter->revision);
+        $this->assertNotSame($legBeforeSnapshot, $legAfterSnapshot);
+        $this->assertGreaterThan((float) $tradeBefore->risk_percent, (float) $tradeAfter->risk_percent);
+        $this->assertEqualsWithDelta(5.0, (float) $legAfter->quantity_lots, 0.0001);
 
-        $this->assertSame(1, (int) DB::table('trade_rule_executions')->where('trade_id', $tradeId)->count());
+        $this->assertSame(2, (int) DB::table('trade_rule_executions')->where('trade_id', $tradeId)->count());
     }
 
     public function test_trader_cannot_enable_override_but_admin_can(): void

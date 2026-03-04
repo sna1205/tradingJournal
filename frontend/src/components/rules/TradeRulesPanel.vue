@@ -9,7 +9,6 @@ import type {
   TradeChecklistResponsePayload,
   TradeChecklistResponseRecord,
 } from '@/types/rules'
-import type { TradePrecheckResult } from '@/stores/tradeStore'
 import TradeRulesBody from '@/components/rules/TradeRulesBody.vue'
 
 const props = withDefaults(
@@ -28,7 +27,6 @@ const props = withDefaults(
     submitAttempted?: boolean
     strictMode?: boolean
     mode?: 'auto' | 'desktop' | 'mobile'
-    riskPrecheck?: TradePrecheckResult | null
   }>(),
   {
     loading: false,
@@ -36,7 +34,6 @@ const props = withDefaults(
     submitAttempted: false,
     strictMode: false,
     mode: 'auto',
-    riskPrecheck: null,
     executionSnapshot: null,
     serverReadiness: undefined,
     serverReadinessMismatch: false,
@@ -72,7 +69,6 @@ const isMobileOnly = computed(() => props.mode === 'mobile')
       :saving="saving"
       :submit-attempted="submitAttempted"
       :strict-mode="strictMode"
-      :risk-precheck="riskPrecheck"
       :show-header="true"
       @update-response="(itemId, value) => emit('update-response', itemId, value)"
       @evaluation-change="(payload) => emit('evaluation-change', payload)"
@@ -109,7 +105,6 @@ const isMobileOnly = computed(() => props.mode === 'mobile')
         :saving="saving"
         :submit-attempted="submitAttempted"
         :strict-mode="strictMode"
-        :risk-precheck="riskPrecheck"
         :show-header="false"
         @update-response="(itemId, value) => emit('update-response', itemId, value)"
         @evaluation-change="(payload) => emit('evaluation-change', payload)"

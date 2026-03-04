@@ -17,13 +17,11 @@ use App\Services\CurrencyConversionService;
 use App\Services\TradeCalculationEngine;
 use App\Services\TradeChecklistService;
 use App\Services\TradeExecutionOrchestrator;
-use App\Services\TradeRiskPolicyService;
 use App\Support\ApiErrorResponder;
 use Carbon\CarbonImmutable;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Facades\Validator;
 use Illuminate\Validation\Rule;
@@ -54,7 +52,6 @@ class TradeController extends Controller
     public function __construct(
         private readonly TradeCalculationEngine $calculationEngine,
         private readonly AccountBalanceService $accountBalanceService,
-        private readonly TradeRiskPolicyService $tradeRiskPolicyService,
         private readonly ChecklistService $checklistService,
         private readonly TradeChecklistService $tradeChecklistService,
         private readonly CurrencyConversionService $currencyConversionService,
@@ -101,82 +98,6 @@ class TradeController extends Controller
         });
 
         return response()->json($trades);
-    }
-
-    /**
-     * Validate risk policy limits before save.
-     */
-    public function precheck(Request $request)
-    {
-        $userId = (int) $request->user()->id;
-        $tradeId = (int) $request->integer('trade_id', 0);
-        $existingTrade = $tradeId > 0
-            ? Trade::query()
-                ->whereKey($tradeId)
-                ->whereHas('account', fn ($query) => $query->where('user_id', $userId))
-                ->first()
-            : null;
-        if ($tradeId > 0) {
-            abort_unless($existingTrade !== null, 404);
-        }
-        $isUpdate = $existingTrade !== null;
-
-        $payload = $this->validatePayload($request, $isUpdate, $existingTrade);
-        $payload = $this->applyDefaults($payload, $isUpdate);
-        $payload = $this->normalizePrecheckPayload($payload, $existingTrade);
-        $payload['pair'] = strtoupper((string) $payload['pair']);
-
-        $account = $this->resolveAccountForRead((int) $payload['account_id'], $userId);
-        $instrument = $this->resolveInstrumentForRead((int) $payload['instrument_id']);
-        $payloadWithMetrics = $this->buildPayloadWithCalculatedFields($payload, $account, $instrument);
-        $riskEvaluation = $this->evaluateRiskPolicy(
-            $payloadWithMetrics,
-            $account,
-            $isUpdate ? (int) $existingTrade->id : null,
-            method_exists($request->user(), 'roleName')
-                ? $request->user()->roleName()
-                : (string) ($request->user()->role ?? 'trader')
-        );
-        $checklistGate = $this->tradeRuleGateService->evaluateChecklistGateForPayload(
-            $userId,
-            $payloadWithMetrics,
-            $existingTrade,
-            $payloadWithMetrics,
-            false
-        );
-
-        return response()->json([
-            'allowed' => $riskEvaluation['allowed'],
-            'requires_override_reason' => $riskEvaluation['requires_override_reason'],
-            'policy' => $riskEvaluation['policy'],
-            'violations' => $riskEvaluation['violations'],
-            'stats' => $riskEvaluation['stats'],
-            'calculated' => [
-                'monetary_risk' => $payloadWithMetrics['monetary_risk'],
-                'monetary_reward' => $payloadWithMetrics['monetary_reward'],
-                'gross_profit_loss' => $payloadWithMetrics['gross_profit_loss'],
-                'costs_total' => $payloadWithMetrics['costs_total'],
-                'profit_loss' => $payloadWithMetrics['profit_loss'],
-                'risk_percent' => $payloadWithMetrics['risk_percent'],
-                'risk_amount_account_currency' => $payloadWithMetrics['risk_amount_account_currency'],
-                'risk_currency' => $payloadWithMetrics['risk_currency'],
-                'r_multiple' => $payloadWithMetrics['r_multiple'],
-                'realized_r_multiple' => $payloadWithMetrics['realized_r_multiple'],
-                'avg_entry_price' => $payloadWithMetrics['avg_entry_price'],
-                'avg_exit_price' => $payloadWithMetrics['avg_exit_price'],
-                'rr' => $payloadWithMetrics['rr'],
-                'fx_rate_used' => $payloadWithMetrics['fx_rate_used'],
-                'fx_pair_used' => $payloadWithMetrics['fx_pair_used'],
-                'fx_rate_provenance_at' => $payloadWithMetrics['fx_rate_provenance_at'],
-            ],
-            'checklist_gate' => [
-                'readiness' => $checklistGate['readiness'],
-                'failing_rules' => $checklistGate['failing_rules'] ?? [],
-                'failed_required_rule_ids' => $checklistGate['failed_required_rule_ids'] ?? [],
-                'failed_rule_reasons' => $checklistGate['failed_rule_reasons'] ?? [],
-                'checklist_incomplete' => (bool) ($checklistGate['checklist_incomplete'] ?? false),
-            ],
-        ]);
     }
 
     public function store(Request $request)
@@ -353,7 +274,6 @@ class TradeController extends Controller
             'checklist_evaluation.ready' => ['sometimes', 'boolean'],
             'checklist_evaluation.completed_required' => ['sometimes', 'integer', 'min:0'],
             'checklist_evaluation.total_required' => ['sometimes', 'integer', 'min:0'],
-            'precheck_snapshot' => ['sometimes', 'array'],
             'emotion' => [$required, Rule::in(self::EMOTION_VALUES)],
             'session' => ['sometimes', 'string', 'max:60'],
             'model' => ['sometimes', 'string', 'max:120'],
@@ -567,9 +487,6 @@ class TradeController extends Controller
         if (! array_key_exists('checklist_evaluation', $input) && array_key_exists('checklistEvaluation', $input)) {
             $input['checklist_evaluation'] = $input['checklistEvaluation'];
         }
-        if (! array_key_exists('precheck_snapshot', $input) && array_key_exists('precheckSnapshot', $input)) {
-            $input['precheck_snapshot'] = $input['precheckSnapshot'];
-        }
 
         if (array_key_exists('checklist_responses', $input) && is_array($input['checklist_responses'])) {
             $input['checklist_responses'] = array_values(array_map(function ($row): array {
@@ -583,7 +500,7 @@ class TradeController extends Controller
             }, $input['checklist_responses']));
         }
 
-        unset($input['symbol'], $input['position_size'], $input['strategy_model'], $input['model_id'], $input['sessionEnum'], $input['tags'], $input['close_date'], $input['checklistIncomplete'], $input['checklistResponses'], $input['checklistEvaluation'], $input['precheckSnapshot']);
+        unset($input['symbol'], $input['position_size'], $input['strategy_model'], $input['model_id'], $input['sessionEnum'], $input['tags'], $input['close_date'], $input['checklistIncomplete'], $input['checklistResponses'], $input['checklistEvaluation']);
 
         return $input;
     }
@@ -1122,7 +1039,6 @@ class TradeController extends Controller
                 'tag_ids',
                 'checklist_responses',
                 'checklist_evaluation',
-                'precheck_snapshot',
                 'instrument_tick_size',
                 'instrument_tick_value',
                 'instrument_contract_size',
@@ -1278,76 +1194,6 @@ class TradeController extends Controller
             'failed_rule_reasons' => $checklistGate['failed_rule_reasons'] ?? [],
             'failedRequiredRuleIds' => $checklistGate['failed_required_rule_ids'] ?? [],
             'failedRuleReasons' => $checklistGate['failed_rule_reasons'] ?? [],
-        ]);
-    }
-
-    /**
-     * @param  array<string, mixed>  $payloadWithMetrics
-     * @param  object{id:int,starting_balance:numeric-string|int|float,current_balance:numeric-string|int|float}  $account
-     * @return array{
-     *   allowed:bool,
-     *   requires_override_reason:bool,
-     *   policy:array<string,mixed>,
-     *   violations:array<int,array{code:string,message:string,limit:float,actual:float}>,
-     *   stats:array<string,float>
-     * }
-     */
-    private function evaluateRiskPolicy(
-        array $payloadWithMetrics,
-        object $account,
-        ?int $excludeTradeId,
-        ?string $actorRole = null
-    ): array
-    {
-        return $this->tradeRiskPolicyService->evaluate([
-            'account_id' => (int) $account->id,
-            'account_starting_balance' => (float) $account->starting_balance,
-            'account_current_balance' => (float) $account->current_balance,
-            'risk_percent' => (float) $payloadWithMetrics['risk_percent'],
-            'monetary_risk' => (float) $payloadWithMetrics['monetary_risk'],
-            'risk_override_reason' => $payloadWithMetrics['risk_override_reason'] ?? null,
-            'trade_date' => (string) ($payloadWithMetrics['date'] ?? CarbonImmutable::now()->toIso8601String()),
-            'exclude_trade_id' => $excludeTradeId,
-            'actor_role' => $actorRole ?? 'trader',
-        ]);
-    }
-
-    /**
-     * @param array{
-     *   allowed:bool,
-     *   requires_override_reason:bool,
-     *   violations:array<int,array{code:string,message:string,limit:float,actual:float}>
-     * } $evaluation
-     *
-     * @throws ValidationException
-     */
-    private function throwIfRiskPolicyBlocked(array $evaluation): void
-    {
-        if ((bool) $evaluation['allowed']) {
-            return;
-        }
-
-        Log::warning('Trade rejected by risk policy.', [
-            'requires_override_reason' => (bool) ($evaluation['requires_override_reason'] ?? false),
-            'violations' => $evaluation['violations'] ?? [],
-            'policy' => $evaluation['policy'] ?? [],
-            'stats' => $evaluation['stats'] ?? [],
-        ]);
-
-        $messages = collect($evaluation['violations'] ?? [])
-            ->map(fn (array $violation): string => (string) ($violation['message'] ?? 'Risk policy violation.'))
-            ->values()
-            ->all();
-
-        if ((bool) ($evaluation['requires_override_reason'] ?? false)) {
-            throw ValidationException::withMessages([
-                'risk_override_reason' => ['Override reason is required to bypass account risk policy.'],
-                'risk_policy' => $messages,
-            ]);
-        }
-
-        throw ValidationException::withMessages([
-            'risk_policy' => $messages,
         ]);
     }
 

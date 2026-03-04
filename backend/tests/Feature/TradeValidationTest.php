@@ -129,7 +129,7 @@ class TradeValidationTest extends TestCase
         $response->assertJsonValidationErrors(['stop_loss']);
     }
 
-    public function test_trade_precheck_blocks_when_risk_exceeds_policy(): void
+    public function test_trade_risk_validation_endpoint_is_not_available(): void
     {
         $account = $this->createOwnedAccount([
             'starting_balance' => 10_000,
@@ -153,12 +153,10 @@ class TradeValidationTest extends TestCase
             'position_size' => 1.0,
         ]);
 
-        $response->assertOk();
-        $response->assertJsonPath('allowed', false);
-        $response->assertJsonPath('requires_override_reason', false);
+        $response->assertStatus(405);
     }
 
-    public function test_trade_creation_requires_override_reason_when_policy_allows_override(): void
+    public function test_trade_creation_is_not_blocked_by_risk_override_reason_policy(): void
     {
         $this->user->forceFill(['role' => 'admin'])->save();
 
@@ -177,25 +175,13 @@ class TradeValidationTest extends TestCase
             'allow_override' => true,
         ]);
 
-        $blocked = $this->withTradeIdempotencyKey()->postJson('/api/trades', [
+        $created = $this->withTradeIdempotencyKey()->postJson('/api/trades', [
             ...$this->tradePayload((int) $account->id),
             'entry_price' => 1.1000,
             'stop_loss' => 1.0900,
             'position_size' => 1.0,
         ]);
-
-        $blocked->assertStatus(422);
-        $blocked->assertJsonValidationErrors(['risk_override_reason']);
-
-        $allowed = $this->withTradeIdempotencyKey()->postJson('/api/trades', [
-            ...$this->tradePayload((int) $account->id),
-            'entry_price' => 1.1000,
-            'stop_loss' => 1.0900,
-            'position_size' => 1.0,
-            'risk_override_reason' => 'High conviction setup after planned review.',
-        ]);
-
-        $allowed->assertCreated();
+        $created->assertCreated();
     }
 
     public function test_trade_creation_accepts_multi_leg_payload_and_persists_legs(): void

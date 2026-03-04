@@ -292,6 +292,13 @@ export class PriceFeedService {
           ts: Number(raw.ts ?? now),
         })
       }
+    } catch {
+      // Keep polling alive without surfacing unhandled promise rejections.
+      // Failed symbols are marked unavailable and throttled by cache TTL.
+      for (const symbol of symbols) {
+        this.lastFetchMs.set(symbol, now)
+        this.symbolAvailability.set(symbol, false)
+      }
     } finally {
       this.refreshInFlight = false
     }

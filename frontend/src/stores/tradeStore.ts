@@ -26,7 +26,6 @@ import { useAccountStore } from '@/stores/accountStore'
 import { useSyncStatusStore } from '@/stores/syncStatusStore'
 import { normalizeApiError } from '@/utils/apiError'
 import { createIdempotencyKey } from '@/utils/idempotency'
-import type { TradeChecklistReadiness } from '@/types/rules'
 import type {
   FxRate,
   Instrument,
@@ -80,7 +79,6 @@ export interface TradePayload {
   killzone_id?: number | null
   session_enum?: SessionEnum | null
   tag_ids?: number[]
-  risk_override_reason?: string | null
   followed_rules: boolean
   checklist_responses?: Array<{
     checklist_item_id: number
@@ -92,7 +90,6 @@ export interface TradePayload {
     completed_required: number
     total_required: number
   }
-  precheck_snapshot?: TradePrecheckResult['calculated'] | null
   checklist_incomplete?: boolean
   emotion: TradeEmotion
   session?: string
@@ -108,76 +105,6 @@ export interface TradeLegPayload {
   executed_at: string
   fees?: number
   notes?: string | null
-}
-
-export interface TradePrecheckViolation {
-  code: string
-  message: string
-  limit: number
-  actual: number
-}
-
-export interface TradePrecheckResult {
-  allowed: boolean
-  risk_engine_unavailable?: boolean
-  local_only_override_allowed?: boolean
-  requires_override_reason: boolean
-  policy: {
-    account_id: number
-    max_risk_per_trade_pct: number
-    max_daily_loss_pct: number
-    max_total_drawdown_pct: number
-    max_open_risk_pct: number
-    enforce_hard_limits: boolean
-    allow_override: boolean
-  }
-  violations: TradePrecheckViolation[]
-  stats: {
-    risk_percent: number
-    monetary_risk: number
-    daily_realized_loss: number
-    projected_daily_loss: number
-    projected_daily_loss_pct: number
-    projected_drawdown: number
-    projected_drawdown_pct: number
-  }
-  calculated: {
-    monetary_risk: number
-    monetary_reward: number
-    gross_profit_loss: number
-    costs_total: number
-    profit_loss: number
-    risk_percent: number
-    r_multiple: number
-    realized_r_multiple: number
-    avg_entry_price: number
-    avg_exit_price: number
-    rr: number
-    fx_rate_quote_to_usd?: number | null
-    fx_symbol_used?: string | null
-    fx_rate_timestamp?: string | null
-  }
-  checklist_gate?: {
-    readiness: TradeChecklistReadiness
-    failing_rules: Array<{
-      checklist_item_id: number
-      title: string
-      category: string
-      reason?: string
-    }>
-    failed_required_rule_ids: number[]
-    failed_rule_reasons: Array<{
-      checklist_item_id: number
-      title: string
-      category: string
-      reason?: string
-    }>
-    checklist_incomplete: boolean
-  }
-}
-
-interface TradePrecheckOptions {
-  signal?: AbortSignal
 }
 
 const PROHIBITED_TRADE_FX_FIELDS = [
@@ -723,9 +650,6 @@ export const useTradeStore = defineStore('trades', () => {
             notes: leg.notes ?? null,
           }))
           : current.legs,
-        risk_override_reason: sanitizedPayload.risk_override_reason !== undefined
-          ? sanitizedPayload.risk_override_reason
-          : current.risk_override_reason,
         followed_rules: sanitizedPayload.followed_rules ?? current.followed_rules,
         checklist_incomplete: sanitizedPayload.checklist_incomplete ?? current.checklist_incomplete,
         emotion: sanitizedPayload.emotion ?? current.emotion,
@@ -1069,90 +993,6 @@ export const useTradeStore = defineStore('trades', () => {
     }
   }
 
-  async function precheckTrade(payload: TradePayload, tradeId?: number, options?: TradePrecheckOptions): Promise<TradePrecheckResult> {
-    try {
-      const body: Record<string, unknown> = sanitizeTradePayload({
-        ...payload,
-      })
-      if (typeof tradeId === 'number' && tradeId > 0) {
-        body.trade_id = tradeId
-      }
-
-      const fingerprint = stableSerialize(body)
-      const response = await requestManager.run({
-        key: `precheckTrade:${tradeId ?? 'new'}`,
-        fingerprint,
-        cacheKey: `precheck:${tradeId ?? 'new'}:${fingerprint}`,
-        cacheTtlMs: 1_000,
-        externalSignal: options?.signal,
-        execute: async ({ signal }) => {
-          const { data } = await api.post<TradePrecheckResult>('/trades/precheck', body, {
-            signal,
-          })
-          return data
-        },
-      })
-      if (!response.stale) {
-        syncStatusStore.markServerHealthy()
-      }
-      return response.value
-    } catch (error) {
-      if (isAbortError(error)) {
-        throw error
-      }
-
-      if (!shouldUseLocalFallback(error)) {
-        throw normalizeApiError(error)
-      }
-      syncStatusStore.markLocalFallback('trades-precheck')
-      return {
-        allowed: false,
-        risk_engine_unavailable: true,
-        local_only_override_allowed: true,
-        requires_override_reason: false,
-        policy: {
-          account_id: payload.account_id,
-          max_risk_per_trade_pct: 1,
-          max_daily_loss_pct: 5,
-          max_total_drawdown_pct: 10,
-          max_open_risk_pct: 2,
-          enforce_hard_limits: true,
-          allow_override: false,
-        },
-        violations: [
-          {
-            code: 'risk_engine_unavailable',
-            message: 'Risk engine unavailable. Submission is blocked until connectivity is restored or local-only override is confirmed.',
-            limit: 0,
-            actual: 0,
-          },
-        ],
-        stats: {
-          risk_percent: 0,
-          monetary_risk: 0,
-          daily_realized_loss: 0,
-          projected_daily_loss: 0,
-          projected_daily_loss_pct: 0,
-          projected_drawdown: 0,
-          projected_drawdown_pct: 0,
-        },
-        calculated: {
-          monetary_risk: 0,
-          monetary_reward: 0,
-          gross_profit_loss: 0,
-          costs_total: 0,
-          profit_loss: 0,
-          risk_percent: 0,
-          r_multiple: 0,
-          realized_r_multiple: 0,
-          avg_entry_price: 0,
-          avg_exit_price: 0,
-          rr: 0,
-        },
-      }
-    }
-  }
-
   async function uploadTradeImage(
     tradeId: number,
     file: File,
@@ -1307,7 +1147,6 @@ export const useTradeStore = defineStore('trades', () => {
     fetchDictionaries,
     fetchTradePsychology,
     upsertTradePsychology,
-    precheckTrade,
     addTrade,
     createTrade,
     updateTrade,
@@ -1384,7 +1223,7 @@ function toOptimisticTrade(payload: TradePayload, tempId: number): Trade {
     followed_rules: payload.followed_rules,
     checklist_incomplete: payload.checklist_incomplete ?? false,
     emotion: payload.emotion,
-    risk_override_reason: payload.risk_override_reason ?? null,
+    risk_override_reason: null,
     session: payload.session ?? 'N/A',
     model: payload.strategy_model ?? 'General',
     date: payload.close_date,

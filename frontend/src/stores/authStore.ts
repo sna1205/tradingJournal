@@ -71,7 +71,11 @@ export const useAuthStore = defineStore('auth', () => {
     loading.value = true
     try {
       await fetchAuthConfig()
-      await fetchMe()
+      if (hasSessionCookie()) {
+        await fetchMe()
+      } else {
+        await clearSession()
+      }
     } catch {
       await clearSession()
     } finally {
@@ -177,3 +181,13 @@ export const useAuthStore = defineStore('auth', () => {
     clearSession,
   }
 })
+
+function hasSessionCookie(): boolean {
+  if (typeof document === 'undefined') {
+    return false
+  }
+
+  return document.cookie
+    .split(';')
+    .some((chunk) => /_session=/.test(chunk.trim()))
+}

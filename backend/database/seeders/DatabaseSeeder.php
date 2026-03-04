@@ -10,6 +10,7 @@ class DatabaseSeeder extends Seeder
     public function run(): void
     {
         $this->call([
+            LocalDemoUserSeeder::class,
             InstrumentSeeder::class,
             FxRateSeeder::class,
             FxRateSnapshotSeeder::class,

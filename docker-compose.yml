@@ -1,23 +1,4 @@
 services:
-  mysql:
-    image: mysql:8.4
-    container_name: trading-journal-mysql
-    restart: unless-stopped
-    environment:
-      MYSQL_DATABASE: trading_journal
-      MYSQL_USER: trading
-      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-trading_local_password}
-      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-trading_local_root_password}
-    ports:
-      - "3307:3306"
-    volumes:
-      - mysql_data:/var/lib/mysql
-    healthcheck:
-      test: ["CMD-SHELL", "mysqladmin ping -h localhost -uroot -p$${MYSQL_ROOT_PASSWORD}"]
-      interval: 10s
-      timeout: 5s
-      retries: 10
-
   php:
     build:
       context: .
@@ -31,16 +12,12 @@ services:
     environment:
       APP_ENV: local
       APP_DEBUG: "true"
-      DB_CONNECTION: mysql
-      DB_HOST: mysql
-      DB_PORT: 3306
-      DB_DATABASE: trading_journal
-      DB_USERNAME: trading
-      DB_PASSWORD: ${MYSQL_PASSWORD:-trading_local_password}
+      DB_CONNECTION: sqlite
+      DB_DATABASE: /var/www/html/database/database.sqlite
+      SESSION_DRIVER: file
+      CACHE_STORE: file
+      QUEUE_CONNECTION: sync
       COMPOSER_CACHE_DIR: /tmp/composer-cache
-    depends_on:
-      mysql:
-        condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "pidof php-fpm >/dev/null || exit 1"]
       interval: 5s
@@ -85,6 +62,5 @@ services:
         condition: service_started
 
 volumes:
-  mysql_data:
   node_modules:
   composer_cache:

@@ -53,7 +53,7 @@ class TradeRuleGateServiceTest extends TestCase
         $this->assertSame([(int) $item->id], $result['failed_required_rule_ids'] ?? []);
     }
 
-    public function test_gate_uses_server_context_metrics_and_ignores_client_precheck_snapshot_metrics(): void
+    public function test_gate_uses_server_context_metrics_for_auto_metric_rules(): void
     {
         $checklist = $this->createChecklistWithRule('number', [
             'auto_metric' => 'risk_percent',
@@ -75,10 +75,6 @@ class TradeRuleGateServiceTest extends TestCase
                         'checklist_item_id' => (int) $item->id,
                         'value' => null,
                     ],
-                ],
-                'precheck_snapshot' => [
-                    'risk_percent' => 0.1,
-                    'monetary_risk' => 0.1,
                 ],
             ],
             false

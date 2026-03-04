@@ -105,7 +105,7 @@ watch(
   () => selectedChecklistId.value,
   (value) => {
     if (!value) return
-    void checklistStore.fetchChecklistItems(value)
+    void checklistStore.fetchChecklistItems(value).catch(() => undefined)
   }
 )
 

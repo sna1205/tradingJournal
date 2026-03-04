@@ -29,7 +29,7 @@ interface AccountRiskPolicyLite {
 
 const props = withDefaults(
   defineProps<{
-    mode?: 'lots' | 'precheck'
+    mode?: 'lots'
     title?: string
     subtitle?: string
   }>(),
@@ -73,12 +73,10 @@ const form = reactive({
   leverage: '100',
 })
 
-const heading = computed(() => props.title ?? (props.mode === 'precheck' ? 'Pre-Trade Check' : 'Lots Calculator'))
+const heading = computed(() => props.title ?? 'Lots Calculator')
 const subheading = computed(() =>
   props.subtitle
-  ?? (props.mode === 'precheck'
-    ? 'Validate risk exposure before execution and verify policy compliance.'
-    : 'Instrument-aware position sizing with live risk and reward projection.')
+  ?? 'Instrument-aware position sizing with live risk and reward projection.'
 )
 
 const accountOptions = computed(() =>
@@ -413,7 +411,7 @@ function switchRiskMode(nextMode: RiskMode) {
   <div class="lot-calc-shell">
     <header class="panel lot-calc-header">
       <div class="lot-calc-head-title">
-        <p class="lot-calc-kicker">{{ props.mode === 'precheck' ? 'Risk Precheck' : 'Position Sizing' }}</p>
+        <p class="lot-calc-kicker">Position Sizing</p>
         <h2>{{ heading }}</h2>
         <p class="section-note">{{ subheading }}</p>
       </div>

@@ -14,6 +14,7 @@ use App\Policies\SavedReportPolicy;
 use App\Policies\TradePolicy;
 use App\Support\AuthLifetimeConfigValidator;
 use App\Support\CorsConfigValidator;
+use App\Support\LocalDatabaseConfigValidator;
 use App\Services\PriceFeed\CachePriceFeedService;
 use App\Services\PriceFeed\ChainedPriceFeedService;
 use App\Services\PriceFeed\ExchangeRateApiPriceFeedService;
@@ -96,6 +97,11 @@ class AppServiceProvider extends ServiceProvider
             (bool) config('cors.supports_credentials', true)
         );
 
+        LocalDatabaseConfigValidator::validate(
+            (string) config('app.env', 'production'),
+            (string) config('database.default', 'sqlite')
+        );
+
         RateLimiter::for('auth-login', function (Request $request): array {
             $ip = (string) ($request->ip() ?? 'unknown');
             $email = strtolower(trim((string) $request->input('email', '')));
@@ -146,20 +152,6 @@ class AppServiceProvider extends ServiceProvider
             return [
                 Limit::perMinute(5)->by($userKey),
                 Limit::perMinute(20)->by("reports-export:ip:{$ip}"),
-            ];
-        });
-
-        RateLimiter::for('trades-precheck', function (Request $request): array {
-            $ip = (string) ($request->ip() ?? 'unknown');
-            $user = $request->user();
-            $userKey = $user !== null
-                ? "trades-precheck:user:{$user->getAuthIdentifier()}"
-                : "trades-precheck:user-fallback-ip:{$ip}";
-
-            return [
-                Limit::perMinute(30)->by($userKey),
-                Limit::perSecond(5)->by("trades-precheck:burst:{$userKey}"),
-                Limit::perMinute(120)->by("trades-precheck:ip:{$ip}"),
             ];
         });
 

@@ -61,24 +61,6 @@ class TradeChecklistEnforcementTest extends TestCase
         $this->assertDatabaseCount('trades', 0);
     }
 
-    public function test_precheck_and_store_share_same_strict_gate_decision_for_missing_required_rule(): void
-    {
-        $account = $this->createOwnedAccount();
-        $checklist = $this->createChecklistWithRequiredRule('account', (int) $account->id, null);
-        $requiredItem = $checklist->items()->firstOrFail();
-        $payload = $this->tradePayload((int) $account->id);
-
-        $precheck = $this->postJson('/api/trades/precheck', $payload);
-        $precheck->assertOk();
-        $precheck->assertJsonPath('checklist_gate.checklist_incomplete', true);
-        $precheck->assertJsonPath('checklist_gate.failed_required_rule_ids.0', (int) $requiredItem->id);
-
-        $store = $this->withTradeIdempotencyKey()->postJson('/api/trades', $payload);
-        $store->assertStatus(422);
-        $store->assertJsonPath('failed_required_rule_ids.0', (int) $requiredItem->id);
-        $this->assertDatabaseCount('trades', 0);
-    }
-
     public function test_trade_update_returns_422_when_strict_required_rules_are_missing(): void
     {
         $account = $this->createOwnedAccount();
@@ -300,7 +282,7 @@ class TradeChecklistEnforcementTest extends TestCase
         $this->assertDatabaseCount('trades', 0);
     }
 
-    public function test_strict_auto_metric_rule_cannot_be_bypassed_by_precheck_snapshot_metrics(): void
+    public function test_strict_auto_metric_rule_uses_server_context_metrics_only(): void
     {
         $account = $this->createOwnedAccount();
         $checklist = $this->createChecklistWithRequiredRule(
@@ -320,12 +302,6 @@ class TradeChecklistEnforcementTest extends TestCase
         $payload = $this->tradePayload((int) $account->id);
         $payload['checklist_responses'] = [
             ['checklist_item_id' => (int) $requiredItem->id, 'value' => null],
-        ];
-        $payload['precheck_snapshot'] = [
-            'risk_percent' => 0.0,
-            'monetary_risk' => 0.0,
-            'lot_size' => 0.0001,
-            'pip_value' => 0.0,
         ];
 
         $response = $this->withTradeIdempotencyKey()->postJson('/api/trades', $payload);

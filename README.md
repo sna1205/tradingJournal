@@ -3,7 +3,7 @@
 Full-stack trading journal built with:
 - Frontend: Vue 3 + TypeScript + Pinia + Tailwind + ECharts
 - Backend: Laravel 11 REST API
-- Database: MySQL 8 (Docker) / SQLite (local option)
+- Database: SQLite (local), MySQL 8 (production)
 
 ## Project Structure
 - `frontend/` Vue app
@@ -13,19 +13,9 @@ Full-stack trading journal built with:
 
 ## Local Development
 
-### 1) Start infrastructure
-```bash
-docker compose up -d mysql
-```
+Local development uses one database only: SQLite.
 
-MySQL (dev):
-- Host: `127.0.0.1`
-- Port: `3307`
-- Database: `trading_journal`
-- Username: `trading`
-- Password: `veasna123`
-
-### 2) Backend setup
+### 1) Backend setup
 ```bash
 cd backend
 copy .env.example .env
@@ -34,6 +24,15 @@ php artisan key:generate
 php artisan migrate:fresh --seed
 php artisan serve
 ```
+
+`backend/.env.example` is enforced to:
+- `DB_CONNECTION=sqlite`
+- `DB_DATABASE=database/database.sqlite`
+- `SESSION_DRIVER=file`
+
+Seeded local login (after `migrate:fresh --seed`):
+- Email: `demo@tradingjournal.local`
+- Password: `password123`
 
 API URL:
 - `http://127.0.0.1:8000`
@@ -90,7 +89,7 @@ cd backend/public
 php -d extension=mbstring -S 127.0.0.1:8000 ../vendor/laravel/framework/src/Illuminate/Foundation/resources/server.php
 ```
 
-### 3) Frontend
+### 2) Frontend
 ```bash
 cd frontend
 copy .env.example .env
@@ -100,6 +99,8 @@ npm run dev
 
 Frontend URL:
 - `http://127.0.0.1:5173`
+
+If login returns `422`, the API is up and database is reachable; it means invalid credentials. Register again or use the correct local account.
 
 ---
 

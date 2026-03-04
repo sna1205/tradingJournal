@@ -80,4 +80,38 @@ class ChecklistItemRuleSchemaTest extends TestCase
         $response->assertStatus(422);
         $response->assertJsonValidationErrors(['rule.operator']);
     }
+
+    public function test_store_allows_plain_number_item_without_comparator_threshold_config(): void
+    {
+        $user = User::factory()->create();
+        Sanctum::actingAs($user);
+
+        $checklist = Checklist::query()->create([
+            'user_id' => (int) $user->id,
+            'name' => 'Plain Number Checklist',
+            'scope' => 'global',
+            'enforcement_mode' => 'soft',
+            'is_active' => true,
+        ]);
+
+        $response = $this->postJson("/api/checklists/{$checklist->id}/items", [
+            'title' => 'Plan adherence score (%)',
+            'type' => 'number',
+            'required' => true,
+            'category' => 'After Trading',
+            'config' => [
+                'min' => 0,
+                'max' => 100,
+                'step' => 5,
+                'unit' => '%',
+            ],
+            'is_active' => true,
+        ]);
+
+        $response->assertCreated();
+        $response->assertJsonPath('type', 'number');
+        $response->assertJsonPath('config.min', 0);
+        $response->assertJsonPath('config.max', 100);
+        $response->assertJsonPath('config.step', 5);
+    }
 }

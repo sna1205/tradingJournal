@@ -145,8 +145,14 @@ class ChecklistItemController extends Controller
                 }
 
                 $rawComparator = $config['comparator'] ?? null;
+                $hasThreshold = array_key_exists('threshold', $config)
+                    || array_key_exists('threshold_min', $config)
+                    || array_key_exists('threshold_max', $config);
+
                 if (!is_scalar($rawComparator) || trim((string) $rawComparator) === '') {
-                    $validator->errors()->add('config.comparator', 'Number rules require a comparator.');
+                    if ($hasThreshold) {
+                        $validator->errors()->add('config.comparator', 'Comparator is required when thresholds are provided.');
+                    }
                     return;
                 }
 

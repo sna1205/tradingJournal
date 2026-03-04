@@ -5,12 +5,14 @@ use Illuminate\Foundation\Configuration\Exceptions;
 use Illuminate\Foundation\Configuration\Middleware;
 use Illuminate\Auth\Access\AuthorizationException;
 use Illuminate\Auth\AuthenticationException;
+use Illuminate\Database\QueryException;
 use Illuminate\Database\Eloquent\ModelNotFoundException;
 use Illuminate\Http\Request;
 use Illuminate\Http\Exceptions\ThrottleRequestsException;
 use Illuminate\Validation\ValidationException;
 use Symfony\Component\HttpKernel\Exception\HttpException;
 use App\Support\ApiErrorResponder;
+use App\Support\DatabaseExceptionInspector;
 
 return Application::configure(basePath: dirname(__DIR__))
     ->withRouting(
@@ -112,6 +114,27 @@ return Application::configure(basePath: dirname(__DIR__))
                 status: 404,
                 code: 'resource_not_found',
                 message: 'Requested resource was not found.'
+            );
+        });
+
+        $exceptions->render(function (QueryException $exception, Request $request) {
+            if (
+                !$request->expectsJson()
+                && !$request->is('api/*')
+                && !$request->is('sanctum/*')
+            ) {
+                return null;
+            }
+
+            if (!DatabaseExceptionInspector::isConnectionIssue($exception)) {
+                return null;
+            }
+
+            return ApiErrorResponder::respond(
+                request: $request,
+                status: 503,
+                code: 'database_unavailable',
+                message: 'Database is temporarily unavailable. Verify DB_HOST/DB_PORT and ensure MySQL is running, or set DB_CONNECTION=sqlite for local development.'
             );
         });
 

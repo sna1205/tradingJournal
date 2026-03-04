@@ -6,27 +6,9 @@ use App\Models\Checklist;
 use App\Models\Trade;
 use App\Services\ChecklistService;
 use App\Services\TradeChecklistService;
-use Illuminate\Support\Facades\Log;
 
 class TradeRuleGateService
 {
-    private const UNTRUSTED_PRECHECK_METRIC_KEYS = [
-        'risk_percent',
-        'monetary_risk',
-        'risk_amount',
-        'lot_size',
-        'position_size',
-        'pip_value',
-        'pip_size',
-        'risk_per_unit',
-        'reward_per_unit',
-        'instrument_tick_value',
-        'instrument_tick_size',
-        'rr',
-        'r_multiple',
-        'realized_r_multiple',
-    ];
-
     public function __construct(
         private readonly ChecklistService $checklistService,
         private readonly TradeChecklistService $tradeChecklistService
@@ -115,7 +97,7 @@ class TradeRuleGateService
             $existingTrade,
             $checklistIdForResponses
         );
-        $precheckMetrics = $this->buildChecklistPrecheckMetrics($contextPayload, $responseSourcePayload);
+        $precheckMetrics = $this->buildChecklistPrecheckMetrics($contextPayload);
 
         $evaluation = [
             'readiness' => [
@@ -316,10 +298,9 @@ class TradeRuleGateService
 
     /**
      * @param array<string,mixed> $contextPayload
-     * @param array<string,mixed> $responseSourcePayload
      * @return array<string,float>
      */
-    private function buildChecklistPrecheckMetrics(array $contextPayload, array $responseSourcePayload): array
+    private function buildChecklistPrecheckMetrics(array $contextPayload): array
     {
         $metrics = [];
 
@@ -330,8 +311,6 @@ class TradeRuleGateService
             $metrics[$key] = (float) $value;
             $metrics[strtolower($key)] = (float) $value;
         }
-
-        $this->logIgnoredPrecheckSnapshotMetrics($responseSourcePayload, $contextPayload);
 
         if (! array_key_exists('risk_amount', $metrics) && array_key_exists('monetary_risk', $metrics)) {
             $metrics['risk_amount'] = (float) $metrics['monetary_risk'];
@@ -349,45 +328,4 @@ class TradeRuleGateService
 
         return $metrics;
     }
-
-    /**
-     * @param array<string,mixed> $responseSourcePayload
-     * @param array<string,mixed> $contextPayload
-     */
-    private function logIgnoredPrecheckSnapshotMetrics(array $responseSourcePayload, array $contextPayload): void
-    {
-        $snapshot = $responseSourcePayload['precheck_snapshot'] ?? null;
-        if (! is_array($snapshot)) {
-            return;
-        }
-
-        $ignored = [];
-        foreach (array_keys($snapshot) as $key) {
-            if (! is_string($key)) {
-                continue;
-            }
-
-            $normalized = strtolower(trim($key));
-            if ($normalized === '') {
-                continue;
-            }
-
-            if (in_array($normalized, self::UNTRUSTED_PRECHECK_METRIC_KEYS, true)) {
-                $ignored[] = $normalized;
-            }
-        }
-
-        if (count($ignored) === 0) {
-            return;
-        }
-
-        Log::warning('Ignored client-supplied precheck_snapshot metric fields during checklist enforcement.', [
-            'ignored_fields' => array_values(array_unique($ignored)),
-            'account_id' => isset($contextPayload['account_id']) && is_numeric($contextPayload['account_id'])
-                ? (int) $contextPayload['account_id']
-                : null,
-            'trade_date' => isset($contextPayload['date']) ? (string) $contextPayload['date'] : null,
-        ]);
-    }
 }
-

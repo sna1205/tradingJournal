@@ -6,8 +6,11 @@ use App\Models\Account;
 use App\Models\Instrument;
 use App\Models\User;
 use App\Support\ApiErrorResponder;
+use Illuminate\Database\QueryException;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Route;
 use Laravel\Sanctum\Sanctum;
+use RuntimeException;
 use Tests\TestCase;
 
 class ApiErrorContractV2Test extends TestCase
@@ -97,6 +100,26 @@ class ApiErrorContractV2Test extends TestCase
         $payloadMismatch->assertJsonPath('error.version', ApiErrorResponder::CONTRACT_VERSION);
         $payloadMismatch->assertJsonPath('error.status', 409);
         $payloadMismatch->assertJsonPath('error.code', 'idempotency_payload_mismatch');
+    }
+
+    public function test_database_connection_failure_returns_error_contract_v2_service_unavailable(): void
+    {
+        Route::get('/api/_test/db-unavailable', static function (): void {
+            throw new QueryException(
+                'mysql',
+                'select 1',
+                [],
+                new RuntimeException('SQLSTATE[HY000] [2002] Connection refused', 2002)
+            );
+        });
+
+        $response = $this->getJson('/api/_test/db-unavailable');
+
+        $response->assertStatus(503);
+        $response->assertHeader('X-Error-Contract', 'v2');
+        $response->assertJsonPath('error.version', ApiErrorResponder::CONTRACT_VERSION);
+        $response->assertJsonPath('error.status', 503);
+        $response->assertJsonPath('error.code', 'database_unavailable');
     }
 
     private function createOwnedAccount(): Account
