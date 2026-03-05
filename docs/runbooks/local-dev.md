@@ -14,6 +14,10 @@ php artisan migrate:fresh --seed
 php artisan serve
 ```
 
+If Vite runs on `5174` instead of `5173`, ensure API env includes both ports:
+`CORS_ALLOWED_ORIGINS=http://localhost:5173,http://127.0.0.1:5173,http://localhost:5174,http://127.0.0.1:5174`
+`SANCTUM_STATEFUL_DOMAINS=localhost:5173,127.0.0.1:5173,localhost:5174,127.0.0.1:5174,localhost,127.0.0.1`
+
 ## Run Web
 ```bash
 cd apps/web

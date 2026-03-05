@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { isAxiosError } from 'axios'
 import { RouterLink, useRoute, useRouter } from 'vue-router'
 import { Eye, EyeOff, LineChart, Sparkles } from 'lucide-vue-next'
@@ -12,21 +12,39 @@ const router = useRouter()
 const authStore = useAuthStore()
 const userPreferencesStore = useUserPreferencesStore()
 
+const name = ref('')
 const email = ref('')
 const password = ref('')
+const passwordConfirmation = ref('')
 const revealPassword = ref(false)
+const revealPasswordConfirmation = ref(false)
 const errorMessage = ref<string | null>(null)
 
-const allowSelfRegister = computed(() => authStore.allowSelfRegister)
 const submitting = computed(() => authStore.loading)
-const canSubmit = computed(() => email.value.trim() !== '' && password.value.trim() !== '')
+const allowSelfRegister = computed(() => authStore.allowSelfRegister)
+const passwordMismatch = computed(() =>
+  passwordConfirmation.value !== '' && password.value !== passwordConfirmation.value
+)
+const canSubmit = computed(() =>
+  name.value.trim() !== ''
+  && email.value.trim() !== ''
+  && password.value.trim() !== ''
+  && passwordConfirmation.value.trim() !== ''
+  && !passwordMismatch.value
+)
+
+watch(allowSelfRegister, (enabled) => {
+  if (!enabled) {
+    void router.replace('/auth/login')
+  }
+}, { immediate: true })
 
 async function submit() {
   errorMessage.value = null
   if (!canSubmit.value) return
 
   try {
-    await authStore.login(email.value, password.value)
+    await authStore.register(name.value, email.value, password.value, passwordConfirmation.value)
     await userPreferencesStore.initialize(true)
 
     const redirectTarget = typeof route.query.redirect === 'string' && route.query.redirect !== ''
@@ -56,14 +74,14 @@ async function submit() {
   }
 }
 
-const registerLink = computed(() => {
+const loginLink = computed(() => {
   const redirect = typeof route.query.redirect === 'string' && route.query.redirect !== ''
     ? route.query.redirect
     : ''
 
   return redirect !== ''
-    ? { path: '/auth/register', query: { redirect } }
-    : { path: '/auth/register' }
+    ? { path: '/auth/login', query: { redirect } }
+    : { path: '/auth/login' }
 })
 </script>
 
@@ -78,9 +96,9 @@ const registerLink = computed(() => {
           <span class="auth-brand-label">Trading Journal</span>
         </div>
 
-        <h1 class="auth-hero-title">Back To The Desk</h1>
+        <h1 class="auth-hero-title">Secure Journal Setup</h1>
         <p class="auth-hero-subtitle">
-          Authenticate once and continue with isolated account-level analytics, reports, and rules.
+          Create a dedicated user workspace so all trades, accounts, and reports stay scoped to you.
         </p>
 
         <div class="auth-feature-list">
@@ -94,11 +112,16 @@ const registerLink = computed(() => {
       <section class="auth-panel">
         <header class="auth-panel-head">
           <p class="auth-kicker">Authentication</p>
-          <h2 class="auth-title">Sign In</h2>
-          <p class="auth-subtitle">Use your credentials to continue.</p>
+          <h2 class="auth-title">Create Account</h2>
+          <p class="auth-subtitle">Register a secure profile to begin.</p>
         </header>
 
         <form class="auth-form" @submit.prevent="submit">
+          <label class="auth-field">
+            <span class="auth-label">Name</span>
+            <input v-model.trim="name" class="auth-input" type="text" autocomplete="name" required />
+          </label>
+
           <label class="auth-field">
             <span class="auth-label">Email</span>
             <input v-model.trim="email" class="auth-input" type="email" autocomplete="email" required />
@@ -111,7 +134,7 @@ const registerLink = computed(() => {
                 v-model="password"
                 class="auth-input with-toggle"
                 :type="revealPassword ? 'text' : 'password'"
-                autocomplete="current-password"
+                autocomplete="new-password"
                 required
               />
               <button
@@ -126,15 +149,39 @@ const registerLink = computed(() => {
             </span>
           </label>
 
+          <label class="auth-field">
+            <span class="auth-label">Confirm Password</span>
+            <span class="auth-input-wrap">
+              <input
+                v-model="passwordConfirmation"
+                class="auth-input with-toggle"
+                :class="{ 'auth-input-error': passwordMismatch }"
+                :type="revealPasswordConfirmation ? 'text' : 'password'"
+                autocomplete="new-password"
+                required
+              />
+              <button
+                type="button"
+                class="auth-visibility-btn"
+                :aria-label="revealPasswordConfirmation ? 'Hide confirmation password' : 'Show confirmation password'"
+                @click="revealPasswordConfirmation = !revealPasswordConfirmation"
+              >
+                <EyeOff v-if="revealPasswordConfirmation" class="h-4 w-4" />
+                <Eye v-else class="h-4 w-4" />
+              </button>
+            </span>
+          </label>
+
+          <p v-if="passwordMismatch" class="auth-inline-error">Passwords do not match.</p>
           <p v-if="errorMessage" class="auth-error">{{ errorMessage }}</p>
 
           <button type="submit" class="auth-submit" :disabled="submitting || !canSubmit">
-            {{ submitting ? 'Please wait...' : 'Sign In' }}
+            {{ submitting ? 'Please wait...' : 'Create Account' }}
           </button>
 
-          <p v-if="allowSelfRegister" class="auth-switch-link">
-            Need an account?
-            <RouterLink :to="registerLink">Create account</RouterLink>
+          <p class="auth-switch-link">
+            Already have an account?
+            <RouterLink :to="loginLink">Sign in</RouterLink>
           </p>
         </form>
       </section>
@@ -318,6 +365,10 @@ const registerLink = computed(() => {
   outline-offset: 1px;
 }
 
+.auth-input-error {
+  border-color: color-mix(in srgb, var(--danger) 58%, transparent 42%);
+}
+
 .auth-visibility-btn {
   position: absolute;
   top: 50%;
@@ -336,6 +387,12 @@ const registerLink = computed(() => {
 .auth-visibility-btn:hover {
   border-color: color-mix(in srgb, var(--border) 78%, transparent 22%);
   background: color-mix(in srgb, var(--panel-soft) 58%, transparent 42%);
+}
+
+.auth-inline-error {
+  margin: 0;
+  color: color-mix(in srgb, var(--danger) 78%, white 22%);
+  font-size: 0.84rem;
 }
 
 .auth-error {

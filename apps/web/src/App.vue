@@ -13,9 +13,9 @@ const useAuthLayout = computed(() => route.meta.layout === 'auth')
 
 function handleUnauthorized() {
   authStore.clearSession()
-  if (route.path === '/login') return
+  if (route.path === '/auth/login' || route.path === '/login') return
   router.replace({
-    path: '/login',
+    path: '/auth/login',
     query: { redirect: route.fullPath },
   })
 }

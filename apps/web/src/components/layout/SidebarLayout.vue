@@ -207,7 +207,7 @@ function chooseTheme(mode: ThemeMode) {
 
 async function logout() {
   await authStore.logout()
-  await router.replace('/login')
+  await router.replace('/auth/login')
 }
 
 function handleDocumentClick(event: MouseEvent) {

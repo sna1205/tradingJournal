@@ -1,6 +1,6 @@
 import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
-import api, { ensureCsrfCookie } from '@/services/api'
+import api from '@/services/api'
 import { setSyncQueueUserScope } from '@/services/offlineSyncQueue'
 import {
   initializeLocalFallbackPersistence,
@@ -27,17 +27,25 @@ interface LogoutAllResponse {
   message: string
   revoked_sessions: number
   revoked_tokens: number
+  supports_session_revocation: boolean
+  session_driver: string
 }
+
+type AuthStatus = 'unknown' | 'checking' | 'authenticated' | 'guest'
+type AuthAction = 'idle' | 'login' | 'register' | 'logout' | 'logout_all'
 
 let unauthorizedListenerBound = false
 
 export const useAuthStore = defineStore('auth', () => {
   const user = ref<AuthUser | null>(null)
-  const initialized = ref(false)
-  const loading = ref(false)
+  const status = ref<AuthStatus>('unknown')
+  const action = ref<AuthAction>('idle')
   const allowSelfRegister = ref(true)
+  const initialized = computed(() => status.value !== 'unknown' && status.value !== 'checking')
+  const loading = computed(() => status.value === 'checking' || action.value !== 'idle')
 
-  const isAuthenticated = computed(() => Boolean(user.value))
+  const isAuthenticated = computed(() => status.value === 'authenticated')
+  let initPromise: Promise<void> | null = null
 
   async function clearSession() {
     const previousUserId = user.value?.id ?? getScope().userId
@@ -48,6 +56,7 @@ export const useAuthStore = defineStore('auth', () => {
     user.value = null
     setSyncQueueUserScope(null)
     migrateLegacyLocalFallbackKeys()
+    status.value = 'guest'
   }
 
   async function setUserScope(nextUser: AuthUser | null) {
@@ -59,35 +68,44 @@ export const useAuthStore = defineStore('auth', () => {
     await initializeLocalFallbackPersistence()
   }
 
-  async function initialize() {
-    if (initialized.value) return
-    if (!unauthorizedListenerBound) {
+  async function initialize(force = false) {
+    if (initialized.value && !force) {
+      return
+    }
+    if (initPromise && !force) {
+      return initPromise
+    }
+    if (!unauthorizedListenerBound && typeof window !== 'undefined') {
       window.addEventListener('auth:unauthorized', () => {
         void clearSession()
       })
       unauthorizedListenerBound = true
     }
 
-    loading.value = true
-    try {
-      await fetchAuthConfig()
-      if (hasSessionCookie()) {
+    initPromise = (async () => {
+      status.value = 'checking'
+      try {
+        await fetchAuthConfig()
         await fetchMe()
-      } else {
+      } catch {
         await clearSession()
+      } finally {
+        if (status.value === 'checking') {
+          status.value = user.value ? 'authenticated' : 'guest'
+        }
       }
-    } catch {
-      await clearSession()
-    } finally {
-      loading.value = false
-      initialized.value = true
-    }
+    })().finally(() => {
+      initPromise = null
+    })
+
+    return initPromise
   }
 
   async function fetchMe() {
     const { data } = await api.get<AuthUser>('/auth/me')
     user.value = data
     await setUserScope(data)
+    status.value = 'authenticated'
     return data
   }
 
@@ -103,16 +121,12 @@ export const useAuthStore = defineStore('auth', () => {
   }
 
   async function login(email: string, password: string) {
-    loading.value = true
+    action.value = 'login'
     try {
-      await ensureCsrfCookie()
-      const { data } = await api.post<AuthResponse>('/auth/login', { email, password })
-      user.value = data.user
-      await setUserScope(data.user)
-      initialized.value = true
-      return data.user
+      await api.post<AuthResponse>('/auth/login', { email, password })
+      return await fetchMe()
     } finally {
-      loading.value = false
+      action.value = 'idle'
     }
   }
 
@@ -121,52 +135,46 @@ export const useAuthStore = defineStore('auth', () => {
       throw new Error('Self-registration is disabled.')
     }
 
-    loading.value = true
+    action.value = 'register'
     try {
-      await ensureCsrfCookie()
-      const { data } = await api.post<AuthResponse>('/auth/register', {
+      await api.post<AuthResponse>('/auth/register', {
         name,
         email,
         password,
         password_confirmation: passwordConfirmation,
       })
-      user.value = data.user
-      await setUserScope(data.user)
-      initialized.value = true
-      return data.user
+      return await fetchMe()
     } finally {
-      loading.value = false
+      action.value = 'idle'
     }
   }
 
   async function logout() {
-    loading.value = true
+    action.value = 'logout'
     try {
-      await ensureCsrfCookie()
       await api.post('/auth/logout')
     } catch {
       // Session state is cleared locally regardless of API response.
     } finally {
       await clearSession()
-      loading.value = false
-      initialized.value = true
+      action.value = 'idle'
     }
   }
 
   async function logoutAll() {
-    loading.value = true
+    action.value = 'logout_all'
     try {
-      await ensureCsrfCookie()
       const { data } = await api.post<LogoutAllResponse>('/auth/logout-all')
-      initialized.value = true
       return data
     } finally {
-      loading.value = false
+      action.value = 'idle'
     }
   }
 
   return {
     user,
+    status,
+    action,
     initialized,
     loading,
     allowSelfRegister,
@@ -181,13 +189,3 @@ export const useAuthStore = defineStore('auth', () => {
     clearSession,
   }
 })
-
-function hasSessionCookie(): boolean {
-  if (typeof document === 'undefined') {
-    return false
-  }
-
-  return document.cookie
-    .split(';')
-    .some((chunk) => /_session=/.test(chunk.trim()))
-}

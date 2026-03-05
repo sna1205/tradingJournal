@@ -98,7 +98,7 @@ async function logoutOtherSessions() {
 
 async function logoutCurrentSession() {
   await authStore.logout()
-  await router.replace('/login')
+  await router.replace('/auth/login')
 }
 
 async function changeOfflineMode(next: boolean) {
