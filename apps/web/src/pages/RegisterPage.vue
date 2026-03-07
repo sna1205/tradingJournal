@@ -87,25 +87,39 @@ const loginLink = computed(() => {
 
 <template>
   <div class="auth-shell">
+    <div class="auth-grid-overlay" />
+    <div class="auth-glow auth-glow-a" />
+    <div class="auth-glow auth-glow-b" />
+
     <div class="auth-shell-grid">
-      <aside class="auth-hero">
+      <aside class="auth-stage">
         <div class="auth-brand-row">
           <span class="auth-brand-mark">
             <LineChart class="h-4 w-4" />
           </span>
-          <span class="auth-brand-label">Trading Journal</span>
+          <span class="auth-brand-label">IZLedger</span>
         </div>
 
-        <h1 class="auth-hero-title">Secure Journal Setup</h1>
-        <p class="auth-hero-subtitle">
-          Create a dedicated user workspace so all trades, accounts, and reports stay scoped to you.
+        <p class="auth-stage-kicker">Workspace Setup</p>
+        <h1 class="auth-stage-title">Create your trader profile.</h1>
+        <p class="auth-stage-subtitle">
+          Start with a secure account and get a private environment for checklists, trade logs, and structured review.
         </p>
 
-        <div class="auth-feature-list">
-          <div class="auth-feature-item">
-            <Sparkles class="h-4 w-4" />
-            <span>Dedicated reports and analytics</span>
+        <div class="auth-stage-metrics">
+          <div class="metric-card">
+            <small>Workspace</small>
+            <strong>Private</strong>
           </div>
+          <div class="metric-card">
+            <small>Sync</small>
+            <strong>Enabled</strong>
+          </div>
+        </div>
+
+        <div class="auth-stage-note">
+          <Sparkles class="h-4 w-4" />
+          <span>One account keeps your dashboards, reports, and settings consistent.</span>
         </div>
       </aside>
 
@@ -113,7 +127,7 @@ const loginLink = computed(() => {
         <header class="auth-panel-head">
           <p class="auth-kicker">Authentication</p>
           <h2 class="auth-title">Create Account</h2>
-          <p class="auth-subtitle">Register a secure profile to begin.</p>
+          <p class="auth-subtitle">Register your profile to start journaling.</p>
         </header>
 
         <form class="auth-form" @submit.prevent="submit">
@@ -191,155 +205,203 @@ const loginLink = computed(() => {
 
 <style scoped>
 .auth-shell {
+  position: relative;
   min-height: 100vh;
-  padding: 1.5rem;
-  background:
-    radial-gradient(circle at 8% 8%, color-mix(in oklab, var(--primary) 20%, transparent) 0%, transparent 38%),
-    radial-gradient(circle at 88% 86%, color-mix(in oklab, var(--warning) 18%, transparent) 0%, transparent 42%),
-    var(--bg);
+  overflow: hidden;
+  padding: 1.2rem;
+  background: var(--bg);
+}
+
+.auth-grid-overlay {
+  position: absolute;
+  inset: 0;
+  background-image:
+    linear-gradient(to right, color-mix(in srgb, var(--border) 28%, transparent) 1px, transparent 1px),
+    linear-gradient(to bottom, color-mix(in srgb, var(--border) 22%, transparent) 1px, transparent 1px);
+  background-size: 40px 40px;
+  mask-image: radial-gradient(circle at 50% 10%, black, transparent 72%);
+  pointer-events: none;
+}
+
+.auth-glow {
+  position: absolute;
+  border-radius: 999px;
+  pointer-events: none;
+}
+
+.auth-glow-a {
+  width: 420px;
+  height: 420px;
+  top: -180px;
+  left: -130px;
+  background: radial-gradient(circle, color-mix(in srgb, var(--primary) 20%, transparent), transparent 68%);
+}
+
+.auth-glow-b {
+  width: 420px;
+  height: 420px;
+  right: -150px;
+  bottom: -180px;
+  background: radial-gradient(circle, color-mix(in srgb, var(--warning) 18%, transparent), transparent 70%);
 }
 
 .auth-shell-grid {
+  position: relative;
+  z-index: 1;
   width: min(1120px, 100%);
-  min-height: calc(100vh - 3rem);
+  min-height: calc(100vh - 2.4rem);
   margin: 0 auto;
   display: grid;
-  grid-template-columns: 1fr;
   gap: 1rem;
-  align-items: stretch;
+  grid-template-columns: 1fr;
 }
 
-.auth-hero {
-  position: relative;
-  overflow: hidden;
-  border-radius: 1.1rem;
-  border: 1px solid color-mix(in srgb, var(--border) 72%, transparent 28%);
+.auth-stage,
+.auth-panel {
+  border-radius: 1rem;
+  border: 1px solid color-mix(in srgb, var(--border) 78%, transparent 22%);
   background: linear-gradient(
-    160deg,
-    color-mix(in srgb, var(--panel-strong) 92%, transparent 8%),
+    165deg,
+    color-mix(in srgb, var(--panel-strong) 88%, transparent 12%),
     color-mix(in srgb, var(--panel-soft) 88%, transparent 12%)
   );
   box-shadow: var(--shadow-soft);
-  padding: 1.4rem;
-  display: flex;
-  flex-direction: column;
-  gap: 1rem;
 }
 
-.auth-hero::after {
-  content: '';
-  position: absolute;
-  inset: auto -18% -26% auto;
-  width: 55%;
-  aspect-ratio: 1;
-  border-radius: 999px;
-  background: radial-gradient(circle, color-mix(in srgb, var(--primary) 28%, transparent 72%), transparent 68%);
-  pointer-events: none;
+.auth-stage {
+  padding: 1.3rem;
+  display: grid;
+  align-content: start;
+  gap: 0.9rem;
 }
 
 .auth-brand-row {
   display: inline-flex;
   align-items: center;
-  gap: 0.55rem;
+  gap: 0.58rem;
 }
 
 .auth-brand-mark {
-  width: 1.8rem;
-  height: 1.8rem;
-  border-radius: 0.6rem;
+  width: 1.9rem;
+  height: 1.9rem;
+  border-radius: 0.58rem;
   display: grid;
   place-items: center;
-  background: color-mix(in srgb, var(--primary) 24%, transparent 76%);
-  color: color-mix(in srgb, var(--primary) 76%, white 24%);
+  background: linear-gradient(
+    140deg,
+    color-mix(in srgb, var(--primary) 86%, black 14%),
+    color-mix(in srgb, var(--primary) 54%, var(--panel-strong) 46%)
+  );
+  color: color-mix(in srgb, var(--panel-strong) 82%, var(--text) 18%);
 }
 
 .auth-brand-label {
-  font-size: 0.82rem;
-  letter-spacing: 0.08em;
+  font-size: 0.8rem;
+  letter-spacing: 0.1em;
   text-transform: uppercase;
-  color: var(--text-soft);
+  color: var(--muted);
 }
 
-.auth-hero-title {
+.auth-stage-kicker,
+.auth-kicker {
   margin: 0;
-  font-size: clamp(1.7rem, 4.6vw, 2.4rem);
-  line-height: 1.05;
+  font-size: 0.71rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: color-mix(in srgb, var(--primary) 70%, var(--text) 30%);
 }
 
-.auth-hero-subtitle {
+.auth-stage-title {
   margin: 0;
-  color: var(--text-muted);
-  max-width: 36ch;
+  font-size: clamp(1.8rem, 4.9vw, 2.6rem);
+  line-height: 1.03;
 }
 
-.auth-feature-list {
+.auth-stage-subtitle {
+  margin: 0;
+  max-width: 40ch;
+  color: var(--muted);
+  line-height: 1.62;
+}
+
+.auth-stage-metrics {
   display: grid;
-  gap: 0.6rem;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.55rem;
 }
 
-.auth-feature-item {
+.metric-card {
+  border: 1px solid color-mix(in srgb, var(--border) 78%, transparent 22%);
+  border-radius: 0.74rem;
+  background: color-mix(in srgb, var(--panel) 74%, transparent 26%);
+  padding: 0.62rem 0.7rem;
+}
+
+.metric-card small {
+  display: block;
+  margin-bottom: 0.2rem;
+  font-size: 0.7rem;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.metric-card strong {
+  font-size: 0.96rem;
+}
+
+.auth-stage-note {
   display: inline-flex;
   align-items: center;
-  gap: 0.55rem;
+  gap: 0.52rem;
   width: fit-content;
+  border: 1px solid color-mix(in srgb, var(--border) 72%, transparent 28%);
+  border-radius: 0.74rem;
+  background: color-mix(in srgb, var(--panel-soft) 68%, transparent 32%);
+  color: var(--muted);
+  font-size: 0.84rem;
   padding: 0.5rem 0.7rem;
-  border-radius: 0.7rem;
-  border: 1px solid color-mix(in srgb, var(--border) 64%, transparent 36%);
-  background: color-mix(in srgb, var(--panel-soft) 70%, transparent 30%);
-  color: var(--text-soft);
-  font-size: 0.85rem;
 }
 
-.auth-feature-item svg {
+.auth-stage-note svg {
   color: var(--primary);
 }
 
 .auth-panel {
-  border-radius: 1.1rem;
-  border: 1px solid color-mix(in srgb, var(--border) 72%, transparent 28%);
-  background: color-mix(in srgb, var(--panel) 94%, transparent 6%);
-  box-shadow: var(--shadow-soft);
-  padding: 1.2rem;
+  padding: 1.15rem;
   display: grid;
+  align-content: start;
   gap: 1rem;
 }
 
 .auth-panel-head {
   display: grid;
-  gap: 0.3rem;
-}
-
-.auth-kicker {
-  margin: 0;
-  font-size: 0.72rem;
-  text-transform: uppercase;
-  letter-spacing: 0.09em;
-  color: var(--text-soft);
+  gap: 0.28rem;
 }
 
 .auth-title {
   margin: 0;
-  font-size: 1.4rem;
+  font-size: 1.45rem;
 }
 
 .auth-subtitle {
   margin: 0;
-  color: var(--text-muted);
+  color: var(--muted);
 }
 
 .auth-form {
   display: grid;
-  gap: 0.85rem;
+  gap: 0.8rem;
 }
 
 .auth-field {
   display: grid;
-  gap: 0.35rem;
+  gap: 0.34rem;
 }
 
 .auth-label {
-  font-size: 0.84rem;
-  color: var(--text-soft);
+  font-size: 0.82rem;
+  color: var(--muted);
 }
 
 .auth-input-wrap {
@@ -348,20 +410,20 @@ const loginLink = computed(() => {
 
 .auth-input {
   width: 100%;
-  min-height: 2.7rem;
+  min-height: 2.72rem;
   border-radius: 0.72rem;
-  border: 1px solid color-mix(in srgb, var(--border) 72%, transparent 28%);
-  background: color-mix(in srgb, var(--panel-soft) 78%, transparent 22%);
+  border: 1px solid color-mix(in srgb, var(--border) 74%, transparent 26%);
+  background: color-mix(in srgb, var(--panel-soft) 74%, transparent 26%);
   color: var(--text);
-  padding: 0.62rem 0.8rem;
+  padding: 0.64rem 0.8rem;
 }
 
 .auth-input.with-toggle {
-  padding-right: 2.8rem;
+  padding-right: 2.75rem;
 }
 
 .auth-input:focus-visible {
-  outline: 2px solid color-mix(in srgb, var(--primary) 44%, transparent 56%);
+  outline: 2px solid color-mix(in srgb, var(--primary) 42%, transparent 58%);
   outline-offset: 1px;
 }
 
@@ -379,19 +441,19 @@ const loginLink = computed(() => {
   border-radius: 0.55rem;
   border: 1px solid transparent;
   background: transparent;
-  color: var(--text-muted);
+  color: var(--muted);
   display: grid;
   place-items: center;
 }
 
 .auth-visibility-btn:hover {
   border-color: color-mix(in srgb, var(--border) 78%, transparent 22%);
-  background: color-mix(in srgb, var(--panel-soft) 58%, transparent 42%);
+  background: color-mix(in srgb, var(--panel-soft) 56%, transparent 44%);
 }
 
 .auth-inline-error {
   margin: 0;
-  color: color-mix(in srgb, var(--danger) 78%, white 22%);
+  color: color-mix(in srgb, var(--danger) 78%, var(--text) 22%);
   font-size: 0.84rem;
 }
 
@@ -401,25 +463,27 @@ const loginLink = computed(() => {
   border-radius: 0.68rem;
   border: 1px solid color-mix(in srgb, var(--danger) 45%, transparent 55%);
   background: color-mix(in srgb, var(--danger) 14%, transparent 86%);
-  color: color-mix(in srgb, var(--danger) 78%, white 22%);
+  color: color-mix(in srgb, var(--danger) 78%, var(--text) 22%);
   font-size: 0.84rem;
 }
 
 .auth-submit {
-  min-height: 2.75rem;
-  border: none;
+  min-height: 2.78rem;
+  border: 0;
   border-radius: 0.8rem;
+  font-weight: 700;
+  color: color-mix(in srgb, var(--panel-strong) 88%, var(--text) 12%);
   background: linear-gradient(
     145deg,
     color-mix(in srgb, var(--primary) 86%, black 14%),
-    color-mix(in srgb, var(--primary) 56%, var(--panel) 44%)
+    color-mix(in srgb, var(--primary) 58%, var(--panel) 42%)
   );
-  color: white;
-  font-weight: 700;
+  box-shadow: 0 10px 20px color-mix(in srgb, var(--primary) 24%, transparent 76%);
 }
 
 .auth-submit:hover:not(:disabled) {
   filter: brightness(1.05);
+  transform: translateY(-1px);
 }
 
 .auth-submit:disabled {
@@ -428,8 +492,8 @@ const loginLink = computed(() => {
 
 .auth-switch-link {
   margin: 0;
-  font-size: 0.86rem;
-  color: var(--text-muted);
+  font-size: 0.85rem;
+  color: var(--muted);
 }
 
 .auth-switch-link a {
@@ -438,20 +502,20 @@ const loginLink = computed(() => {
   font-weight: 600;
 }
 
-@media (min-width: 920px) {
+@media (min-width: 940px) {
   .auth-shell {
     padding: 2rem;
   }
 
   .auth-shell-grid {
     min-height: calc(100vh - 4rem);
-    grid-template-columns: 1fr minmax(350px, 0.86fr);
-    gap: 1.15rem;
+    gap: 1.1rem;
+    grid-template-columns: 1.05fr minmax(360px, 0.88fr);
   }
 
-  .auth-hero,
+  .auth-stage,
   .auth-panel {
-    padding: 1.45rem;
+    padding: 1.4rem;
   }
 }
 
@@ -462,6 +526,10 @@ const loginLink = computed(() => {
 
   .auth-shell-grid {
     min-height: calc(100vh - 1.9rem);
+  }
+
+  .auth-stage-metrics {
+    grid-template-columns: 1fr;
   }
 }
 </style>

@@ -12,6 +12,7 @@ const LotsCalculatorPage = () => import('@/pages/LotsCalculatorPage.vue')
 const TradingRulesPage = () => import('@/pages/TradingRulesPage.vue')
 const SettingsPage = () => import('@/pages/SettingsPage.vue')
 const LoginPage = () => import('@/pages/LoginPage.vue')
+const LandingPage = () => import('@/pages/LandingPage.vue')
 const UiRegressionPage = () => import('@/pages/UiRegressionPage.vue')
 
 const includeVisualRoutes = import.meta.env.DEV || import.meta.env.VITE_ENABLE_VISUAL_ROUTES === '1'
@@ -53,7 +54,12 @@ const router = createRouter({
   routes: [
     {
       path: '/',
-      redirect: '/overview',
+      name: 'landing',
+      component: LandingPage,
+      meta: {
+        public: true,
+        layout: 'auth',
+      },
     },
     {
       path: '/auth/login',

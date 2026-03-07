@@ -21,7 +21,7 @@ function normalizePreferences(payload: unknown, fallbackUserId = 0): UserPrefere
 
   return {
     user_id: Number.isFinite(userId) ? userId : fallbackUserId,
-    theme_mode: isThemeMode(themeValue) ? themeValue : 'light',
+    theme_mode: isThemeMode(themeValue) ? themeValue : 'dark',
     profile_timezone: typeof timezoneValue === 'string' && timezoneValue.trim() !== ''
       ? timezoneValue
       : 'UTC',
@@ -41,7 +41,7 @@ export const useUserPreferencesStore = defineStore('userPreferences', () => {
   const initialized = ref(false)
   const loadedUserId = ref<number | null>(null)
 
-  const themeMode = computed<ThemeMode>(() => preferences.value?.theme_mode ?? 'light')
+  const themeMode = computed<ThemeMode>(() => preferences.value?.theme_mode ?? 'dark')
 
   async function initialize(force = false) {
     const authStore = useAuthStore()

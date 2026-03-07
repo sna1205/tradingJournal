@@ -17,7 +17,7 @@ interface MilestoneItem {
   current: number
   target: number
   formatter: (value: number) => string
-  accent: string
+  accentVar: string
 }
 
 const analyticsStore = useAnalyticsStore()
@@ -42,7 +42,7 @@ const milestones = computed<MilestoneItem[]>(() => {
       current: totalTrades,
       target: 100,
       formatter: (value) => `${Math.round(value)} executions`,
-      accent: '#22C55E',
+      accentVar: 'var(--primary)',
     },
     {
       id: 'profit-10k',
@@ -51,7 +51,7 @@ const milestones = computed<MilestoneItem[]>(() => {
       current: totalProfit,
       target: 10000,
       formatter: (value) => asCurrency(value),
-      accent: '#38BDF8',
+      accentVar: 'var(--chart-cyan)',
     },
     {
       id: 'win-rate-80',
@@ -60,7 +60,7 @@ const milestones = computed<MilestoneItem[]>(() => {
       current: monthWinRate,
       target: 80,
       formatter: (value) => `${value.toFixed(2)}%`,
-      accent: '#F59E0B',
+      accentVar: 'var(--warning)',
     },
   ]
 })
@@ -158,7 +158,7 @@ onMounted(async () => {
               class="h-full rounded-full transition-all duration-300 ease-out"
               :style="{
                 width: `${progressPercent(item)}%`,
-                background: `linear-gradient(90deg, ${item.accent}AA, ${item.accent})`,
+                background: `linear-gradient(90deg, color-mix(in srgb, ${item.accentVar} 66%, transparent), ${item.accentVar})`,
               }"
             />
           </div>

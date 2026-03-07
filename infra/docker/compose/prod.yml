@@ -21,7 +21,7 @@ services:
       dockerfile: infra/docker/images/api.Dockerfile
     restart: unless-stopped
     environment:
-      APP_NAME: "Trading Journal API"
+      APP_NAME: "IZLedger API"
       APP_ENV: production
       APP_DEBUG: "false"
       APP_KEY: ${APP_KEY:?APP_KEY is required in .env}

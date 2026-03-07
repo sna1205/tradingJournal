@@ -1,4 +1,4 @@
-# Trading Journal Monorepo
+# IZLedger Monorepo
 
 Full-stack trading journal with:
 - Web: Vue 3 + TypeScript + Pinia + Vite

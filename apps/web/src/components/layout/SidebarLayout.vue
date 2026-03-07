@@ -181,10 +181,10 @@ const activeThemeLabel = computed(() =>
 const workspaceOwnerLabel = computed(() => {
   const name = authStore.user?.name?.trim()
   if (!name) {
-    return 'Trader | WAGMI'
+    return 'Trader | IZ'
   }
 
-  return `${name} | WAGMI`
+  return `${name} | IZ`
 })
 
 function toggleMobileNav() {
@@ -297,8 +297,8 @@ watch(
               <LineChart class="h-5 w-5" />
             </div>
             <div>
-              <p class="brand-label">Professional Desk</p>
-              <p class="brand-name">Execution Journal</p>
+              <p class="brand-label">IZ</p>
+              <p class="brand-name">IZLedger</p>
             </div>
           </div>
           <p class="workspace-sidebar-note">
