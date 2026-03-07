@@ -32,24 +32,38 @@ const problemPoints = [
   'Mistakes repeat when decisions are not analyzed.',
 ]
 
-const productModules = [
+const insideShowcases = [
   {
-    preview: 'Trade Logging Interface',
-    title: 'Log trades with context, not just price.',
-    body: 'Capture setup, direction, risk, execution notes, and emotional state while context is still fresh.',
-    actions: ['Record setup and execution fields', 'Tag session context', 'Attach post-trade notes'],
+    image: '/images/landing/izledger-trade-log.png',
+    alt: 'IZLedger Execute Log trade logging interface',
+    title: 'Log trades with context, not just price',
+    body: 'Capture setup, direction, risk, screenshots, and notes while the trade context is still fresh.',
+    actions: ['Track entry, stop, and target', 'Attach chart screenshots', 'Tag session and setup type'],
+    reverse: false,
   },
   {
-    preview: 'Behavior Analytics Dashboard',
-    title: 'Review behavior patterns across sessions.',
-    body: 'Surface discipline trends by setup, session, and account so your best process becomes repeatable.',
-    actions: ['Track rule adherence trends', 'Compare execution quality by setup', 'Spot recurring mistakes quickly'],
+    image: '/images/landing/izledger-performance-dashboard.png',
+    alt: 'IZLedger Overview Dashboard with performance analytics',
+    title: 'Understand your trading performance',
+    body: 'Turn your trading history into measurable insights.',
+    actions: ['Track win rate and expectancy', 'Monitor drawdown and risk', 'Analyze execution quality'],
+    reverse: true,
   },
   {
-    preview: 'Trade Review Screen',
-    title: 'Score execution and close the feedback loop.',
-    body: 'Review each trade with structured criteria, mark rule breaks, and convert lessons into next-session rules.',
-    actions: ['Score process quality trade by trade', 'Flag rule breaks and missed setups', 'Refine your plan with evidence'],
+    image: '/images/landing/izledger-behavior-analytics.png',
+    alt: 'IZLedger Emotion Analytics dashboard',
+    title: 'Analyze the behavior behind your trades',
+    body: 'Identify emotional patterns and decision habits that affect your execution.',
+    actions: ['Track emotional states', 'Spot discipline breakdowns', 'Improve decision consistency'],
+    reverse: false,
+  },
+  {
+    image: '/images/landing/izledger-trading-calendar.png',
+    alt: 'IZLedger trading calendar with daily execution tracking',
+    title: 'Review your trading sessions visually',
+    body: 'Understand your trading performance over time using a calendar view of executions.',
+    actions: ['See daily profit and loss', 'Track active trading days', 'Review performance by session'],
+    reverse: true,
   },
 ]
 
@@ -285,35 +299,27 @@ onBeforeUnmount(() => {
           <div class="section-head" data-reveal>
             <p class="kicker">Inside IZLedger</p>
             <h2>What traders actually do inside the platform</h2>
-            <p>Log trades, review execution, identify rule breaks, and improve decision quality with every session.</p>
           </div>
 
-          <div class="inside-grid">
+          <div class="inside-stack">
             <article
-              v-for="(module, idx) in productModules"
+              v-for="(module, idx) in insideShowcases"
               :key="module.title"
-              class="inside-card lift-card"
+              class="inside-showcase lift-card"
+              :class="{ reverse: module.reverse }"
               data-reveal
               :style="{ '--reveal-delay': `${idx * 80}ms` }"
             >
-              <div class="mock-shell" aria-hidden="true">
-                <div class="mock-head">
-                  <span />
-                  <span />
-                  <span />
-                </div>
-                <div class="mock-body">
-                  <div class="mock-line wide" />
-                  <div class="mock-line" />
-                  <div class="mock-line short" />
-                </div>
+              <div class="inside-media">
+                <img :src="module.image" :alt="module.alt" loading="lazy" decoding="async" />
               </div>
-              <p class="card-tag">{{ module.preview }}</p>
-              <h3>{{ module.title }}</h3>
-              <p>{{ module.body }}</p>
-              <ul>
-                <li v-for="item in module.actions" :key="item">{{ item }}</li>
-              </ul>
+              <div class="inside-copy">
+                <h3>{{ module.title }}</h3>
+                <p>{{ module.body }}</p>
+                <ul>
+                  <li v-for="item in module.actions" :key="item">{{ item }}</li>
+                </ul>
+              </div>
             </article>
           </div>
         </div>
@@ -924,98 +930,90 @@ onBeforeUnmount(() => {
   font-family: var(--font-body);
 }
 
-.inside-grid {
+.inside-stack {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 0.7rem;
+  gap: 1rem;
+  max-width: 1000px;
+  margin: 0 auto;
 }
 
-.inside-card {
-  border: 1px solid var(--lp-line);
-  border-radius: 1rem;
-  background: var(--lp-surface-2);
+.inside-showcase {
+  display: grid;
+  grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr);
+  gap: 1rem;
+  align-items: center;
+  border-radius: 16px;
+  background:
+    linear-gradient(140deg, rgba(26, 58, 44, 0.22), rgba(11, 28, 21, 0.84)),
+    rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.4);
   padding: 1rem;
 }
 
-.mock-shell {
-  border: 1px solid rgba(98, 145, 121, 0.42);
-  border-radius: 0.8rem;
-  background: rgba(9, 23, 17, 0.84);
+.inside-showcase.reverse .inside-media {
+  order: 2;
+}
+
+.inside-showcase.reverse .inside-copy {
+  order: 1;
+}
+
+.inside-media {
+  border-radius: 16px;
   overflow: hidden;
-  margin-bottom: 0.85rem;
+  border: 1px solid rgba(83, 144, 114, 0.42);
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.38);
+  background: rgba(6, 14, 11, 0.9);
 }
 
-.mock-head {
-  height: 1.5rem;
-  display: flex;
-  align-items: center;
-  gap: 0.32rem;
-  padding: 0 0.62rem;
-  border-bottom: 1px solid rgba(98, 145, 121, 0.3);
-}
-
-.mock-head span {
-  width: 0.34rem;
-  height: 0.34rem;
-  border-radius: 999px;
-  background: rgba(141, 188, 164, 0.6);
-}
-
-.mock-body {
-  padding: 0.62rem;
-  display: grid;
-  gap: 0.44rem;
-}
-
-.mock-line {
-  height: 0.42rem;
-  border-radius: 999px;
-  background: rgba(72, 122, 98, 0.56);
-}
-
-.mock-line.wide {
+.inside-media img {
   width: 100%;
+  height: auto;
+  display: block;
 }
 
-.mock-line.short {
-  width: 48%;
-}
-
-.card-tag {
+.inside-copy h3 {
   margin: 0;
-  color: #a4cfb8;
-  font-size: 0.75rem;
-  text-transform: uppercase;
-  letter-spacing: 0.1em;
-  font-family: var(--font-body);
-  font-weight: 700;
-}
-
-.inside-card h3 {
-  margin: 0.52rem 0 0;
   font-family: var(--font-display);
-  font-size: 1.08rem;
+  font-size: clamp(1.24rem, 2.2vw, 1.65rem);
+  letter-spacing: -0.01em;
 }
 
-.inside-card p {
-  margin: 0.58rem 0 0;
+.inside-copy p {
+  margin: 0.66rem 0 0;
   color: var(--lp-muted);
-  line-height: 1.58;
+  line-height: 1.62;
   font-family: var(--font-body);
 }
 
-.inside-card ul {
-  margin: 0.72rem 0 0;
+.inside-copy ul {
+  margin: 0.82rem 0 0;
   padding: 0;
   list-style: none;
   display: grid;
-  gap: 0.4rem;
+  gap: 0.5rem;
 }
 
-.inside-card li {
-  color: #b7d4c5;
-  font-size: 0.86rem;
+.inside-copy li {
+  color: #c4dfd0;
+  font-size: 0.9rem;
+  line-height: 1.45;
   font-family: var(--font-body);
+  display: flex;
+  align-items: flex-start;
+  gap: 0.48rem;
+}
+
+.inside-copy li::before {
+  content: '';
+  width: 0.34rem;
+  height: 0.34rem;
+  border-radius: 999px;
+  margin-top: 0.34rem;
+  background: linear-gradient(180deg, #6de7b0, #2da76f);
+  box-shadow: 0 0 12px rgba(85, 214, 149, 0.46);
+  flex: 0 0 auto;
 }
 
 .feature-grid {
@@ -1321,12 +1319,20 @@ onBeforeUnmount(() => {
 @media (max-width: 1060px) {
   .hero-layout,
   .problem-layout,
-  .inside-grid,
   .feature-grid,
   .audience-grid,
   .method-grid,
   .faq-layout {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .inside-showcase {
+    grid-template-columns: 1fr;
+  }
+
+  .inside-showcase.reverse .inside-media,
+  .inside-showcase.reverse .inside-copy {
+    order: initial;
   }
 
   .method-grid,
@@ -1351,12 +1357,16 @@ onBeforeUnmount(() => {
 
   .hero-layout,
   .problem-layout,
-  .inside-grid,
   .feature-grid,
   .audience-grid,
   .method-grid,
   .faq-layout {
     grid-template-columns: 1fr;
+  }
+
+  .inside-showcase {
+    padding: 0.72rem;
+    gap: 0.82rem;
   }
 
   .section {
