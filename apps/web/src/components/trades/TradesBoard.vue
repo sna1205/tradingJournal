@@ -1,0 +1,1555 @@
+<script setup lang="ts">
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { storeToRefs } from 'pinia'
+import { useRoute, useRouter } from 'vue-router'
+import {
+  AlertCircle,
+  BarChart3,
+  CalendarDays,
+  CheckCircle2,
+  ChevronDown,
+  ChevronUp,
+  ChevronLeft,
+  ChevronRight,
+  Eye,
+  ImageOff,
+  Images,
+  MessageSquare,
+  Pencil,
+  Plus,
+  Trash2,
+  X,
+} from 'lucide-vue-next'
+import GlassPanel from '@/components/layout/GlassPanel.vue'
+import SkeletonBlock from '@/components/layout/SkeletonBlock.vue'
+import EmptyState from '@/components/layout/EmptyState.vue'
+import AnimatedNumber from '@/components/layout/AnimatedNumber.vue'
+import BaseInput from '@/components/form/BaseInput.vue'
+import BaseSelect from '@/components/form/BaseSelect.vue'
+import BaseDateInput from '@/components/form/BaseDateInput.vue'
+import InstrumentPairSelect from '@/components/form/InstrumentPairSelect.vue'
+import { useReportStore } from '@/stores/reportStore'
+import { useTradeStore } from '@/stores/tradeStore'
+import { useUiStore } from '@/stores/uiStore'
+import { asDate, asSignedCurrency } from '@/utils/format'
+import type { Trade, TradeImage, TradePsychology } from '@/types/trade'
+
+const router = useRouter()
+const route = useRoute()
+const tradeStore = useTradeStore()
+const reportStore = useReportStore()
+const uiStore = useUiStore()
+const {
+  visibleTrades: storeVisibleTrades,
+  pagination,
+  filters,
+  includeDraftsUnverified,
+  loading,
+  hasFilters,
+  instruments,
+  strategyModels,
+  setups,
+  killzones,
+  tradeTags,
+  sessionOptions,
+} = storeToRefs(tradeStore)
+const { reports } = storeToRefs(reportStore)
+
+const detailsOpen = ref(false)
+const detailsLoading = ref(false)
+const detailsTrade = ref<Trade | null>(null)
+const detailsImages = ref<TradeImage[]>([])
+const detailsPsychology = ref<TradePsychology | null>(null)
+const detailImageIndex = ref(0)
+const lightboxOpen = ref(false)
+const activeDetailImage = computed(() => detailsImages.value[detailImageIndex.value] ?? null)
+const activeDetailImageSrc = computed(() => resolveImageSrc(activeDetailImage.value))
+const filtersExpanded = ref(false)
+const selectedSavedReportId = ref('')
+type TradeQuickFocus = 'all' | 'needs_review' | 'rule_breaks' | 'losers' | 'no_screenshot'
+const quickFocus = ref<TradeQuickFocus>('all')
+const focusOptions: TradeQuickFocus[] = ['all', 'needs_review', 'rule_breaks', 'losers', 'no_screenshot']
+const savedViewOptions = computed(() => [
+  { label: 'No saved view', value: '' },
+  ...reports.value
+    .filter((report) => report.scope === 'trades')
+    .map((report) => ({ label: report.name, value: String(report.id) })),
+])
+
+const filterDirectionOptions = [
+  { label: 'All', value: '' },
+  { label: 'Buy', value: 'buy' },
+  { label: 'Sell', value: 'sell' },
+]
+const strategyFilterOptions = computed(() => [
+  { label: 'All', value: '' },
+  ...strategyModels.value.map((item) => ({ label: item.name, value: String(item.id) })),
+])
+const setupFilterOptions = computed(() => [
+  { label: 'All', value: '' },
+  ...setups.value.map((item) => ({ label: item.name, value: String(item.id) })),
+])
+const killzoneFilterOptions = computed(() => [
+  { label: 'All', value: '' },
+  ...killzones.value.map((item) => ({ label: item.name, value: String(item.id) })),
+])
+const sessionFilterOptions = computed(() => [
+  { label: 'All', value: '' },
+  ...sessionOptions.value.map((item) => ({ label: item.label, value: item.value })),
+])
+const tagFilterOptions = computed(() => tradeTags.value)
+
+const activeFilterPills = computed(() => {
+  const pills: string[] = []
+  const pair = filters.value.pair.trim()
+  const model = filters.value.model.trim()
+  const strategyModelId = filters.value.strategy_model_id
+  const setupId = filters.value.setup_id
+  const killzoneId = filters.value.killzone_id
+  const sessionEnum = filters.value.session_enum
+  const tagIds = filters.value.tag_ids
+  const direction = filters.value.direction
+  const from = filters.value.date_from
+  const to = filters.value.date_to
+
+  if (pair) pills.push(`Symbol: ${pair.toUpperCase()}`)
+  if (model) pills.push(`Model: ${model}`)
+  if (strategyModelId) pills.push(`Strategy: ${strategyModels.value.find((item) => String(item.id) === strategyModelId)?.name ?? strategyModelId}`)
+  if (setupId) pills.push(`Setup: ${setups.value.find((item) => String(item.id) === setupId)?.name ?? setupId}`)
+  if (killzoneId) pills.push(`Killzone: ${killzones.value.find((item) => String(item.id) === killzoneId)?.name ?? killzoneId}`)
+  if (sessionEnum) pills.push(`Session: ${sessionOptions.value.find((item) => item.value === sessionEnum)?.label ?? sessionEnum}`)
+  if (tagIds) pills.push(`Tags: ${tagIds}`)
+  if (direction) pills.push(`Direction: ${direction === 'buy' ? 'Long' : 'Short'}`)
+  if (from && to) pills.push(`${from} to ${to}`)
+  else if (from) pills.push(`From: ${from}`)
+  else if (to) pills.push(`To: ${to}`)
+  if (!includeDraftsUnverified.value) pills.push('Quality: verified + synced')
+  else pills.push('Quality: includes drafts/unverified')
+
+  return pills
+})
+
+const needsReviewCount = computed(() => storeVisibleTrades.value.filter((trade) => needsReview(trade)).length)
+const ruleBreakCount = computed(() => storeVisibleTrades.value.filter((trade) => !trade.followed_rules).length)
+const losersCount = computed(() => storeVisibleTrades.value.filter((trade) => Number(trade.profit_loss) < 0).length)
+const noScreenshotCount = computed(() => storeVisibleTrades.value.filter((trade) => imageCount(trade) === 0).length)
+const averageReviewScore = computed(() => {
+  if (storeVisibleTrades.value.length === 0) return 0
+  const total = storeVisibleTrades.value.reduce((sum, trade) => sum + reviewQualityScore(trade), 0)
+  return total / storeVisibleTrades.value.length
+})
+
+const visibleTrades = computed(() => {
+  if (quickFocus.value === 'needs_review') {
+    return storeVisibleTrades.value.filter((trade) => needsReview(trade))
+  }
+  if (quickFocus.value === 'rule_breaks') {
+    return storeVisibleTrades.value.filter((trade) => !trade.followed_rules)
+  }
+  if (quickFocus.value === 'losers') {
+    return storeVisibleTrades.value.filter((trade) => Number(trade.profit_loss) < 0)
+  }
+  if (quickFocus.value === 'no_screenshot') {
+    return storeVisibleTrades.value.filter((trade) => imageCount(trade) === 0)
+  }
+  return storeVisibleTrades.value
+})
+
+const VIRTUALIZATION_THRESHOLD = 80
+const VIRTUAL_OVERSCAN_ROWS = 2
+const VIRTUAL_MIN_CARD_WIDTH = 320
+const VIRTUAL_GRID_GAP = 16
+const VIRTUAL_DEFAULT_ROW_HEIGHT = 420
+const VIRTUAL_DEFAULT_VIEWPORT_HEIGHT = 680
+const HEAVY_CONTENT_LAZY_THRESHOLD = 60
+const HEAVY_CONTENT_SEED_COUNT = 8
+
+const virtualScrollerRef = ref<HTMLElement | null>(null)
+const virtualScrollTop = ref(0)
+const virtualViewportHeight = ref(VIRTUAL_DEFAULT_VIEWPORT_HEIGHT)
+const virtualColumns = ref(1)
+const virtualRowHeight = ref(VIRTUAL_DEFAULT_ROW_HEIGHT)
+const heavyContentReadyByTradeId = ref<Record<number, true>>({})
+
+let virtualResizeObserver: ResizeObserver | null = null
+let heavyContentObserver: IntersectionObserver | null = null
+const tradeCardElements = new Map<number, Element>()
+
+const shouldVirtualizeTrades = computed(() =>
+  !loading.value && visibleTrades.value.length > VIRTUALIZATION_THRESHOLD
+)
+
+const shouldLazyRenderHeavyContent = computed(() =>
+  visibleTrades.value.length > HEAVY_CONTENT_LAZY_THRESHOLD
+)
+
+const virtualRowCount = computed(() =>
+  Math.ceil(visibleTrades.value.length / Math.max(1, virtualColumns.value))
+)
+
+const virtualTotalHeight = computed(() => virtualRowCount.value * virtualRowHeight.value)
+
+const virtualVisibleRowCount = computed(() =>
+  Math.ceil(virtualViewportHeight.value / virtualRowHeight.value) + VIRTUAL_OVERSCAN_ROWS * 2
+)
+
+const virtualStartRow = computed(() => {
+  if (!shouldVirtualizeTrades.value) return 0
+  return Math.max(0, Math.floor(virtualScrollTop.value / virtualRowHeight.value) - VIRTUAL_OVERSCAN_ROWS)
+})
+
+const virtualEndRow = computed(() => {
+  if (!shouldVirtualizeTrades.value) return virtualRowCount.value
+  return Math.min(virtualRowCount.value, virtualStartRow.value + virtualVisibleRowCount.value)
+})
+
+const virtualSliceStart = computed(() =>
+  virtualStartRow.value * Math.max(1, virtualColumns.value)
+)
+
+const virtualSliceEnd = computed(() =>
+  Math.min(visibleTrades.value.length, virtualEndRow.value * Math.max(1, virtualColumns.value))
+)
+
+const virtualOffsetY = computed(() => virtualStartRow.value * virtualRowHeight.value)
+
+const renderedTrades = computed(() => {
+  if (!shouldVirtualizeTrades.value) return visibleTrades.value
+  return visibleTrades.value.slice(virtualSliceStart.value, virtualSliceEnd.value)
+})
+
+const virtualSpacerStyle = computed(() => {
+  if (!shouldVirtualizeTrades.value) return undefined
+  return {
+    height: `${virtualTotalHeight.value}px`,
+  }
+})
+
+const tradeGridStyle = computed(() => {
+  if (!shouldVirtualizeTrades.value) return undefined
+  return {
+    transform: `translateY(${virtualOffsetY.value}px)`,
+    gridTemplateColumns: `repeat(${virtualColumns.value}, minmax(0, 1fr))`,
+  }
+})
+
+function estimateVirtualColumns(containerWidth: number): number {
+  return Math.max(1, Math.floor((containerWidth + VIRTUAL_GRID_GAP) / (VIRTUAL_MIN_CARD_WIDTH + VIRTUAL_GRID_GAP)))
+}
+
+function estimateVirtualRowHeight(containerWidth: number, columns: number): number {
+  const safeColumns = Math.max(1, columns)
+  const cardWidth = Math.max(
+    220,
+    (containerWidth - (safeColumns - 1) * VIRTUAL_GRID_GAP) / safeColumns
+  )
+  const mediaHeight = cardWidth * (9 / 16)
+  const bodyHeight = cardWidth < 280 ? 224 : 208
+  return Math.round(mediaHeight + bodyHeight + VIRTUAL_GRID_GAP)
+}
+
+function syncVirtualMetrics() {
+  if (!shouldVirtualizeTrades.value) return
+  const container = virtualScrollerRef.value
+  if (!container) return
+
+  const containerWidth = container.clientWidth
+  if (containerWidth <= 0) return
+
+  const nextColumns = estimateVirtualColumns(containerWidth)
+  virtualColumns.value = nextColumns
+  virtualViewportHeight.value = container.clientHeight || VIRTUAL_DEFAULT_VIEWPORT_HEIGHT
+  virtualRowHeight.value = estimateVirtualRowHeight(containerWidth, nextColumns)
+}
+
+function handleVirtualScroll(event: Event) {
+  const target = event.target
+  if (!(target instanceof HTMLElement)) return
+  virtualScrollTop.value = target.scrollTop
+}
+
+function resetVirtualScrollPosition() {
+  const container = virtualScrollerRef.value
+  if (container) {
+    container.scrollTop = 0
+  }
+  virtualScrollTop.value = 0
+}
+
+function disconnectVirtualResizeObserver() {
+  if (!virtualResizeObserver) return
+  virtualResizeObserver.disconnect()
+  virtualResizeObserver = null
+}
+
+function connectVirtualResizeObserver() {
+  disconnectVirtualResizeObserver()
+  if (!shouldVirtualizeTrades.value) return
+  if (typeof window === 'undefined' || typeof window.ResizeObserver === 'undefined') return
+
+  const container = virtualScrollerRef.value
+  if (!container) return
+
+  virtualResizeObserver = new ResizeObserver(() => {
+    syncVirtualMetrics()
+  })
+  virtualResizeObserver.observe(container)
+}
+
+function seedHeavyContentReady(ids: number[]) {
+  const seeded: Record<number, true> = {}
+  for (const tradeId of ids.slice(0, HEAVY_CONTENT_SEED_COUNT)) {
+    seeded[tradeId] = true
+  }
+  for (const tradeId of ids) {
+    if (heavyContentReadyByTradeId.value[tradeId]) {
+      seeded[tradeId] = true
+    }
+  }
+  heavyContentReadyByTradeId.value = seeded
+}
+
+function disconnectHeavyContentObserver() {
+  if (!heavyContentObserver) return
+  heavyContentObserver.disconnect()
+  heavyContentObserver = null
+}
+
+function reconnectHeavyContentObserver() {
+  disconnectHeavyContentObserver()
+  if (!shouldLazyRenderHeavyContent.value) return
+  if (typeof window === 'undefined' || typeof window.IntersectionObserver === 'undefined') return
+
+  heavyContentObserver = new IntersectionObserver(
+    (entries) => {
+      for (const entry of entries) {
+        if (!entry.isIntersecting) continue
+        const element = entry.target as HTMLElement
+        const rawId = element.dataset.tradeId
+        const tradeId = Number(rawId)
+        if (!Number.isInteger(tradeId) || tradeId <= 0) continue
+        if (!heavyContentReadyByTradeId.value[tradeId]) {
+          heavyContentReadyByTradeId.value = {
+            ...heavyContentReadyByTradeId.value,
+            [tradeId]: true,
+          }
+        }
+        heavyContentObserver?.unobserve(element)
+      }
+    },
+    {
+      root: shouldVirtualizeTrades.value ? virtualScrollerRef.value : null,
+      rootMargin: '280px 0px',
+      threshold: 0.01,
+    }
+  )
+
+  for (const [tradeId, element] of tradeCardElements.entries()) {
+    if (heavyContentReadyByTradeId.value[tradeId]) continue
+    heavyContentObserver.observe(element)
+  }
+}
+
+function registerTradeCardElement(tradeId: number, element: Element | null) {
+  const previous = tradeCardElements.get(tradeId)
+  if (previous && previous !== element) {
+    heavyContentObserver?.unobserve(previous)
+  }
+
+  if (!element) {
+    tradeCardElements.delete(tradeId)
+    return
+  }
+
+  const htmlElement = element as HTMLElement
+  htmlElement.dataset.tradeId = String(tradeId)
+  tradeCardElements.set(tradeId, htmlElement)
+
+  if (
+    heavyContentObserver
+    && shouldLazyRenderHeavyContent.value
+    && !heavyContentReadyByTradeId.value[tradeId]
+  ) {
+    heavyContentObserver.observe(htmlElement)
+  }
+}
+
+function setTradeCardRef(tradeId: number) {
+  return (element: Element | { $el?: Element } | null) => {
+    if (element instanceof Element) {
+      registerTradeCardElement(tradeId, element)
+      return
+    }
+
+    if (element && element.$el instanceof Element) {
+      registerTradeCardElement(tradeId, element.$el)
+      return
+    }
+
+    registerTradeCardElement(tradeId, null)
+  }
+}
+
+function shouldRenderHeavyCardContent(tradeId: number, renderedIndex: number): boolean {
+  if (!shouldLazyRenderHeavyContent.value) return true
+  if (heavyContentReadyByTradeId.value[tradeId]) return true
+  return renderedIndex < HEAVY_CONTENT_SEED_COUNT
+}
+
+const detailReviewScore = computed(() => {
+  if (!detailsTrade.value) return 0
+  const score = reviewQualityScore(detailsTrade.value)
+  return detailsImages.value.length > 0 ? Math.min(100, score + 10) : score
+})
+
+const detailChecklist = computed(() => {
+  if (!detailsTrade.value) return []
+  const noteLength = (detailsTrade.value.notes ?? '').trim().length
+  return [
+    { label: 'Screenshot captured', done: detailsImages.value.length > 0 },
+    { label: 'Execution note is specific', done: noteLength >= 25 },
+    { label: 'Rule adherence marked', done: detailsTrade.value.followed_rules },
+    { label: 'Emotion tagged', done: detailsTrade.value.emotion !== 'neutral' },
+  ]
+})
+
+const detailNextAction = computed(() => {
+  if (!detailsTrade.value) return ''
+  if (detailsImages.value.length === 0) return 'Attach a chart screenshot before weekly review.'
+  if ((detailsTrade.value.notes ?? '').trim().length < 25) return 'Add why entry and exit decisions were made.'
+  if (!detailsTrade.value.followed_rules) return 'Document the rule break and prevention plan.'
+  return 'Execution is review-ready for weekly process scoring.'
+})
+
+const selectedTagFilterIds = computed(() => {
+  const values = `${filters.value.tag_ids ?? ''}`
+    .split(',')
+    .map((value) => Number(value.trim()))
+    .filter((value) => Number.isInteger(value) && value > 0)
+  return new Set(values)
+})
+
+const selectedFilterInstrumentId = computed({
+  get() {
+    const normalizedPair = filters.value.pair.trim().toUpperCase()
+    if (!normalizedPair) return ''
+    const match = instruments.value.find((instrument) => instrument.symbol === normalizedPair)
+    return match ? String(match.id) : ''
+  },
+  set(value: string) {
+    const id = Number(value)
+    if (!Number.isInteger(id) || id <= 0) {
+      filters.value.pair = ''
+      return
+    }
+
+    const match = instruments.value.find((instrument) => instrument.id === id)
+    filters.value.pair = match?.symbol ?? ''
+  },
+})
+
+function toggleTagFilter(tagId: number) {
+  const next = new Set(selectedTagFilterIds.value)
+  if (next.has(tagId)) {
+    next.delete(tagId)
+  } else {
+    next.add(tagId)
+  }
+
+  filters.value.tag_ids = [...next].join(',')
+}
+
+function toLocalDateString(value: Date) {
+  const offset = value.getTimezoneOffset() * 60000
+  return new Date(value.getTime() - offset).toISOString().slice(0, 10)
+}
+
+function addDays(value: Date, days: number) {
+  const next = new Date(value)
+  next.setDate(next.getDate() + days)
+  return next
+}
+
+function todayLocalDate() {
+  return toLocalDateString(new Date())
+}
+
+const dateFromMax = computed(() => {
+  const today = todayLocalDate()
+  if (!filters.value.date_to) return today
+  return filters.value.date_to < today ? filters.value.date_to : today
+})
+
+const dateToMin = computed(() => filters.value.date_from || undefined)
+const dateToMax = computed(() => todayLocalDate())
+
+function setFilterPreset(preset: 'today' | '7d' | '30d' | 'uptodate' | 'clear') {
+  if (preset === 'clear') {
+    filters.value.date_from = ''
+    filters.value.date_to = ''
+    return
+  }
+
+  const now = new Date()
+  const today = todayLocalDate()
+
+  if (preset === 'uptodate') {
+    if (filters.value.date_from && filters.value.date_from > today) {
+      filters.value.date_from = today
+    }
+    filters.value.date_to = today
+    return
+  }
+
+  if (preset === 'today') {
+    filters.value.date_from = today
+    filters.value.date_to = today
+    return
+  }
+
+  if (preset === '7d') {
+    filters.value.date_from = toLocalDateString(addDays(now, -6))
+    filters.value.date_to = today
+    return
+  }
+
+  filters.value.date_from = toLocalDateString(addDays(now, -29))
+  filters.value.date_to = today
+}
+
+function openQuickAddPage() {
+  const query: Record<string, string> = { quick: '1' }
+  const pair = filters.value.pair.trim()
+  if (pair) query.symbol = pair.toUpperCase()
+  if (filters.value.direction) query.direction = filters.value.direction
+  void router.push({ path: '/trades/new', query })
+}
+
+function openEditPage(trade: Trade) {
+  void router.push(`/trades/${trade.id}/edit`)
+}
+
+async function toggleIncludeDraftsUnverified() {
+  tradeStore.setIncludeDraftsUnverified(!includeDraftsUnverified.value)
+  await tradeStore.fetchTrades(1)
+}
+
+async function openDetails(trade: Trade) {
+  detailsOpen.value = true
+  detailsLoading.value = true
+  detailsTrade.value = null
+  detailsImages.value = []
+  detailsPsychology.value = null
+  detailImageIndex.value = 0
+
+  try {
+    const details = await tradeStore.fetchTradeDetails(trade.id)
+    detailsTrade.value = details.trade
+    detailsPsychology.value = details.psychology ?? details.trade.psychology ?? null
+    detailsImages.value = (details.images ?? [])
+      .slice()
+      .sort((a, b) => a.sort_order - b.sort_order || a.id - b.id)
+      .filter((image) => hasRenderableImage(image))
+  } catch {
+    detailsOpen.value = false
+    uiStore.toast({
+      type: 'error',
+      title: 'Failed to load execution details',
+      message: 'Please try again.',
+    })
+  } finally {
+    detailsLoading.value = false
+  }
+}
+
+function closeDetails() {
+  detailsOpen.value = false
+  lightboxOpen.value = false
+}
+
+function openImageLightbox() {
+  if (!activeDetailImage.value || !activeDetailImageSrc.value) return
+  lightboxOpen.value = true
+}
+
+function closeImageLightbox() {
+  lightboxOpen.value = false
+}
+
+function nextDetailImage() {
+  if (detailsImages.value.length <= 1) return
+  detailImageIndex.value = (detailImageIndex.value + 1) % detailsImages.value.length
+}
+
+function previousDetailImage() {
+  if (detailsImages.value.length <= 1) return
+  detailImageIndex.value = (detailImageIndex.value - 1 + detailsImages.value.length) % detailsImages.value.length
+}
+
+function primaryTradeImage(trade: Trade): TradeImage | null {
+  const images = trade.images ?? []
+  return images.find((image) => hasRenderableImage(image)) ?? null
+}
+
+function resolveImageSrc(image: Pick<TradeImage, 'thumbnail_url' | 'image_url'> | null | undefined): string {
+  if (!image) return ''
+  const thumbnailUrl = image.thumbnail_url.trim()
+  if (thumbnailUrl) return thumbnailUrl
+  return image.image_url.trim()
+}
+
+function hasRenderableImage(image: Pick<TradeImage, 'thumbnail_url' | 'image_url'> | null | undefined): boolean {
+  return resolveImageSrc(image).length > 0
+}
+
+function directionLabel(trade: Trade) {
+  return trade.direction === 'buy' ? 'Long' : 'Short'
+}
+
+function directionClass(trade: Trade) {
+  return trade.direction === 'buy'
+    ? 'pill trade-dir-pill long'
+    : 'pill trade-dir-pill short'
+}
+
+function setImageFallback(event: Event, fallbackUrl?: string | null) {
+  if (!fallbackUrl) return
+
+  const target = event.target
+  if (!(target instanceof HTMLImageElement)) return
+  if (target.dataset.fallbackApplied === 'true') return
+
+  target.dataset.fallbackApplied = 'true'
+  target.src = fallbackUrl
+}
+
+function rMultipleLabel(trade: Trade) {
+  const source = trade.r_multiple ?? trade.rr
+  const value = Number(source)
+  if (!Number.isFinite(value)) return '-'
+  const sign = value > 0 ? '+' : ''
+  return `${sign}${value.toFixed(2)}R`
+}
+
+function imageCount(trade: Trade) {
+  return Number(trade.images_count ?? trade.images?.length ?? 0)
+}
+
+function hasThinNotes(trade: Trade) {
+  return (trade.notes ?? '').trim().length < 25
+}
+
+function needsReview(trade: Trade) {
+  return (
+    imageCount(trade) === 0
+    || hasThinNotes(trade)
+    || !trade.followed_rules
+    || Number(trade.profit_loss) < 0
+  )
+}
+
+function reviewPriority(trade: Trade): 'high' | 'medium' | 'low' {
+  const negativePnl = Number(trade.profit_loss) < 0
+  if ((!trade.followed_rules && negativePnl) || (imageCount(trade) === 0 && hasThinNotes(trade))) {
+    return 'high'
+  }
+  if (needsReview(trade)) {
+    return 'medium'
+  }
+  return 'low'
+}
+
+function reviewQualityScore(trade: Trade) {
+  let score = 100
+  if (imageCount(trade) === 0) score -= 35
+  if (hasThinNotes(trade)) score -= 25
+  if (!trade.followed_rules) score -= 20
+  if (trade.emotion === 'neutral') score -= 10
+  if (Number(trade.profit_loss) >= 0 && trade.followed_rules) score += 5
+  return Math.max(0, Math.min(100, score))
+}
+
+function reviewTier(score: number) {
+  if (score >= 85) return 'A'
+  if (score >= 70) return 'B'
+  if (score >= 55) return 'C'
+  return 'D'
+}
+
+function priorityLabel(trade: Trade) {
+  const priority = reviewPriority(trade)
+  if (priority === 'high') return 'Review first'
+  if (priority === 'medium') return 'Review soon'
+  return 'Review done'
+}
+
+function localSyncLabel(trade: Trade) {
+  if (trade.local_sync_status === 'draft_local') return 'Draft local'
+  if (trade.local_sync_status === 'pending_sync') return 'Pending sync'
+  if (trade.local_sync_status === 'conflict') return 'Sync conflict'
+  if (trade.local_sync_status === 'synced') return 'Synced'
+  return ''
+}
+
+function cardDate(value: string) {
+  const parsed = new Date(value)
+  if (Number.isNaN(parsed.getTime())) return '-'
+  return parsed.toLocaleDateString('en-US', {
+    month: 'short',
+    day: '2-digit',
+    year: 'numeric',
+  })
+}
+
+function modelLabel(value: string | null | undefined) {
+  const text = `${value ?? ''}`.trim()
+  return text || 'No model'
+}
+
+function imageContextLabel(value: string | null | undefined) {
+  if (!value) return 'Unlabeled'
+  if (value === 'pre_entry') return 'Pre Entry'
+  if (value === 'post_review') return 'Post Review'
+  return value.replace('_', ' ').replace(/\b\w/g, (char) => char.toUpperCase())
+}
+
+function selectDetailImage(index: number) {
+  if (index < 0 || index >= detailsImages.value.length) return
+  detailImageIndex.value = index
+}
+
+function handleLightboxKeydown(event: KeyboardEvent) {
+  if (!detailsOpen.value) return
+  if (event.key === 'Escape' && lightboxOpen.value) {
+    event.preventDefault()
+    closeImageLightbox()
+    return
+  }
+  if (!lightboxOpen.value) return
+  if (event.key === 'ArrowLeft') {
+    event.preventDefault()
+    previousDetailImage()
+    return
+  }
+  if (event.key === 'ArrowRight') {
+    event.preventDefault()
+    nextDetailImage()
+  }
+}
+
+function normalizeQuickFocus(value: unknown): TradeQuickFocus {
+  const normalized = `${value ?? ''}`.trim().toLowerCase()
+  return focusOptions.includes(normalized as TradeQuickFocus) ? (normalized as TradeQuickFocus) : 'all'
+}
+
+function applyQuickFocusFromRoute() {
+  quickFocus.value = normalizeQuickFocus(route.query.focus)
+}
+
+async function removeTrade(id: number) {
+  const confirmed = await uiStore.askConfirmation({
+    title: 'Delete execution entry?',
+    message: 'This action cannot be undone.',
+    confirmText: 'Delete',
+    danger: true,
+  })
+  if (!confirmed) return
+
+  try {
+    await tradeStore.deleteTrade(id)
+    uiStore.toast({
+      type: 'success',
+      title: 'Execution deleted',
+    })
+  } catch {
+    uiStore.toast({
+      type: 'error',
+      title: 'Delete failed',
+      message: 'Could not remove this execution.',
+    })
+  }
+}
+
+async function applyFilters() {
+  const today = todayLocalDate()
+  if (
+    (filters.value.date_from && filters.value.date_from > today)
+    || (filters.value.date_to && filters.value.date_to > today)
+  ) {
+    uiStore.toast({
+      type: 'error',
+      title: 'Invalid date range',
+      message: 'Dates cannot be in the future.',
+    })
+    return
+  }
+
+  if (filters.value.date_from && filters.value.date_to && filters.value.date_from > filters.value.date_to) {
+    uiStore.toast({
+      type: 'error',
+      title: 'Invalid date range',
+      message: 'Date From cannot be later than Date To.',
+    })
+    return
+  }
+
+  await tradeStore.fetchTrades(1)
+  filtersExpanded.value = false
+}
+
+async function clearFilters() {
+  tradeStore.resetFilters()
+  await tradeStore.fetchTrades(1)
+  filtersExpanded.value = false
+}
+
+async function changePage(delta: number) {
+  const next = pagination.value.current_page + delta
+  if (next < 1 || next > pagination.value.last_page) return
+  await tradeStore.fetchTrades(next)
+}
+
+async function loadSavedViews() {
+  try {
+    await reportStore.fetchReports('trades')
+  } catch {
+    // Ignore saved view loading failures; core trade log can still work.
+  }
+}
+
+async function saveCurrentView() {
+  const name = window.prompt('Saved view name')
+  if (!name || !name.trim()) return
+
+  try {
+    const report = await reportStore.createReport({
+      name: name.trim(),
+      scope: 'trades',
+      filters_json: {
+        ...filters.value,
+        include_drafts_unverified: includeDraftsUnverified.value,
+      },
+      columns_json: null,
+      is_default: false,
+    })
+    selectedSavedReportId.value = String(report.id)
+    await loadSavedViews()
+    uiStore.toast({ type: 'success', title: 'Saved view created' })
+  } catch {
+    uiStore.toast({ type: 'error', title: 'Failed to save view' })
+  }
+}
+
+async function applySavedView(reportId: string) {
+  selectedSavedReportId.value = reportId
+  if (!reportId) return
+  const report = reports.value.find((item) => String(item.id) === reportId)
+  if (!report) return
+  const savedFilters = (report.filters_json ?? {}) as Record<string, unknown>
+
+  filters.value.pair = String(savedFilters.pair ?? '')
+  filters.value.direction = (String(savedFilters.direction ?? '') as '' | 'buy' | 'sell')
+  filters.value.model = String(savedFilters.model ?? '')
+  filters.value.strategy_model_id = String(savedFilters.strategy_model_id ?? '')
+  filters.value.setup_id = String(savedFilters.setup_id ?? '')
+  filters.value.killzone_id = String(savedFilters.killzone_id ?? '')
+  filters.value.session_enum = String(savedFilters.session_enum ?? '')
+  filters.value.tag_ids = String(savedFilters.tag_ids ?? '')
+  filters.value.date_from = String(savedFilters.date_from ?? '')
+  filters.value.date_to = String(savedFilters.date_to ?? '')
+  if (savedFilters.include_drafts_unverified !== undefined) {
+    const next = String(savedFilters.include_drafts_unverified) === 'true' || String(savedFilters.include_drafts_unverified) === '1'
+    tradeStore.setIncludeDraftsUnverified(next)
+  }
+  await applyFilters()
+}
+
+function exportCurrentCsv() {
+  if (includeDraftsUnverified.value) {
+    uiStore.toast({
+      type: 'info',
+      title: 'Export includes drafts/unverified',
+      message: 'This CSV includes local drafts and risk-unverified trades.',
+    })
+  }
+  void reportStore.exportAdHocCsv({
+    scope: 'trades',
+    name: 'trade-log-view',
+    include_drafts_unverified: includeDraftsUnverified.value ? 1 : 0,
+    local_sync_status: includeDraftsUnverified.value ? undefined : 'synced',
+    risk_validation_status: includeDraftsUnverified.value ? undefined : 'verified',
+    ...filters.value,
+  })
+}
+
+function pruneDetachedTradeCards(activeTradeIds: number[]) {
+  const active = new Set(activeTradeIds)
+  for (const [tradeId, element] of tradeCardElements.entries()) {
+    if (active.has(tradeId)) continue
+    heavyContentObserver?.unobserve(element)
+    tradeCardElements.delete(tradeId)
+  }
+}
+
+onMounted(async () => {
+  window.addEventListener('keydown', handleLightboxKeydown)
+  try {
+    tradeStore.refreshTradeQualityPreference()
+    await Promise.all([
+      tradeStore.fetchInstruments(),
+      tradeStore.fetchDictionaries(),
+    ])
+    await tradeStore.fetchTrades()
+    await loadSavedViews()
+    filtersExpanded.value = hasFilters.value
+    applyQuickFocusFromRoute()
+  } catch {
+    uiStore.toast({
+      type: 'error',
+      title: 'Failed to load trade log',
+      message: 'Please refresh and try again.',
+    })
+  }
+})
+
+onBeforeUnmount(() => {
+  window.removeEventListener('keydown', handleLightboxKeydown)
+  disconnectVirtualResizeObserver()
+  disconnectHeavyContentObserver()
+  tradeCardElements.clear()
+})
+
+watch(
+  () => route.query.focus,
+  () => {
+    applyQuickFocusFromRoute()
+  }
+)
+
+watch(quickFocus, (value) => {
+  const current = normalizeQuickFocus(route.query.focus)
+  if (value === current) return
+
+  const query = { ...route.query }
+  if (value === 'all') {
+    delete query.focus
+  } else {
+    query.focus = value
+  }
+
+  void router.replace({ query })
+})
+
+watch(
+  [() => shouldVirtualizeTrades.value, () => visibleTrades.value.length],
+  async ([virtualized]) => {
+    if (!virtualized) {
+      virtualScrollTop.value = 0
+      disconnectVirtualResizeObserver()
+      return
+    }
+
+    await nextTick()
+    resetVirtualScrollPosition()
+    syncVirtualMetrics()
+    connectVirtualResizeObserver()
+    reconnectHeavyContentObserver()
+  },
+  { immediate: true }
+)
+
+watch(
+  () => renderedTrades.value.map((trade) => trade.id),
+  async (tradeIds) => {
+    seedHeavyContentReady(tradeIds)
+    pruneDetachedTradeCards(tradeIds)
+
+    await nextTick()
+    syncVirtualMetrics()
+    reconnectHeavyContentObserver()
+  },
+  { immediate: true }
+)
+
+watch(
+  () => shouldLazyRenderHeavyContent.value,
+  async (enabled) => {
+    if (!enabled) {
+      disconnectHeavyContentObserver()
+      heavyContentReadyByTradeId.value = {}
+      return
+    }
+
+    await nextTick()
+    reconnectHeavyContentObserver()
+  },
+  { immediate: true }
+)
+</script>
+
+<template>
+  <div class="space-y-5 trade-log-minimal" data-testid="trade-log-page">
+    <GlassPanel class="command-filter-shell">
+      <div class="command-filter-bar">
+        <div class="command-filter-left">
+          <h2 class="section-title">Execute Log Filters</h2>
+          <div class="filter-summary-strip">
+            <span v-if="activeFilterPills.length === 0" class="section-note">No filters applied</span>
+            <span v-for="pill in activeFilterPills" :key="`trade-pill-${pill}`" class="filter-chip-mini">{{ pill }}</span>
+          </div>
+        </div>
+        <div class="command-filter-right">
+          <div class="min-w-[220px]">
+            <BaseSelect
+              v-model="selectedSavedReportId"
+              label="Saved View"
+              size="sm"
+              :options="savedViewOptions"
+              @update:model-value="applySavedView"
+            />
+          </div>
+          <button class="btn btn-ghost px-3 py-2 text-sm" @click="saveCurrentView">Save View</button>
+          <button
+            type="button"
+            class="btn btn-ghost px-3 py-2 text-sm"
+            data-testid="trade-quality-toggle"
+            :class="{ active: includeDraftsUnverified }"
+            @click="void toggleIncludeDraftsUnverified()"
+          >
+            Include drafts/unverified
+          </button>
+          <button class="btn btn-ghost px-3 py-2 text-sm" @click="exportCurrentCsv">Export CSV</button>
+          <button class="btn btn-secondary inline-flex items-center gap-2 px-3 py-2 text-sm" @click="openQuickAddPage">
+            <Plus class="h-4 w-4" />
+            New Execute
+          </button>
+          <button class="btn btn-ghost px-4 py-2 text-sm" @click="applyFilters">Apply</button>
+          <button type="button" class="btn btn-ghost inline-flex items-center gap-2 px-3 py-2 text-sm" @click="filtersExpanded = !filtersExpanded">
+            <ChevronUp v-if="filtersExpanded" class="h-4 w-4" />
+            <ChevronDown v-else class="h-4 w-4" />
+            Filters
+          </button>
+        </div>
+      </div>
+
+      <Transition name="drawer">
+        <div v-if="filtersExpanded" class="filter-drawer">
+          <div class="form-block grid grid-premium md:grid-cols-2 xl:grid-cols-4">
+            <InstrumentPairSelect
+              v-model="selectedFilterInstrumentId"
+              label="Instrument / Pair"
+              :instruments="instruments"
+              size="sm"
+              clearable
+              all-label="All symbols"
+              placeholder="All symbols"
+              :show-label-help="false"
+            />
+            <BaseInput v-model="filters.model" label="Strategy Model" placeholder="Breakout" size="sm" />
+            <BaseSelect v-model="filters.direction" label="Direction" :options="filterDirectionOptions" size="sm" />
+            <BaseSelect v-model="filters.strategy_model_id" label="Strategy Taxonomy" :options="strategyFilterOptions" size="sm" />
+            <BaseSelect v-model="filters.setup_id" label="Setup" :options="setupFilterOptions" size="sm" />
+            <BaseSelect v-model="filters.killzone_id" label="Killzone" :options="killzoneFilterOptions" size="sm" />
+            <BaseSelect v-model="filters.session_enum" label="Session" :options="sessionFilterOptions" size="sm" />
+          </div>
+
+          <div class="panel p-3">
+            <p class="kicker-label">Tag Filter</p>
+            <div class="mt-2 flex flex-wrap gap-2">
+              <button
+                v-for="tag in tagFilterOptions"
+                :key="`filter-tag-${tag.id}`"
+                type="button"
+                class="chip-btn"
+                :class="{ 'is-active': selectedTagFilterIds.has(tag.id) }"
+                @click="toggleTagFilter(tag.id)"
+              >
+                {{ tag.name }}
+              </button>
+              <span v-if="tagFilterOptions.length === 0" class="section-note">No tags configured</span>
+            </div>
+          </div>
+
+          <div class="filter-drawer-row">
+            <div class="trade-filter-date-grid form-block">
+              <BaseDateInput
+                v-model="filters.date_from"
+                label="Date From"
+                size="sm"
+                :max="dateFromMax"
+              />
+              <BaseDateInput
+                v-model="filters.date_to"
+                label="Date To"
+                size="sm"
+                :min="dateToMin"
+                :max="dateToMax"
+              />
+            </div>
+            <div class="trade-filter-presets">
+              <button type="button" class="chip-btn" @click="setFilterPreset('today')">Today</button>
+              <button type="button" class="chip-btn" @click="setFilterPreset('7d')">Last 7D</button>
+              <button type="button" class="chip-btn" @click="setFilterPreset('30d')">Last 30D</button>
+              <button type="button" class="chip-btn" @click="setFilterPreset('uptodate')">Up to Date</button>
+              <button type="button" class="chip-btn" @click="setFilterPreset('clear')">Clear</button>
+            </div>
+          </div>
+
+          <div class="filter-drawer-footer">
+            <button class="btn btn-primary px-4 py-2 text-sm" @click="applyFilters">Apply</button>
+            <button class="btn btn-ghost px-4 py-2 text-sm" :disabled="!hasFilters" @click="clearFilters">Reset</button>
+          </div>
+        </div>
+      </Transition>
+    </GlassPanel>
+
+    <section class="trade-review-strip grid grid-premium md:grid-cols-5">
+      <GlassPanel class="trade-review-kpi">
+        <p class="kicker-label">Needs Review</p>
+        <p class="trade-review-kpi-value value-display negative">
+          <AnimatedNumber :value="needsReviewCount" />
+        </p>
+      </GlassPanel>
+      <GlassPanel class="trade-review-kpi">
+        <p class="kicker-label">Rule Breaks</p>
+        <p class="trade-review-kpi-value value-display negative">
+          <AnimatedNumber :value="ruleBreakCount" />
+        </p>
+      </GlassPanel>
+      <GlassPanel class="trade-review-kpi">
+        <p class="kicker-label">Losing Trades</p>
+        <p class="trade-review-kpi-value value-display negative">
+          <AnimatedNumber :value="losersCount" />
+        </p>
+      </GlassPanel>
+      <GlassPanel class="trade-review-kpi">
+        <p class="kicker-label">No Screenshot</p>
+        <p class="trade-review-kpi-value value-display">
+          <AnimatedNumber :value="noScreenshotCount" />
+        </p>
+      </GlassPanel>
+      <GlassPanel class="trade-review-kpi">
+        <p class="kicker-label">Avg Review Score</p>
+        <p class="trade-review-kpi-value value-display">
+          <AnimatedNumber :value="averageReviewScore" :decimals="0" />
+        </p>
+      </GlassPanel>
+    </section>
+
+    <GlassPanel class="trade-focus-shell">
+      <div class="trade-focus-row">
+        <span class="section-note">Review focus</span>
+        <div class="trade-focus-actions">
+          <button type="button" class="chip-btn" :class="{ 'is-active': quickFocus === 'all' }" @click="quickFocus = 'all'">All</button>
+          <button
+            type="button"
+            class="chip-btn"
+            :class="{ 'is-active': quickFocus === 'needs_review' }"
+            @click="quickFocus = 'needs_review'"
+          >
+            Needs Review
+          </button>
+          <button
+            type="button"
+            class="chip-btn"
+            :class="{ 'is-active': quickFocus === 'rule_breaks' }"
+            @click="quickFocus = 'rule_breaks'"
+          >
+            Rule Breaks
+          </button>
+          <button type="button" class="chip-btn" :class="{ 'is-active': quickFocus === 'losers' }" @click="quickFocus = 'losers'">Losers</button>
+          <button
+            type="button"
+            class="chip-btn"
+            :class="{ 'is-active': quickFocus === 'no_screenshot' }"
+            @click="quickFocus = 'no_screenshot'"
+          >
+            No Screenshot
+          </button>
+        </div>
+      </div>
+    </GlassPanel>
+
+    <section class="trade-db-shell panel p-4 md:p-5">
+      <div class="section-head">
+        <h2 class="section-title">Execute Log</h2>
+        <p class="section-note">
+          <span v-if="loading">Loading...</span>
+          <span v-else>
+            <AnimatedNumber :value="visibleTrades.length" /> shown
+            <template v-if="quickFocus !== 'all'"> of <AnimatedNumber :value="pagination.total" /></template>
+          </span>
+        </p>
+      </div>
+
+      <div v-if="loading" class="trade-db-grid">
+        <SkeletonBlock v-for="row in 6" :key="`trade-skeleton-${row}`" height-class="h-64" rounded-class="rounded-2xl" />
+      </div>
+
+      <EmptyState
+        v-else-if="visibleTrades.length === 0"
+        :title="quickFocus === 'all' ? 'No executions found' : 'No trades in this focus'"
+        :description="quickFocus === 'all'
+          ? 'Log your first execution or adjust filters to see results.'
+          : 'Switch focus or broaden filters to keep review moving.'"
+        :icon="BarChart3"
+        cta-text="New Execute"
+        @cta="openQuickAddPage"
+      />
+
+      <div
+        v-else
+        ref="virtualScrollerRef"
+        class="trade-db-list-shell"
+        :class="{ 'trade-db-virtual-scroll': shouldVirtualizeTrades }"
+        @scroll.passive="handleVirtualScroll"
+      >
+        <div class="trade-db-virtual-spacer" :style="virtualSpacerStyle">
+          <div
+            class="trade-db-grid"
+            :class="{ 'trade-db-grid-virtual': shouldVirtualizeTrades }"
+            :style="tradeGridStyle"
+          >
+        <article
+          v-for="(trade, tradeIndex) in renderedTrades"
+          :key="trade.id"
+          :ref="setTradeCardRef(trade.id)"
+          class="trade-db-card trade-card-reference"
+        >
+          <button type="button" class="trade-db-media trade-card-reference-media" @click="openDetails(trade)">
+            <img
+              v-if="shouldRenderHeavyCardContent(trade.id, tradeIndex) && primaryTradeImage(trade)"
+              :src="resolveImageSrc(primaryTradeImage(trade))"
+              :alt="`${trade.pair} execution chart`"
+              loading="lazy"
+              class="trade-db-image"
+              @error="setImageFallback($event, primaryTradeImage(trade)?.image_url)"
+            />
+            <div v-else class="trade-db-empty-chart trade-card-reference-empty" :class="{ 'is-loading': !shouldRenderHeavyCardContent(trade.id, tradeIndex) }">
+              <ImageOff class="h-6 w-6" />
+              <span>{{ shouldRenderHeavyCardContent(trade.id, tradeIndex) ? 'No screenshot' : 'Loading preview...' }}</span>
+            </div>
+          </button>
+
+          <div class="trade-card-reference-body">
+            <div class="trade-card-reference-head">
+              <div class="trade-card-reference-id">
+                <h3>{{ trade.pair }}</h3>
+                <span :class="directionClass(trade)">{{ directionLabel(trade) }}</span>
+                <span
+                  v-if="shouldRenderHeavyCardContent(trade.id, tradeIndex)"
+                  class="trade-card-priority"
+                  :class="`is-${reviewPriority(trade)}`"
+                >
+                  {{ priorityLabel(trade) }}
+                </span>
+                <template v-if="shouldRenderHeavyCardContent(trade.id, tradeIndex)">
+                  <span v-if="trade.local_sync_status && trade.local_sync_status !== 'synced'" class="trade-card-priority is-medium">
+                    {{ localSyncLabel(trade) }}
+                  </span>
+                  <span v-if="trade.risk_validation_status === 'unverified'" class="trade-card-priority is-high">
+                    Risk unverified
+                  </span>
+                </template>
+              </div>
+              <p class="trade-card-reference-pnl value-display" :class="Number(trade.profit_loss) >= 0 ? 'positive' : 'negative'">
+                {{ asSignedCurrency(trade.profit_loss) }}
+              </p>
+            </div>
+
+            <div class="trade-card-reference-meta">
+              <span>{{ cardDate(trade.date) }}</span>
+              <span class="trade-card-reference-dot">&middot;</span>
+              <span class="trade-card-reference-model">{{ modelLabel(trade.model) }}</span>
+              <span class="trade-card-reference-dot">&middot;</span>
+              <span class="trade-card-reference-images">
+                <Images class="h-3.5 w-3.5" />
+                {{ imageCount(trade) }}
+              </span>
+            </div>
+
+            <div class="trade-card-score-row">
+              <span class="section-note">Review Score</span>
+              <span
+                v-if="shouldRenderHeavyCardContent(trade.id, tradeIndex)"
+                class="trade-card-score-pill value-display"
+                :class="`tier-${reviewTier(reviewQualityScore(trade)).toLowerCase()}`"
+              >
+                {{ reviewTier(reviewQualityScore(trade)) }} - {{ reviewQualityScore(trade) }}
+              </span>
+              <span v-else class="trade-card-score-pill trade-card-score-pill-loading value-display">Loading...</span>
+            </div>
+
+            <div class="trade-card-reference-footer">
+              <button type="button" class="trade-card-reference-review" @click="openDetails(trade)">
+                <MessageSquare class="h-4 w-4" />
+                Review
+              </button>
+
+              <div class="trade-card-reference-actions">
+                <button type="button" class="trade-card-reference-icon-btn" @click="openDetails(trade)" aria-label="View trade">
+                  <Eye class="h-4 w-4" />
+                </button>
+                <button type="button" class="trade-card-reference-icon-btn" @click="openEditPage(trade)" aria-label="Edit trade">
+                  <Pencil class="h-4 w-4" />
+                </button>
+                <button
+                  type="button"
+                  class="trade-card-reference-icon-btn is-danger"
+                  @click="removeTrade(trade.id)"
+                  aria-label="Delete trade"
+                >
+                  <Trash2 class="h-4 w-4" />
+                </button>
+              </div>
+            </div>
+          </div>
+        </article>
+          </div>
+        </div>
+      </div>
+
+      <div class="mt-4 flex items-center justify-between text-sm">
+        <button class="btn btn-ghost px-3 py-1.5" :disabled="pagination.current_page === 1" @click="changePage(-1)">
+          Previous
+        </button>
+        <span class="muted">Page {{ pagination.current_page }} of {{ pagination.last_page }}</span>
+        <button class="btn btn-ghost px-3 py-1.5" :disabled="pagination.current_page === pagination.last_page" @click="changePage(1)">
+          Next
+        </button>
+      </div>
+    </section>
+
+    <Transition name="fade">
+      <div v-if="detailsOpen" class="trade-details-modal-backdrop" @click.self="closeDetails">
+        <div class="trade-details-modal panel p-4">
+          <div class="section-head">
+            <h3 class="section-title">Execution Details</h3>
+            <button type="button" class="btn btn-ghost p-2" @click="closeDetails">
+              <X class="h-4 w-4" />
+            </button>
+          </div>
+
+          <div v-if="detailsLoading" class="space-y-3">
+            <SkeletonBlock v-for="row in 4" :key="`detail-skeleton-${row}`" height-class="h-12" rounded-class="rounded-xl" />
+          </div>
+
+          <div v-else-if="detailsTrade" class="trade-simple-detail">
+            <section class="trade-modal-summary">
+              <div class="trade-modal-summary-main">
+                <h4>{{ detailsTrade.pair }}</h4>
+                <span :class="directionClass(detailsTrade)">{{ directionLabel(detailsTrade) }}</span>
+              </div>
+
+              <div class="trade-modal-summary-meta">
+                <span class="trade-modal-summary-date">
+                  <CalendarDays class="h-3.5 w-3.5" />
+                  {{ asDate(detailsTrade.date) }}
+                </span>
+                <span class="trade-modal-summary-stat" :class="Number(detailsTrade.profit_loss) >= 0 ? 'positive' : 'negative'">
+                  {{ asSignedCurrency(detailsTrade.profit_loss) }}
+                </span>
+                <span class="trade-modal-summary-stat value-display">{{ rMultipleLabel(detailsTrade) }}</span>
+              </div>
+            </section>
+
+            <div class="trade-simple-layout">
+              <div class="trade-simple-image-shell">
+                <img
+                  v-if="activeDetailImage"
+                  :src="activeDetailImageSrc"
+                  alt="Execution screenshot"
+                  class="trade-simple-image is-zoomable"
+                  @click="openImageLightbox"
+                  @error="setImageFallback($event, activeDetailImage.image_url)"
+                />
+                <div v-else class="trade-simple-image-empty">
+                  <ImageOff class="h-6 w-6" />
+                  <span>No screenshot</span>
+                </div>
+
+                <button
+                  v-if="detailsImages.length > 1"
+                  type="button"
+                  class="trade-simple-nav left"
+                  @click="previousDetailImage"
+                >
+                  <ChevronLeft class="h-4 w-4" />
+                </button>
+                <button
+                  v-if="detailsImages.length > 1"
+                  type="button"
+                  class="trade-simple-nav right"
+                  @click="nextDetailImage"
+                >
+                  <ChevronRight class="h-4 w-4" />
+                </button>
+
+                <div v-if="activeDetailImage" class="trade-simple-image-meta">
+                  <p><strong>Context:</strong> {{ imageContextLabel(activeDetailImage.context_tag) }}</p>
+                  <p><strong>Timeframe:</strong> {{ activeDetailImage.timeframe || '-' }}</p>
+                  <p><strong>Replay Note:</strong> {{ activeDetailImage.annotation_notes || '-' }}</p>
+                </div>
+
+                <div v-if="detailsImages.length > 1" class="trade-simple-replay-seq">
+                  <button
+                    v-for="(image, index) in detailsImages"
+                    :key="`replay-${image.id}`"
+                    type="button"
+                    class="chip-btn"
+                    :class="{ 'is-active': index === detailImageIndex }"
+                    @click="selectDetailImage(index)"
+                  >
+                    {{ index + 1 }}. {{ imageContextLabel(image.context_tag) }}
+                  </button>
+                </div>
+              </div>
+
+              <div class="trade-simple-metrics">
+                <article>
+                  <span>Session</span>
+                  <strong>{{ detailsTrade.session || '-' }}</strong>
+                </article>
+                <article>
+                  <span>Model</span>
+                  <strong>{{ detailsTrade.model || '-' }}</strong>
+                </article>
+                <article>
+                  <span>Emotion</span>
+                  <strong>{{ detailsTrade.emotion || '-' }}</strong>
+                </article>
+                <article>
+                  <span>Images</span>
+                  <strong class="value-display">{{ detailsImages.length }}</strong>
+                </article>
+                <article>
+                  <span>Psychology Confidence</span>
+                  <strong>{{ detailsPsychology?.confidence_score ?? '-' }}</strong>
+                </article>
+                <article>
+                  <span>Psychology Stress</span>
+                  <strong>{{ detailsPsychology?.stress_score ?? '-' }}</strong>
+                </article>
+                <article>
+                  <span>Flags</span>
+                  <strong>
+                    {{
+                      [
+                        detailsPsychology?.impulse_flag ? 'Impulse' : '',
+                        detailsPsychology?.fomo_flag ? 'FOMO' : '',
+                        detailsPsychology?.revenge_flag ? 'Revenge' : '',
+                      ].filter(Boolean).join(', ') || '-'
+                    }}
+                  </strong>
+                </article>
+                <article class="trade-simple-note">
+                  <span>Notes</span>
+                  <strong>{{ detailsTrade.notes || '-' }}</strong>
+                </article>
+                <article class="trade-simple-note">
+                  <span>Psych Notes</span>
+                  <strong>{{ detailsPsychology?.notes || '-' }}</strong>
+                </article>
+              </div>
+            </div>
+
+            <section class="trade-review-checklist panel">
+              <div class="trade-review-checklist-head">
+                <p class="kicker-label">Review Checklist</p>
+                <span class="trade-card-score-pill value-display" :class="`tier-${reviewTier(detailReviewScore).toLowerCase()}`">
+                  {{ reviewTier(detailReviewScore) }} - {{ detailReviewScore }}
+                </span>
+              </div>
+
+              <div class="trade-review-checklist-list">
+                <p v-for="item in detailChecklist" :key="item.label" :class="item.done ? 'is-done' : 'is-pending'">
+                  <CheckCircle2 v-if="item.done" class="h-4 w-4" />
+                  <AlertCircle v-else class="h-4 w-4" />
+                  <span>{{ item.label }}</span>
+                </p>
+              </div>
+
+              <p class="section-note">{{ detailNextAction }}</p>
+            </section>
+          </div>
+        </div>
+      </div>
+    </Transition>
+
+    <Transition name="fade">
+      <div
+        v-if="lightboxOpen && activeDetailImage"
+        class="trade-lightbox-backdrop"
+        @click.self="closeImageLightbox"
+      >
+        <button type="button" class="trade-lightbox-close btn btn-ghost p-2" @click.stop="closeImageLightbox" aria-label="Close fullscreen image">
+          <X class="h-5 w-5" />
+        </button>
+        <button
+          v-if="detailsImages.length > 1"
+          type="button"
+          class="trade-lightbox-nav left"
+          @click.stop="previousDetailImage"
+          aria-label="Previous image"
+        >
+          <ChevronLeft class="h-5 w-5" />
+        </button>
+        <button
+          v-if="detailsImages.length > 1"
+          type="button"
+          class="trade-lightbox-nav right"
+          @click.stop="nextDetailImage"
+          aria-label="Next image"
+        >
+          <ChevronRight class="h-5 w-5" />
+        </button>
+        <div class="trade-lightbox-content">
+          <img
+            :src="activeDetailImageSrc"
+            alt="Execution screenshot fullscreen"
+            class="trade-lightbox-image"
+            @error="setImageFallback($event, activeDetailImage.image_url)"
+          />
+        </div>
+        <div v-if="detailsImages.length > 1" class="trade-lightbox-zoom">
+          <span>{{ detailImageIndex + 1 }} / {{ detailsImages.length }}</span>
+        </div>
+      </div>
+    </Transition>
+  </div>
+</template>
+
+<style scoped>
+.trade-db-list-shell {
+  width: 100%;
+}
+
+.trade-db-virtual-scroll {
+  max-height: min(72vh, 1040px);
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding-right: 0.18rem;
+}
+
+.trade-db-virtual-spacer {
+  position: relative;
+  width: 100%;
+}
+
+.trade-db-grid-virtual {
+  position: absolute;
+  inset: 0 auto auto 0;
+  width: 100%;
+  will-change: transform;
+}
+
+.trade-db-empty-chart.is-loading {
+  border: 1px dashed color-mix(in srgb, var(--border) 54%, transparent 46%);
+  color: var(--muted);
+}
+
+.trade-card-score-pill-loading {
+  border-style: dashed;
+  color: var(--muted);
+}
+</style>

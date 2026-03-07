@@ -1,0 +1,5 @@
+/apps/web/ @frontend-team
+/apps/api/ @backend-team
+/infra/ @platform-team
+/docs/ @platform-team
+/scripts/ @platform-team

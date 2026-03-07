@@ -1,158 +1,68 @@
-# Trading Journal + Analytics
+# IZLedger Monorepo
 
-Full-stack trading journal built with:
-- Frontend: Vue 3 + TypeScript + Pinia + Tailwind + ECharts
-- Backend: Laravel 11 REST API
-- Database: MySQL 8 (Docker) / SQLite (local option)
+Full-stack trading journal with:
+- Web: Vue 3 + TypeScript + Pinia + Vite
+- API: Laravel 11
+- Deployment: Vercel (`apps/web`) + Railway (`apps/api`)
 
-## Project Structure
-- `frontend/` Vue app
-- `backend/` Laravel API
-- `docker-compose.yml` local development stack
-- `docker-compose.prod.yml` production-ready container stack
+## Repository Layout
+- `apps/web` frontend app + Vercel serverless proxy (`apps/web/api`)
+- `apps/api` Laravel API app
+- `infra/docker` compose files, Dockerfiles, nginx, entrypoints
+- `infra/railway` Railway config-as-code
+- `infra/env/.env.prod.example` prod compose env template
+- `scripts/ci` verification and repo guard scripts
+- `scripts/security` security tooling
+- `docs` architecture/deployment/runbooks
 
 ## Local Development
 
-### 1) Start infrastructure
+### API
 ```bash
-docker compose up -d mysql
-```
-
-MySQL (dev):
-- Host: `127.0.0.1`
-- Port: `3307`
-- Database: `trading_journal`
-- Username: `trading`
-- Password: `veasna123`
-
-### 2) Backend setup
-```bash
-cd backend
-copy .env.example .env
+cd apps/api
+cp .env.example .env
 composer install
 php artisan key:generate
 php artisan migrate:fresh --seed
 php artisan serve
 ```
 
-API URL:
-- `http://127.0.0.1:8000`
-- `http://127.0.0.1:8000/api`
+API health:
+- `GET /api/health` (primary)
+- `GET /up` (secondary)
 
-Health checks:
-- `GET /up`
-- `GET /api/health`
-
-Main endpoints:
-- `GET /api/accounts`
-- `POST /api/accounts`
-- `GET /api/accounts/{id}`
-- `PUT /api/accounts/{id}`
-- `DELETE /api/accounts/{id}`
-- `GET /api/accounts/{id}/equity`
-- `GET /api/accounts/{id}/analytics`
-- `GET /api/trades`
-- `POST /api/trades`
-- `GET /api/trades/{id}`
-- `PUT /api/trades/{id}`
-- `DELETE /api/trades/{id}`
-- `POST /api/trades/{id}/images`
-- `DELETE /api/trade-images/{id}`
-- `GET /api/missed-trades`
-- `POST /api/missed-trades`
-- `GET /api/missed-trades/{id}`
-- `PUT /api/missed-trades/{id}`
-- `DELETE /api/missed-trades/{id}`
-- `POST /api/missed-trades/{id}/images`
-- `DELETE /api/missed-trade-images/{id}`
-- `GET /api/analytics/overview`
-- `GET /api/analytics/daily`
-- `GET /api/analytics/performance-profile`
-- `GET /api/analytics/equity`
-- `GET /api/analytics/drawdown`
-- `GET /api/analytics/streaks`
-- `GET /api/analytics/metrics`
-- `GET /api/analytics/behavioral`
-- `GET /api/analytics/rankings`
-- `GET /api/analytics/monthly-heatmap`
-- `GET /api/analytics/risk-status`
-- `GET /api/analytics/accounts`
-- `GET /api/analytics/portfolio`
-- `GET /api/portfolio/analytics`
-
-Query filters:
-- `account_id` (single account scope)
-- `account_ids` (comma-separated portfolio subset)
-
-If your local PHP misses `mbstring` (Windows common), run:
+### Web
 ```bash
-cd backend/public
-php -d extension=mbstring -S 127.0.0.1:8000 ../vendor/laravel/framework/src/Illuminate/Foundation/resources/server.php
-```
-
-### 3) Frontend
-```bash
-cd frontend
-copy .env.example .env
+cd apps/web
+cp .env.example .env
 npm install
 npm run dev
 ```
 
-Frontend URL:
-- `http://127.0.0.1:5173`
-
----
-
-## Production Deployment (Docker)
-
-### 1) Prepare environment
+## Docker (Local)
 ```bash
-copy .env.prod.example .env
+docker compose -f infra/docker/compose/dev.yml up -d --build
 ```
 
-Edit `.env`:
-- set `APP_KEY` (generate with `php -d extension=mbstring backend\\artisan key:generate --show`)
-- set `APP_URL`
-- set secure DB passwords
-
-Optional host env vars:
-- `APP_KEY`
-- `APP_URL`
-- `DB_PASSWORD`
-- `DB_ROOT_PASSWORD`
-- `WEB_PORT` (default `80`)
-- `RUN_MIGRATIONS` (`true` by default)
-
-### 2) Build and run
+## Docker (Production-like)
 ```bash
-docker compose --env-file .env -f docker-compose.prod.yml up -d --build
+cp infra/env/.env.prod.example .env
+docker compose --env-file .env -f infra/docker/compose/prod.yml up -d --build
 ```
 
-Services:
-- `web` (Nginx static frontend + `/api` proxy) on `${WEB_PORT:-80}`
-- `api` (Laravel app on internal port `8000`)
-- `db` (MySQL 8.4)
+## Deploy
+- Vercel:
+  - Root Directory: `apps/web`
+  - Config: `apps/web/vercel.json`
+- Railway:
+  - Config as code: `infra/railway/api.json` and `infra/railway/web.json`
 
-### 3) Verify
+Detailed runbooks:
+- `docs/deployment/vercel-railway.md`
+- `docs/deployment/railway.md`
+
+## Verification
 ```bash
-curl http://localhost/up
-curl http://localhost/api/health
+bash scripts/ci/verify.sh
+bash scripts/ci/check-root-clutter.sh
 ```
-
-### 4) Update deployment
-```bash
-git pull
-docker compose --env-file .env -f docker-compose.prod.yml up -d --build
-```
-
-## Notes
-- No authentication is included by design.
-- Vite proxies `/api` using `VITE_PROXY_TARGET` in dev.
-- Frontend API prefix is controlled by `VITE_API_BASE_URL` (default `/api`).
-- For Vercel with proxy mode (`VITE_API_BASE_URL=/api`), set `API_BASE_URL` to your backend API root (example: `https://api.your-domain.com/api`) so `/api/*` is forwarded by `api/[...path].js`.
-- For Vercel direct mode, set `VITE_API_BASE_URL` directly to your backend API root and skip the proxy.
-- Keep Vercel `Root Directory` at repository root (`.`) and use only root `vercel.json` (do not add `frontend/vercel.json`).
-
-## Railway Deployment
-- Use the repo guide: `docs/railway-deployment.md`
-- Deploy as 3 Railway services: `frontend`, `backend`, and `MySQL`

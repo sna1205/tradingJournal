@@ -1,0 +1,13 @@
+{
+  "name": "trading-journal-monorepo",
+  "private": true,
+  "scripts": {
+    "dev:web": "npm --prefix apps/web run dev",
+    "build:web": "npm --prefix apps/web run build",
+    "test:web": "npm --prefix apps/web run test",
+    "test:web:unit": "npm --prefix apps/web run test:unit",
+    "test:api": "sh -lc 'cd apps/api && composer install && php artisan test'",
+    "verify": "bash scripts/ci/verify.sh",
+    "guard:root": "bash scripts/ci/check-root-clutter.sh"
+  }
+}
