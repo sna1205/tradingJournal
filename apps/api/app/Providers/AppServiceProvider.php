@@ -90,12 +90,19 @@ class AppServiceProvider extends ServiceProvider
             $token->expires_at = now()->addMinutes($expirationMinutes);
         });
 
-        CorsConfigValidator::validate(
-            (string) config('app.env', 'production'),
-            is_array(config('cors.allowed_origins')) ? config('cors.allowed_origins') : [],
-            is_array(config('cors.allowed_origins_patterns')) ? config('cors.allowed_origins_patterns') : [],
-            (bool) config('cors.supports_credentials', true)
-        );
+        // During composer package discovery in CI, the app boots before .env is created.
+        // Skip strict CORS validation only for that console bootstrap case.
+        $shouldValidateCors = ! $this->app->runningInConsole()
+            || is_file($this->app->environmentFilePath());
+
+        if ($shouldValidateCors) {
+            CorsConfigValidator::validate(
+                (string) config('app.env', 'production'),
+                is_array(config('cors.allowed_origins')) ? config('cors.allowed_origins') : [],
+                is_array(config('cors.allowed_origins_patterns')) ? config('cors.allowed_origins_patterns') : [],
+                (bool) config('cors.supports_credentials', true)
+            );
+        }
 
         LocalDatabaseConfigValidator::validate(
             (string) config('app.env', 'production'),
