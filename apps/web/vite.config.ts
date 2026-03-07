@@ -5,6 +5,7 @@ import { fileURLToPath, URL } from 'node:url'
 export default defineConfig(({ mode }) => {
   // Ensure Vite config can consume values from .env files and shell env.
   const env = loadEnv(mode, process.cwd(), '')
+  const srcRootWithSlash = `${fileURLToPath(new URL('./src', import.meta.url)).replace(/\\/g, '/')}/`
   const apiProxyTarget = env.VITE_PROXY_TARGET || 'http://localhost:8000'
   const allowedHosts = env.VITE_ALLOWED_HOSTS
     ? env.VITE_ALLOWED_HOSTS.split(',').map((host) => host.trim()).filter(Boolean)
@@ -14,7 +15,7 @@ export default defineConfig(({ mode }) => {
     plugins: [vue()],
     resolve: {
       alias: {
-        '@': fileURLToPath(new URL('./src', import.meta.url)),
+        '@': srcRootWithSlash,
       },
     },
     server: {

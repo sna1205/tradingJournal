@@ -1,19 +1,19 @@
 import { createRouter, createWebHistory, type RouteRecordRaw } from 'vue-router'
-import { useAuthStore } from '@/stores/authStore'
+import { useAuthStore } from '../stores/authStore'
 
-const AnalyticsPage = () => import('@/pages/Dashboard.vue')
-const Trades = () => import('@/pages/Trades.vue')
-const TradeFormPage = () => import('@/pages/TradeFormPage.vue')
-const MissedTrades = () => import('@/pages/MissedTrades.vue')
-const MissedTradeFormPage = () => import('@/pages/MissedTradeFormPage.vue')
-const Milestones = () => import('@/pages/Milestones.vue')
-const Accounts = () => import('@/pages/Accounts.vue')
-const LotsCalculatorPage = () => import('@/pages/LotsCalculatorPage.vue')
-const TradingRulesPage = () => import('@/pages/TradingRulesPage.vue')
-const SettingsPage = () => import('@/pages/SettingsPage.vue')
-const LoginPage = () => import('@/pages/LoginPage.vue')
-const LandingPage = () => import('@/pages/LandingPage.vue')
-const UiRegressionPage = () => import('@/pages/UiRegressionPage.vue')
+const AnalyticsPage = () => import('../pages/Dashboard.vue')
+const Trades = () => import('../pages/Trades.vue')
+const TradeFormPage = () => import('../pages/TradeFormPage.vue')
+const MissedTrades = () => import('../pages/MissedTrades.vue')
+const MissedTradeFormPage = () => import('../pages/MissedTradeFormPage.vue')
+const Milestones = () => import('../pages/Milestones.vue')
+const Accounts = () => import('../pages/Accounts.vue')
+const LotsCalculatorPage = () => import('../pages/LotsCalculatorPage.vue')
+const TradingRulesPage = () => import('../pages/TradingRulesPage.vue')
+const SettingsPage = () => import('../pages/SettingsPage.vue')
+const LoginPage = () => import('../pages/LoginPage.vue')
+const LandingPage = () => import('../pages/LandingPage.vue')
+const UiRegressionPage = () => import('../pages/UiRegressionPage.vue')
 
 const includeVisualRoutes = import.meta.env.DEV || import.meta.env.VITE_ENABLE_VISUAL_ROUTES === '1'
 const visualRoutes: RouteRecordRaw[] = includeVisualRoutes
@@ -76,7 +76,7 @@ const router = createRouter({
       path: '/auth/register',
       alias: ['/register'],
       name: 'auth-register',
-      component: () => import('@/pages/RegisterPage.vue'),
+      component: () => import('../pages/RegisterPage.vue'),
       meta: {
         public: true,
         layout: 'auth',
